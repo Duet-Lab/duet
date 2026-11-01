@@ -1,154 +1,92 @@
 # Duet
 
-Система управления знаниями и делами, построенная на дуэте Человека и ИИ.
+Duet is a personal operating environment. You run the things you care about as *businesses*: each one is a folder of plain files that you own, with a mission, projects, and routines. AI agents get their working context from those folders, not from chat history, so the same folder serves you and the agents you work with.
 
-## Принципы
+Duet is built for one person's daily use and developed in the open. It is not a product yet.
 
-1. **Данные принадлежат человеку** — всё хранится в Google Drive в вечных форматах (MD, CSV, PY), не в проприетарной базе данных
-2. **Дуэт с ИИ** — глубокая интеграция с LLM через MCP (Model Context Protocol)
-3. **Entity Hierarchy** — иерархия Business → Stream → Product для организации всей жизни
+## Status: pre-alpha
 
-## Проблема
+There are no promises here. The file formats, the MCP tools, the HTTP API, and the folder layout change between commits without migration or notice. There is no release schedule, no support, and no backward compatibility. The specs describe the current state, not a contract.
 
-Notion, Obsidian и подобные инструменты:
-- Прячут данные в свои форматы/базы
-- Плохо интегрируются с LLM
-- Не дают ИИ полного контекста о ваших делах
+If you try it anyway, two things are worth knowing. Your own data stays in folders you choose, as Markdown and JSON, so removing Duet loses nothing of yours; Duet keeps its own state in a separate `DuetData` folder. And Duet Host writes into the configuration of AI clients it finds on the machine (Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop): it registers its MCP server and installs a system prompt. Read the Host spec before you let it do that on a machine you rely on.
 
-## Решение
-```
-Google Drive (твои данные)          Duet (семантика)
-────────────────────────────        ─────────────────
-МетаЛаб/                            • Индексирует
-├── ДЕЛА/                           • Понимает структуру
-│   ├── ТехноЛаб/                   • MCP для LLM
-│   │   └── ДЕЛА/                   • UI для управления
-│   │       └── Duet/
-│   └── ...
-└── ...
+## What is in the repository
 
-        ↓
-    Claude Code / Codex / Antigravity
-    "Какие у меня Big Rocks в ТехноЛаб?"
-    → Знает ответ через MCP
-```
+A monorepo with three components and the shared platform instructions.
 
-## Архитектура
+| Package | What it is | Spec |
+|---------|------------|------|
+| `packages/host` | Electron tray app. Runs the setup wizard, writes all configuration, deploys and runs the backend, configures AI clients. | [`packages/host/spec/COMPONENT.md`](packages/host/spec/COMPONENT.md) |
+| `packages/backend` | Python HTTP API and MCP server. Scans business folders, keeps the registry, answers agents (`orientation`, `resolve_paths`, tickets). | [`packages/backend/spec/COMPONENT.md`](packages/backend/spec/COMPONENT.md) |
+| `packages/extension` | VS Code extension. Tree views over businesses and tickets, work windows, a thin client of the backend. | [`packages/extension/spec/COMPONENT.md`](packages/extension/spec/COMPONENT.md) |
+| `packages/instructions` | The `duet-core` system prompt that Duet installs into AI clients. | |
 
-```
-┌─────────────────┐     writes      ┌──────────────────┐
-│  Host (Electron) │ ──────────────→ │ ~/.org.ve68.duet │
-│  Tray app, UI    │                 │   (pointer file) │
-└─────────────────┘                 └────────┬─────────┘
-                                      reads  │  reads
-                              ┌──────────────┴──────────────┐
-                              ▼                              ▼
-                   ┌──────────────────┐          ┌──────────────────┐
-                   │ Extension (VSCode)│          │ Backend (Python)  │
-                   │ UI, tree, scanner │          │ HTTP API + MCP    │
-                   └──────────────────┘          └──────────────────┘
-                              │          spawns           ▲
-                              └──────────────────────────┘
-```
+Start with [`spec/PRODUCT.md`](spec/PRODUCT.md): the domain model, the file layout, and how the components talk to each other.
 
-## Структура монорепо
+## Installing
 
-```
-Duet/
-├── packages/
-│   ├── host/                ← Electron tray app (Menu Bar)
-│   ├── extension/           ← VS Code расширение
-│   └── backend/             ← Python HTTP API + MCP
-├── spec/
-│   └── PRODUCT.md           ← Спека продукта (читай ПЕРВЫМ)
-└── projects/                ← GTD-проекты
-```
+This is how the author installs Duet. Nothing is signed, nothing is published to a store or marketplace, and every step may be out of date by the time you read it.
 
-The shared AI instructions ship with Duet in `packages/instructions/`. Businesses keep their entry point, local rules, memory, and description in `INDEX.md`; skills are declared in `context.json`.
+### Requirements
 
-Подробнее о каждом компоненте — см. `spec/` внутри пакета.
+- macOS or Windows. Linux builds come out of CI but have not been used.
+- Python 3.10 or newer, on `PATH` or anywhere you can point the wizard at. The backend runs in a virtual environment that Host creates.
+- VS Code 1.104 or newer.
+- `git`, if any of your businesses declares repositories: the backend clones them with the system git.
+- Node.js 22 and npm, only to build the VS Code extension.
 
-## Быстрый старт
+### 1. Duet Host
 
-### Требования
+There are no GitHub Releases. Every push to `main` that touches `packages/host` runs the [Build Duet Host](https://github.com/Duet-Lab/duet/actions/workflows/build-host.yml) workflow, and the installers are attached to the run as artifacts: `duet-host-mac` (`.dmg`), `duet-host-win` (`.exe`), `duet-host-linux` (`.AppImage`, `.deb`, `.snap`). Open the latest green run on `main`, scroll to *Artifacts*, download your platform. You need to be signed in to GitHub to download, and artifacts expire 90 days after the run.
 
-- Node.js 20+
-- Python 3.10+
-- Google Drive Desktop (для синхронизации DuetConfig)
+The builds are unsigned, so the operating system will object.
 
-### Установка
+macOS refuses to open the app. Copy `Duet.app` to `/Applications`, then clear the quarantine flag:
 
 ```bash
-git clone https://github.com/alatyshau/duet.git
+xattr -dr com.apple.quarantine /Applications/Duet.app
+```
+
+Windows SmartScreen shows "Windows protected your PC". Choose *More info*, then *Run anyway*.
+
+### 2. VS Code extension
+
+The extension is not published anywhere, and CI does not build it. Build it from the source you are installing Host from:
+
+```bash
+git clone https://github.com/Duet-Lab/duet.git
 cd duet
 npm install
+cd packages/extension
+npx vsce package --no-dependencies -o dist/duet.vsix
 ```
 
-### Первый запуск
-
-1. Установить и запустить **Duet Host** — он создаст pointer file (`~/.org.ve68.duet`) с путями к DuetData и DuetConfig
-   1. На Маке: `sudo xattr -rd com.apple.quarantine /Applications/Duet.app`
-2. Открыть VS Code → установить **Duet Extension** (VSIX) → Extension подхватит pointer и запустит Backend
-
-## Ключевые концепции
-
-### Entity Hierarchy
-
-- **Business** — большая область жизни (МетаЛаб, Семья)
-- **Stream** — ongoing concern внутри business (может вкладываться)
-- **Product** — конкретный результат с git-репозиторием
-
-### MCP + Orientation
-
-Backend запускает MCP Server. AI-агенты вызывают `orientation(path)` при старте сессии и получают пути этой машины и точки входа бизнеса, которые надо прочитать.
-
-### AI-инструкции
-
-Duet ships the shared `duet-core` platform prompt and configures AI clients to use it. Business-specific instructions and skills are separate; Executor and Vizir are no longer built-in platform roles.
-
-### Reference Repos
-
-Любая сущность может объявить `reference_repos` в манифесте — read-only клоны вспомогательных репозиториев (cookbook, документация и т.д.).
-
-## Разработка
+Then install it: in VS Code, open the Extensions view, choose *Install from VSIX...* from the `...` menu, and pick `dist/duet.vsix`. Or from a shell:
 
 ```bash
-# Host (Electron tray app)
-npm run dev:host                              # dev-режим
-cd packages/host && npm run release               # bump + build → dist/Duet-{ver}.dmg
-
-# Extension (VS Code)
-cd packages/extension && npm run vsix         # bump + build → dist/duet-{ver}.vsix
-
-# Backend (Python)
-cd packages/backend && ../../.venv/bin/pytest  # тесты
-
-# Тесты всех компонентов
-cd packages/host && npm run test:run
-cd packages/extension && npm test
-cd packages/backend && ../../.venv/bin/pytest
+code --install-extension dist/duet.vsix
 ```
 
-### CI/CD
+If you work with a coding agent, cloning the repository and asking the agent to run these steps is a fine way to do it.
 
-GitHub Actions автоматически билдит Host (macOS/Windows/Linux) при push в main.
+### 3. First run
 
-## Документация
+Launch Duet Host. On the first run it opens a five-step wizard:
 
-- [spec/PRODUCT.md](spec/PRODUCT.md) — спека продукта (читай ПЕРВЫМ)
-- Спеки компонентов — `spec/` внутри каждого пакета
+1. **Paths.** Choose `DuetData` (local state, backend, logs), `DuetConfig` (settings; put it on a synced drive if you want several machines to share them), and a name for this machine. Host writes a pointer to these at `~/.org.ve68.duet`.
+2. **Python.** Host looks for Python 3.10+ or takes the path you give.
+3. **Backend.** Host copies the bundled backend into `DuetData/backend`, creates the virtual environment, and starts the server.
+4. **Businesses.** Add the folders that hold your businesses. The first one becomes the meta business, the operating layer over the others.
+5. **AI clients.** Host detects installed clients and offers to configure each one.
 
-## Философия
+Then open VS Code. The extension reads the pointer file, finds the running backend, and shows your businesses in the Duet view.
 
-> "Данные принадлежат человеку, не приложению"
+## Developing
 
-Duet — это линза, не тюрьма:
-- Duet удалён? Файлы остались (MD, CSV)
-- Duet сломался? Открой в VS Code
-- Duet не нравится? Напиши свой парсер
+```bash
+npm install
+npm run dev:host      # Host with hot reload
+npm run verify        # typecheck, lint, and tests for every package
+```
 
-Vendor lock-in = 0
-
-## Лицензия
-
-MIT
+For the extension, open the repository in VS Code and press F5. The backend can be run by hand from `packages/backend` with `python server.py`; see its spec for the environment. The build and release sequence, including the rule that a release runs before the commit it belongs to, is in [`spec/PRODUCT.md`](spec/PRODUCT.md), *Pre-commit Verification*.
