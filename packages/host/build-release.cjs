@@ -14,6 +14,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { syncLockfileVersion } = require('../../scripts/sync-lockfile-version.cjs');
 
 const packagePath = path.join(__dirname, 'package.json');
 const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
@@ -24,7 +25,8 @@ const newVersion = `${major}.${minor}.${patch + 1}`;
 pkg.version = newVersion;
 
 fs.writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
-console.log(`Version bumped to ${newVersion}`);
+syncLockfileVersion(__dirname, newVersion);
+console.log(`Version bumped to ${newVersion} (package.json + root package-lock.json)`);
 
 // Write BUILD_SHA for production version tracking
 // Runtime reads this from resources/BUILD_SHA to verify deployed version provenance

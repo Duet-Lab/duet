@@ -513,12 +513,12 @@ npm run verify:backend  # pytest
 
 **Important:** `electron-vite build` uses esbuild which skips TypeScript checks (`noUnusedLocals` etc.). Always run `npm run typecheck` separately.
 
-**Release-before-commit rule.** Build scripts modify the working tree (`package.json` version bump, `resources/BUILD_SHA`). The release commands MUST run before staging the commit so those edits are part of the same commit as the code changes. Sequence:
+**Release-before-commit rule.** Build scripts modify the working tree (`package.json` version bump, the same version in the root `package-lock.json`, `resources/BUILD_SHA`). The release commands MUST run before staging the commit so those edits are part of the same commit as the code changes. Sequence:
 
 1. Make code changes; ensure `npm run verify` passes.
 2. `cd packages/host && npm run release` (or `cd packages/extension && npm run vsix` for Extension).
 3. Copy the artifacts into `DuetData/`: `packages/host/dist/Duet-{version}.dmg` and `packages/extension/dist/duet-{version}.vsix`. Always, on every release: the user installs Host and the Extension from there.
-4. Commit: code + bumped `version` together (`resources/BUILD_SHA` is gitignored — it ships inside the build, not in the commit).
+4. Commit: code + bumped `version` together — the package's `package.json` and the root `package-lock.json`, which the release script updates through `scripts/sync-lockfile-version.cjs` (`resources/BUILD_SHA` is gitignored — it ships inside the build, not in the commit).
 5. Push.
 
 Per-package build & release pipelines: each component's `Engineering` chapter. CI workflows: `.github/workflows/build-host.yml` (build artifacts for macOS/Windows/Linux on push to main if `packages/host/` changed) and `.github/workflows/host-test.yml` (vitest on the same trigger; E2E disabled — monorepo symlink issues). No auto-publish — artifacts are downloaded manually from Actions → GitHub Release.
