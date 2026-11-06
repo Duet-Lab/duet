@@ -34,7 +34,7 @@ Everything in this file describes how Host fulfils these three roles. UI surface
 | **Thin shell** | `main/`, `platform/`, `preload/` — only wiring. All non-trivial logic in `core/`. If logic in shell grows beyond a one-liner → extract to `core/` |
 | **No framework imports in core/** | `core/` has zero Electron imports. Testable with plain Node.js |
 | **Shared types** | `shared/types.ts` is the single source of truth for all types crossing process boundary (IPC). Core modules re-export from shared. No type duplication |
-| **Unit tests for core/ only** | Don't mock Electron. Test pure `core/` functions directly. Shell is validated by TypeScript + E2E |
+| **Unit tests target core/** | Test pure `core/` functions directly. Shell code is tested only where it carries a contract — IPC handlers, preload channel mapping, tray update decisions, renderer effects (Behaviors → Idle) — with a minimal mocked `electron` module or jsdom; Electron's own behavior is never tested. The rest of the shell is validated by TypeScript + E2E |
 | **Pure functions over state** | Prefer pure functions with explicit args over closures capturing module state |
 | **Spec-driven** | Code + spec changes in same commit. Read `spec/` before changes, update after |
 
@@ -97,7 +97,7 @@ Host uses Electron `requestSingleInstanceLock()`. Second instance shows window o
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
 | `app:get-state` | renderer → main | Get current AppState |
-| `app-state-changed` | main → renderer | Push state updates |
+| `app-state-changed` | main → renderer | Push AppState when it changed (Idle contract); `showWindow()` also sends it on show |
 | `dialog:select-folder` | renderer → main | Open system folder picker |
 | `dialog:select-file` | renderer → main | Open system file picker |
 | `config:save-pointer` | renderer → main | Save pointer file (partial updates supported — missing fields preserved). Creates default DuetConfig files when both `duetConfigPath` and `machine` are present. Calls `updateAppState()`, returns new AppState |
@@ -115,7 +115,9 @@ Host uses Electron `requestSingleInstanceLock()`. Second instance shows window o
 | `backend:start` | renderer → main | Start backend |
 | `backend:stop` | renderer → main | Stop backend |
 | `backend:status-changed` | main → renderer | Push backend status updates |
-| `agents:detect` | renderer → main | Detect installed AI clients |
+| `agents:get` | renderer → main | Return the stored agent status (`AgentInfo[] \| null`) — no detection, no side effects |
+| `agents:refresh` | renderer → main | The "Check" button: detect again, store, refresh state; returns the stored status |
+| `agents:status-changed` | main → renderer | Push the stored agent status when it changed |
 | `agents:configure` | renderer → main | Configure all AI clients |
 | `agents:fix-issue` | renderer → main | Fix specific agent issue (by `agentId` + `reasonCode`) |
 | `root-contexts:get` | renderer → main | Get resolved root contexts (raw alias + absolute path + isMeta) |
@@ -123,11 +125,12 @@ Host uses Electron `requestSingleInstanceLock()`. Second instance shows window o
 | `root-contexts:add` | renderer → main | Alias-aware add: creates `@<basename>` in `{machine}.json`, appends to `root_context_folders`, runs scoped schema migration, enforces meta-required invariant |
 | `root-contexts:scan` | renderer → main | Trigger `POST /scan` |
 | `root-contexts:get-cached-scan` | renderer → main | Read cached `scan.json` from `DuetData/data/` |
+| `root-contexts:scan-changed` | main → renderer | Push the cached scan of the current DuetData (`null` when none) when it changed |
 | `root-contexts:get-cached-contexts` | renderer → main | Read cached `contexts.json` (entity tree) from `DuetData/data/` |
 | `migrations:get-status` | renderer → main | Get cached `MigrationResult` from last sweep |
-| `migrations:status-changed` | main → renderer | Push fresh `MigrationResult` after each sweep |
+| `migrations:status-changed` | main → renderer | Push `MigrationResult` after a sweep when it changed |
 
-**Mutation contract:** `agents:configure`, `agents:fix-issue`, and config writers call `updateAppState()` after mutations to refresh tray icon. `deploy:start` runs async deploy, broadcasts status + log events.
+**Mutation contract:** `agents:configure`, `agents:fix-issue`, `agents:refresh` and config writers call `updateAppState()` after mutations to refresh the tray and publish changed state. Reads (`*:get*`, `agents:get`) never call `updateAppState()` and never publish (see Behaviors → Idle). `deploy:start` runs async deploy, broadcasts status + log events.
 
 **Config defaults** (`ensureConfigDefaults(duetConfigPath, machine)`): creates `settings.json` (`{ version: 2, user_name: "Human", root_context_folders: [], timestampTZ: { id: "Z", value: "UTC" } }`) and `{machine}.json` (`{ version: 2, port: 19680 }`) only if files don't exist. Never overwrites. Implementation: `core/config.ts`.
 
@@ -162,6 +165,32 @@ Full icon table and behavior: see [UI.md](UI.md). Severity-driven: tray icon ref
 | External links | Opened in system browser (not in-app) |
 
 ## Behaviors
+
+### Idle
+
+**Norm.** Host does no self-sustaining work without an external event — no timers, no IPC, no file reads, no tray redraws — whether the window is visible, hidden or closed. Events are user actions, file-system watcher events, backend process events and Host's own operations (startup, deploy, configure). Host lives in the tray for days; any self-sustaining cycle drains the battery for as long as it runs. A past violation kept the main process at 100% CPU from the first time the window was opened until Host quit.
+
+**How it is kept.**
+
+- State channels (`app-state-changed`, `agents:status-changed`, `root-contexts:scan-changed`, `migrations:status-changed`) are published only when the payload differs from the last one published (`createChangeGate` in `core/host-sync.ts`). `showWindow()` sends the full AppState on show, because a new window has no state.
+- `updateTrayIcon()` skips an update whose icon and tooltip are what the tray already shows.
+- Read handlers never call `updateAppState()` and never publish. Otherwise a renderer that re-reads on a push and a handler that pushes on a read form a loop.
+- The renderer does not re-request data on every AppState update: an effect keyed on the whole `appState` object re-runs on each push. Each value is read once on mount and then followed through its own push channel. A targeted reaction to a specific input that changed (for example `BackendPage` re-reading the deploy status when `appState.deployChannel` changes) is fine: it ends after one read.
+- Page status callbacks are stable and an unchanged report is ignored (Severity Framework), so the window settles after it loads.
+- Background work started for an operation stops when the operation ends: `startBackend` aborts its `/health` polling once the backend is healthy or has exited.
+
+Recompute and publishing live in `core/host-sync.ts` (no Electron imports, unit-tested); `main/index.ts:updateAppState()` reads AppState, manages watchers and calls `hostSync.recompute()`.
+
+### Agent Status
+
+Host owns the AI-client status (`AgentInfo[]`, `core/agent-status.ts`); the tray severity and the "AI Агенты" page both use the stored value, and the page never detects on its own. Detection is a check of Host's own setup, not monitoring. The status changes only:
+
+1. when Host-owned inputs change — DuetData path, backend port, deployed backend `VERSION`, including the first recompute after Host starts (one detection per launch);
+2. when Host configures clients itself (startup auto-configure, post-deploy configure, "Настроить все"): the result is stored with the inputs captured before the operation; if they changed meanwhile, the snapshot is marked stale and the next recompute detects once for the current inputs;
+3. after a successful `agents:fix-issue`;
+4. on the "Check" button (`agents:refresh`).
+
+The inputs are a refresh-policy key, not a full fingerprint: detection also reads `duet.md`, client config files and the bridge/venv. Host does not watch client files, so an edit made outside Host (by the user or a client update) shows only after "Check". This is deliberate: watching would trade a rare manual check for permanent background work.
 
 ### Deploy Service
 
@@ -226,13 +255,13 @@ Host is the single owner of backend process lifecycle (start, stop, health monit
 
 **Status:** `getBackendStatus(duetDataPath, port)` → `BackendStatus` (stopped | starting | running | stopping | error).
 
-**File watcher:** `main/index.ts` watches `DuetData/data/` via `fs.watch` (debounce 500ms). Detects external changes (Backend scan/merge) and triggers `updateAppState()` → tray icon refresh. Lifecycle managed by `updateAppState()`: starts when `duetDataPath` appears, restarts on path change, retries when `data/` directory appears after deploy. Stopped on quit. Non-critical: silently handles missing directory or watch errors.
+**File watcher:** `main/index.ts` watches `DuetData/data/` via `fs.watch` (debounce 500ms). Detects external changes (Backend scan/merge) and triggers `updateAppState()`, which refreshes the tray and publishes the cached scan when it changed (`root-contexts:scan-changed`). Lifecycle managed by `updateAppState()`: starts when `duetDataPath` appears, restarts on path change, retries when `data/` directory appears after deploy. Stopped on quit. Non-critical: silently handles missing directory or watch errors.
 
 **Auto-start on startup:** when `status === 'ready'` and VERSION file exists (`readDeployedVersion() !== null`) → `ensureBackendRunning()`. Deploy warnings (channel mismatch, stale version) do NOT block auto-start — backend is functional with warnings.
 
 **Auto-scan on startup:** after backend auto-start succeeds, if `root_context_folders` is non-empty and `readCachedScan()` returns `null` (scan never ran) → `triggerScan(port)`. Populates sidebar status for wizard step 4 without manual visit.
 
-**Auto-configure agents on startup:** after backend auto-start and auto-scan, if `readCachedErrors()` returns `null` (merge never ran) → `await configureAllAgents()`. The merge runs inside `configureAllAgents()` (it calls `triggerMerge()` first, then deploys). Both auto-scan and auto-configure finish with a single `updateAppState()` call.
+**Auto-configure agents on startup:** after backend auto-start and auto-scan, if `readCachedErrors()` returns `null` (merge never ran) → `await configureAllAgents()`. The merge runs inside `configureAllAgents()` (it calls `triggerMerge()` first, then deploys). Its result becomes the stored agent status (see Agent Status). Both auto-scan and auto-configure finish with a single `updateAppState()` call.
 
 **Auto-start after deploy:** `runDeploy()` calls `startBackend()` after writing VERSION.
 
@@ -472,9 +501,9 @@ Level 4: Tray
 | 2 (Python) | AppState (`pythonPath` from machine.json) | `null` or `ok` |
 | 3 (Backend) | DeployStatus + `hasDeployWarning` | `null` (not deployed), `warning` (mismatch/stale), or `ok` |
 | 4 (Workspaces) | Cached `scan.json` (errors count, severity per code) | `error` (broken manifests) / `warning` (collisions) / `ok` |
-| 5 (AI Agents) | Agent detection (needs_setup vs configured) | `warning` (works but not configured) or `ok` |
+| 5 (AI Agents) | Stored agent status (Behaviors → Agent Status): needs_setup vs configured | `warning` (works but not configured) or `ok` |
 
-Pages 4-5 also report status dynamically via `onStatusChange` callbacks, which override computed values.
+Pages 1–4 also report status dynamically via `onStatusChange` callbacks, which override computed values. `App` gives each page one stable callback and ignores a report equal to the current one; otherwise a page effect that depends on the callback and reports on every run renders `App` in a loop with no event at all (Behaviors → Idle). Page 5 (AI Agents) reports nothing: its status is computed from the stored agent status only.
 
 **Key functions** (all pure, in `core/wizard-status.ts`):
 - `maxSeverity(severities[])` — pick highest (error > warning > null). Single aggregation primitive for all levels.
@@ -482,13 +511,14 @@ Pages 4-5 also report status dynamically via `onStatusChange` callbacks, which o
 - `processStateToSeverity(state)` — error→error, rest→null.
 - `getSettingsSeverity(statuses)` — aggregate all wizard pages.
 
-**Tray integration** in `main/index.ts`:
+**Tray integration** in `core/host-sync.ts:recompute()`, called by `main/index.ts:updateAppState()`:
 - `deploySeverity` — from `isDeployWarning()` (VERSION mismatch → warning).
 - `settingsSeverity` — from `getSettingsSeverity(computePageStatuses(...))`.
 - `overallSeverity = maxSeverity([deploySeverity, settingsSeverity])`.
-- `updateTrayIcon(appStatus, overallSeverity)` — AppStatus != ready forces warning; otherwise uses severity.
+- `updateTrayIcon(appStatus, overallSeverity)` — AppStatus != ready forces warning; otherwise uses severity. An update identical to the current icon and tooltip is skipped (Behaviors → Idle).
+- The agents input of `computePageStatuses` is the stored agent status (Behaviors → Agent Status); recompute never detects agents unless the Host-owned inputs changed.
 
-Implementation: `core/wizard-status.ts`, `platform/tray.ts`.
+Implementation: `core/wizard-status.ts`, `core/host-sync.ts`, `platform/tray.ts`.
 
 ## Engineering
 
@@ -532,7 +562,7 @@ npm run typecheck    # tsc
 
 | Suite | Files | What |
 |-------|-------|------|
-| Unit | `__tests__/unit/core/`, `__tests__/unit/shared/`, `__tests__/unit/renderer/` | core-flow, config, app-state, deploy, backend, apps, ai-clients, instructions, root-contexts, schema-migrations, wizard-status, mappers, navigation |
+| Unit | `__tests__/unit/core/`, `__tests__/unit/main/`, `__tests__/unit/platform/`, `__tests__/unit/shared/`, `__tests__/unit/renderer/` | core-flow, config, app-state, deploy, backend, backend start, apps, ai-clients, agent-status, host-sync, instructions, root-contexts, schema-migrations, wizard-status, agents IPC, user-name IPC, preload channels, Idle structure, tray updates, App idle (jsdom), mappers, navigation |
 | E2E | Disabled (CI) | WebdriverIO, monorepo symlink issues |
 
 **Testability:**
@@ -541,7 +571,8 @@ npm run typecheck    # tsc
 |--------|--------------------------|
 | `core/config.ts` | Yes — pure fs, env override via `DUET_CONFIG_FILE` |
 | `core/app-state.ts` | Yes — pure functions, depends only on config + fs |
-| `platform/tray.ts` | No — requires Electron (manual testing) |
+| `core/agent-status.ts`, `core/host-sync.ts` | Yes — dependencies injected, no Electron imports |
+| `platform/tray.ts` | Update logic with a mocked `electron`; icons and menu need manual testing |
 | `main/window.ts` | No — requires Electron |
 
 ### File Map
@@ -553,11 +584,13 @@ npm run typecheck    # tsc
 | VERSION metadata parsing + writing | `core/deploy.ts` (`parseVersionMeta`, `writeVersion`, `readBuildSha`) |
 | Deploy warning logic (channel-aware) | `core/deploy.ts:isDeployWarning()` |
 | Pointer file path / machine config | `core/config.ts` |
-| What triggers tray icon change | `main/index.ts:updateAppState()` |
+| What triggers tray icon change | `main/index.ts:updateAppState()` → `core/host-sync.ts:recompute()` |
+| Who owns the agent status, when it is detected | `core/agent-status.ts`, `core/host-sync.ts` (Behaviors → Agent Status) |
+| Why a push is skipped | `core/host-sync.ts:createChangeGate()` (Behaviors → Idle) |
 | How IPC channels are registered | `main/ipc-handlers.ts:setupIpcHandlers()` |
 | What renderer exposes to pages | `preload/index.ts` (window.api shape) |
 | Page status computation | `core/wizard-status.ts:computePageStatuses()` |
-| How pages override computed status | `renderer/src/App.tsx` (pageStatuses + createStatusCallback) |
+| How pages override computed status | `renderer/src/App.tsx` (pageStatuses + statusCallbacks) |
 | Severity icons (unified) | `renderer/src/components/ui/severity-icon.tsx` |
 | Status table for pages | `renderer/src/components/ui/status-table.tsx` |
 | Tray icon file selection (per platform) | `platform/tray.ts:getTrayIconPath()` |

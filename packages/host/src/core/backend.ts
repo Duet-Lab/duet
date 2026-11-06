@@ -104,11 +104,13 @@ export const appendBackendLog = (
  */
 export const checkHealth = async (
   port: number,
-  timeoutMs: number = HEALTH_TIMEOUT_MS
+  timeoutMs: number = HEALTH_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<HealthResponse | null> => {
   try {
+    const timeout = AbortSignal.timeout(timeoutMs)
     const response = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout
     })
     if (!response.ok) return null
     const data = await response.json()
@@ -131,15 +133,21 @@ export const checkHealth = async (
 /**
  * Ждёт, пока бэкенд станет healthy.
  * Поллит GET /health с задержкой между попытками.
+ *
+ * `signal` stops polling, including a request in flight: a caller that no longer needs the
+ * answer must not leave requests and timers running (Idle contract, COMPONENT.md).
  */
 export const waitForHealth = async (
   port: number,
   retries: number = HEALTH_RETRY_COUNT,
-  delayMs: number = HEALTH_RETRY_DELAY_MS
+  delayMs: number = HEALTH_RETRY_DELAY_MS,
+  signal?: AbortSignal
 ): Promise<HealthResponse | null> => {
   for (let i = 0; i < retries; i++) {
-    if (i > 0) await sleep(delayMs)
-    const health = await checkHealth(port)
+    if (signal?.aborted) return null
+    if (i > 0) await sleep(delayMs, signal)
+    if (signal?.aborted) return null
+    const health = await checkHealth(port, HEALTH_TIMEOUT_MS, signal)
     if (health) return health
   }
   return null
@@ -196,11 +204,17 @@ export const startBackend = async (duetDataPath: string, port: number): Promise<
     proc.on('exit', () => resolve(null))
   })
 
-  // Race: health polling vs early process death
-  const health = await Promise.race([
-    waitForHealth(port),
-    earlyExit
-  ])
+  // Race: health polling vs early process death. Whichever wins, stop the polling.
+  const polling = new AbortController()
+  let health: HealthResponse | null
+  try {
+    health = await Promise.race([
+      waitForHealth(port, HEALTH_RETRY_COUNT, HEALTH_RETRY_DELAY_MS, polling.signal),
+      earlyExit
+    ])
+  } finally {
+    polling.abort()
+  }
 
   if (!health) {
     // Timeout case (process still alive) vs crash case (died on its own)
@@ -314,8 +328,18 @@ export const getBackendStatus = async (
 // HELPERS
 // =============================================================================
 
-export const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
+/** Wait `ms`; an aborted `signal` ends the wait at once and clears its timer. */
+export const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) return resolve()
+    const timer = setTimeout(done, ms)
+    function done(): void {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    signal?.addEventListener('abort', done, { once: true })
+  })
 
 /**
  * Ждёт завершения child process с таймаутом.

@@ -95,6 +95,8 @@ Each wizard page:
 - Calls `window.api.*` directly for its own IPC operations.
 - Manages its own local state (no state lifting to `App.tsx`).
 
+**Exception — Step 5 (AI Агенты).** The agent status is owned by main ([COMPONENT.md → Agent Status](COMPONENT.md)) and lifted into `App.tsx`: `App` reads it once on mount (`agents:get`), follows `agents:status-changed`, and passes it to the page as the `agents` prop. The page keeps no copy, never detects on its own and has no `onStatusChange`; its sidebar status comes from `computePageStatuses()` over the same list. `App` likewise reads the cached scan once and follows `root-contexts:scan-changed`. No page or `App` effect re-requests data on every `appState` update; a targeted reaction to one changed input is fine ([COMPONENT.md → Idle](COMPONENT.md)). `App` gives each page one stable `onStatusChange` and ignores a report equal to the current one, so the window settles after it loads.
+
 Pointer saves use partial updates: each page passes only its field(s) to `savePointer`, others are preserved.
 
 ### Step Details
@@ -109,7 +111,7 @@ The user-name field follows “Машина” and behaves like it: it starts fr
 
 **Step 4 — Воркспейсы.** Manual Scan button + results. Shows entity tree from cached `contexts.json` (built via `parent_id`, with icons and types). Error table is informational — scanner auto-heals collisions and missing manifests, errors are notifications with file paths. No Fix buttons for scan errors. If no root contexts configured, shows message directing user to step 1.
 
-**Step 5 — AI Агенты.** "Настроить все" button runs merge→configure in one action (`configureAllAgents()` merges the bundled platform instructions, then deploys to the AI clients). Agent cards show checked files list and issues. Fix button for fixable issues (e.g. `additionalDirectories`). Not-found agents show description + clickable install link (Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop). No `dark:` classes (light-only theme).
+**Step 5 — AI Агенты.** "Настроить все" button runs merge→configure in one action (`configureAllAgents()` merges the bundled platform instructions, then deploys to the AI clients). "Check" detects the clients again (`agents:refresh`); it is the only way to see client edits made outside Host, which Host does not watch. Until Host has determined the status (`agents === null`), the page says so and offers "Check". Agent cards show checked files list and issues. Fix button for fixable issues (e.g. `additionalDirectories`). Not-found agents show description + clickable install link (Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop). No `dark:` classes (light-only theme).
 
 ## Apps Tab
 

@@ -84,7 +84,9 @@ export interface DuetAPI {
   onBackendStatusChanged: (callback: (status: BackendStatus) => void) => () => void
 
   // AI Agents
-  getAgents: () => Promise<AgentInfo[]>
+  getAgents: () => Promise<AgentInfo[] | null>
+  refreshAgents: () => Promise<AgentInfo[] | null>
+  onAgentsChanged: (callback: (agents: AgentInfo[] | null) => void) => () => void
   configureAgents: () => Promise<AgentInfo[]>
   fixAgentIssue: (agentId: string, reasonCode: string) => Promise<boolean>
 
@@ -94,6 +96,7 @@ export interface DuetAPI {
   addRootContextFolder: (absolutePath: string) => Promise<RootContextEntry[]>
   scanContexts: () => Promise<ScanResult>
   getCachedScan: () => Promise<ScanResult | null>
+  onScanChanged: (callback: (scan: ScanResult | null) => void) => () => void
   getCachedContexts: () => Promise<ContextsCache | null>
 
   // Schema migrations

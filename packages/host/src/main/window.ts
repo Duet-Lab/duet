@@ -97,15 +97,6 @@ export const showWindow = (appState: AppState): void => {
 }
 
 /**
- * Отправляет app state в renderer если окно существует.
- */
-export const sendAppState = (appState: AppState): void => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('app-state-changed', appState)
-  }
-}
-
-/**
  * Возвращает текущее окно.
  */
 export const getMainWindow = (): BrowserWindow | null => mainWindow

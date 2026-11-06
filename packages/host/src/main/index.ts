@@ -47,10 +47,11 @@ import {
 } from '../core/schema-migrations'
 import { readCachedErrors } from '../core/instructions'
 import { detectAgents, configureAllAgents } from '../core/ai-clients'
-import { computePageStatuses, getSettingsSeverity, maxSeverity } from '../core/wizard-status'
-import type { DeployStatus, MigrationResult, Severity } from '../shared/types'
+import { createChangeGate, createHostSync } from '../core/host-sync'
+import { runPostStartSetup } from '../core/startup-setup'
+import type { DeployStatus, MigrationResult } from '../shared/types'
 import { createTray, updateTrayIcon } from '../platform/tray'
-import { showWindow, sendAppState, setQuitting } from './window'
+import { showWindow, setQuitting } from './window'
 import { setupIpcHandlers, ensureBackendRunning, ensureBackendStopped } from './ipc-handlers'
 
 // =============================================================================
@@ -73,11 +74,27 @@ export const setCurrentDeployStatus = (status: DeployStatus): void => {
 
 let currentMigrationStatus: MigrationResult = { ...EMPTY_MIGRATION_RESULT }
 
-function broadcastMigrationStatus(status: MigrationResult): void {
+/** Send a payload to every open window. */
+function publishToWindows(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('migrations:status-changed', status)
+    win.webContents.send(channel, payload)
   }
 }
+
+// Same idle contract as host-sync: a sweep that finds nothing new publishes nothing.
+const broadcastMigrationStatus = createChangeGate((status) =>
+  publishToWindows('migrations:status-changed', status)
+)
+
+const hostSync = createHostSync({
+  readPort,
+  readDeployedVersion,
+  readCachedScan,
+  detectAgents,
+  configureAgents: configureAllAgents,
+  publish: publishToWindows,
+  updateTray: updateTrayIcon
+})
 
 /**
  * Полный startup-sweep: settings → machine → manifests. См. core/schema-migrations.
@@ -199,10 +216,8 @@ function startDataWatcher(duetDataPath: string): void {
   try {
     dataWatcher = watch(dataDir, { persistent: false }, () => {
       if (debounceTimer) clearTimeout(debounceTimer)
-      debounceTimer = setTimeout(() => {
-        updateAppState()
-        sendAppState(appState)
-      }, 500)
+      // updateAppState publishes the fresh scan and state when they changed.
+      debounceTimer = setTimeout(updateAppState, 500)
     })
     dataWatcher.on('error', () => {
       // Directory deleted or inaccessible — stop watching silently
@@ -384,31 +399,13 @@ const updateAppState = (): void => {
     currentDeployStatus = resolveDeployStatus(appState, app.getVersion(), currentDeployStatus)
   }
 
-  // Compute wizard severity from cached data (all fs reads, cheap)
-  let settingsSeverity: Severity | null = null
-  if (appState.status === 'ready' && appState.duetDataPath) {
-    try {
-      const port = readPort()
-      const statuses = computePageStatuses({
-        appState,
-        deployStatus: currentDeployStatus,
-        cachedScan: readCachedScan(appState.duetDataPath),
-        agents: detectAgents(appState.duetDataPath, port),
-        hasDeployWarning,
-        migrationStatus: currentMigrationStatus
-      })
-      settingsSeverity = getSettingsSeverity(statuses)
-    } catch {
-      // Port not configured yet, or other issue — don't fail updateAppState
-    }
-  }
-
-  // Deploy warning feeds into tray even when step statuses can't be computed
-  const deploySeverity: Severity | null = hasDeployWarning ? 'warning' : null
-
-  const overallSeverity = maxSeverity([deploySeverity, settingsSeverity])
-  updateTrayIcon(appState.status, overallSeverity)
-  sendAppState(appState)
+  // Tray severity, agent status and window data; publishes only what changed.
+  hostSync.recompute({
+    appState,
+    deployStatus: currentDeployStatus,
+    hasDeployWarning,
+    migrationStatus: currentMigrationStatus
+  })
 }
 
 // =============================================================================
@@ -462,7 +459,8 @@ if (gotTheLock) {
       updateAppState,
       setDeployStatus: setCurrentDeployStatus,
       runMigrations: runMigrationsNow,
-      getMigrationStatus: () => currentMigrationStatus
+      getMigrationStatus: () => currentMigrationStatus,
+      agents: hostSync
     })
 
     // Создаём tray
@@ -507,32 +505,17 @@ if (gotTheLock) {
     ) {
       const duetDataPath = appState.duetDataPath
       ensureBackendRunning(duetDataPath, currentMigrationStatus)
-        .then(async () => {
-          const port = readPort()
-
-          // Auto-scan root contexts if configured and scan never ran
-          if (getRootContextFolders().length > 0 && readCachedScan(duetDataPath) === null) {
-            try {
-              await triggerScan(port)
-            } catch (e) {
-              console.error('Auto-scan root contexts failed:', e)
-            }
-          }
-
-          // Auto-configure agents if never configured (merge runs inside
-          // configureAllAgents from the bundled platform sources — no external
-          // instructions workspace). Upgrades are covered by the post-deploy
-          // configure in the deploy handler; this is the fresh-install safety net.
-          if (readCachedErrors(duetDataPath) === null) {
-            try {
-              await configureAllAgents(duetDataPath, port)
-            } catch (e) {
-              console.error('Auto-configure agents failed:', e)
-            }
-          }
-
-          updateAppState()
-        })
+        .then(() =>
+          runPostStartSetup(duetDataPath, {
+            readPort,
+            hasRootContexts: () => getRootContextFolders().length > 0,
+            readCachedScan,
+            triggerScan,
+            readCachedErrors,
+            configureAgents: hostSync.configureAgents,
+            updateAppState
+          })
+        )
         .catch((err) => {
           console.error('Auto-start backend failed:', err)
         })

@@ -2,8 +2,12 @@
  * Шаг 7: AI Агенты — обнаружение и конфигурация AI клиентов.
  * Пять карточек (Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop) + кнопка "Настроить все".
  * Не установленный клиент = skipped (не ошибка).
+ *
+ * The page keeps no copy of the status and never detects on its own: main owns the status
+ * (core/host-sync.ts) and App passes it down. The "Check" button is the only way to see
+ * client edits made outside Host.
  */
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import {
   Bot,
@@ -13,50 +17,26 @@ import {
   SkipForward,
   Settings2,
   Loader2,
+  RefreshCw,
   Wrench,
   ExternalLink
 } from 'lucide-react'
 import type { AgentInfo, AgentIssue } from '../../../../preload/index.d'
-import type { PageStatus } from '../../../../core/wizard-status'
 
 interface WizardAgentsPageProps {
-  onStatusChange: (status: PageStatus) => void
+  /** Status stored by main; null until Host has determined it. */
+  agents: AgentInfo[] | null
 }
 
-export function WizardAgentsPage({ onStatusChange }: WizardAgentsPageProps): React.ReactElement {
-  const [agents, setAgents] = useState<AgentInfo[]>([])
-  const [loading, setLoading] = useState(true)
+export function WizardAgentsPage({ agents }: WizardAgentsPageProps): React.ReactElement {
   const [configuring, setConfiguring] = useState(false)
+  const [checking, setChecking] = useState(false)
 
-  useEffect(() => {
-    if (!window.api) return
-    window.api
-      .getAgents()
-      .then((result) => {
-        setAgents(result)
-        updateStatus(result)
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const updateStatus = (agentList: AgentInfo[]): void => {
-    const found = agentList.filter((a) => a.status !== 'not_found')
-    if (found.length === 0) {
-      onStatusChange('skipped')
-    } else if (found.some((a) => a.status === 'needs_setup')) {
-      onStatusChange('warning')
-    } else {
-      onStatusChange('ok')
-    }
-  }
-
+  // Each action updates the status in main, which pushes the new status back through App.
   const handleConfigure = async (): Promise<void> => {
     setConfiguring(true)
     try {
-      const result = await window.api.configureAgents()
-      setAgents(result)
-      updateStatus(result)
+      await window.api.configureAgents()
     } catch (e) {
       console.error('Configure failed:', e)
     } finally {
@@ -64,21 +44,26 @@ export function WizardAgentsPage({ onStatusChange }: WizardAgentsPageProps): Rea
     }
   }
 
+  const handleCheck = async (): Promise<void> => {
+    setChecking(true)
+    try {
+      await window.api.refreshAgents()
+    } catch (e) {
+      console.error('Agent check failed:', e)
+    } finally {
+      setChecking(false)
+    }
+  }
+
   const handleFixIssue = async (agentId: string, issue: AgentIssue): Promise<void> => {
     try {
-      const fixed = await window.api.fixAgentIssue(agentId, issue.reason_code)
-      if (fixed) {
-        // Re-detect to refresh status
-        const result = await window.api.getAgents()
-        setAgents(result)
-        updateStatus(result)
-      }
+      await window.api.fixAgentIssue(agentId, issue.reason_code)
     } catch (e) {
       console.error('Fix issue failed:', e)
     }
   }
 
-  const hasFoundAgents = agents.some((a) => a.status !== 'not_found')
+  const hasFoundAgents = (agents ?? []).some((a) => a.status !== 'not_found')
 
   return (
     <div className="space-y-6">
@@ -93,36 +78,51 @@ export function WizardAgentsPage({ onStatusChange }: WizardAgentsPageProps): Rea
       </div>
 
       <div className="bg-card rounded-xl border border-border p-6 space-y-4">
-        {loading ? (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 size={16} className="animate-spin" />
-            Поиск AI клиентов...
-          </div>
+        {agents === null ? (
+          <p className="text-sm text-muted-foreground">
+            Status not determined yet. Click &ldquo;Check&rdquo;.
+          </p>
         ) : (
-          <>
-            <div className="space-y-3">
-              {agents.map((agent) => (
-                <AgentCard key={agent.id} agent={agent} onFixIssue={handleFixIssue} />
-              ))}
-            </div>
-
-            {hasFoundAgents && (
-              <Button className="w-full" onClick={handleConfigure} disabled={configuring}>
-                {configuring ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    Настраиваю...
-                  </>
-                ) : (
-                  <>
-                    <Settings2 size={16} />
-                    Настроить все
-                  </>
-                )}
-              </Button>
-            )}
-          </>
+          <div className="space-y-3">
+            {agents.map((agent) => (
+              <AgentCard key={agent.id} agent={agent} onFixIssue={handleFixIssue} />
+            ))}
+          </div>
         )}
+
+        {hasFoundAgents && (
+          <Button className="w-full" onClick={handleConfigure} disabled={configuring}>
+            {configuring ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Настраиваю...
+              </>
+            ) : (
+              <>
+                <Settings2 size={16} />
+                Настроить все
+              </>
+            )}
+          </Button>
+        )}
+
+        <Button variant="outline" className="w-full" onClick={handleCheck} disabled={checking}>
+          {checking ? (
+            <>
+              <Loader2 size={16} className="animate-spin" />
+              Checking...
+            </>
+          ) : (
+            <>
+              <RefreshCw size={16} />
+              Check
+            </>
+          )}
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          The status updates when Duet configures the clients. If you changed or updated a
+          client&apos;s settings yourself, click &ldquo;Check&rdquo;.
+        </p>
       </div>
 
       {/* Help */}

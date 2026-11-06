@@ -34,7 +34,12 @@ describe('user-name IPC', () => {
       updateAppState: vi.fn(),
       setDeployStatus: vi.fn(),
       runMigrations: vi.fn(),
-      getMigrationStatus: () => ({ critical: null, contextErrors: [], migratedCount: 0 })
+      getMigrationStatus: () => ({ critical: null, contextErrors: [], migratedCount: 0 }),
+      agents: {
+        getAgents: () => null,
+        refreshAgents: () => null,
+        configureAgents: vi.fn()
+      }
     }
     handlers.clear()
     setupIpcHandlers(context)

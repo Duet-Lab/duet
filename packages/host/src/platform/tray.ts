@@ -99,6 +99,9 @@ export const createTrayImage = (severity: Severity | null): Electron.NativeImage
 
 let tray: Tray | null = null
 
+/** Icon and tooltip last applied by updateTrayIcon; an identical update is skipped. */
+let lastApplied: string | null = null
+
 /**
  * Создаёт tray с контекстным меню.
  */
@@ -106,6 +109,7 @@ export const createTray = (status: AppStatus, callbacks: TrayCallbacks): Tray =>
   const severity: Severity | null = status !== 'ready' ? 'warning' : null
   tray = new Tray(createTrayImage(severity))
   tray.setToolTip(TRAY_TOOLTIPS[status])
+  lastApplied = JSON.stringify([severity, TRAY_TOOLTIPS[status]])
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -154,13 +158,17 @@ export const updateTrayIcon = (status: AppStatus, severity: Severity | null): vo
   // AppStatus errors override external severity
   const effectiveSeverity: Severity | null = status !== 'ready' ? 'warning' : severity
 
-  const image = createTrayImage(effectiveSeverity)
-  tray.setImage(image)
-
   const tooltip =
     status === 'ready' && effectiveSeverity
       ? SEVERITY_TOOLTIPS[effectiveSeverity]
       : TRAY_TOOLTIPS[status]
+
+  // Redrawing an unchanged icon still costs the menu bar a repaint (Idle contract).
+  const applied = JSON.stringify([effectiveSeverity, tooltip])
+  if (applied === lastApplied) return
+  lastApplied = applied
+
+  tray.setImage(createTrayImage(effectiveSeverity))
   tray.setToolTip(tooltip)
 }
 

@@ -117,7 +117,20 @@ const api = {
 
   // === AI Agents ===
 
-  getAgents: (): Promise<AgentInfo[]> => ipcRenderer.invoke('agents:detect'),
+  // Stored status, no detection; null until Host has determined it.
+  getAgents: (): Promise<AgentInfo[] | null> => ipcRenderer.invoke('agents:get'),
+
+  refreshAgents: (): Promise<AgentInfo[] | null> => ipcRenderer.invoke('agents:refresh'),
+
+  onAgentsChanged: (callback: (agents: AgentInfo[] | null) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, agents: AgentInfo[] | null): void => {
+      callback(agents)
+    }
+    ipcRenderer.on('agents:status-changed', handler)
+    return () => {
+      ipcRenderer.removeListener('agents:status-changed', handler)
+    }
+  },
 
   configureAgents: (): Promise<AgentInfo[]> => ipcRenderer.invoke('agents:configure'),
 
@@ -138,6 +151,16 @@ const api = {
 
   getCachedScan: (): Promise<ScanResult | null> =>
     ipcRenderer.invoke('root-contexts:get-cached-scan'),
+
+  onScanChanged: (callback: (scan: ScanResult | null) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, scan: ScanResult | null): void => {
+      callback(scan)
+    }
+    ipcRenderer.on('root-contexts:scan-changed', handler)
+    return () => {
+      ipcRenderer.removeListener('root-contexts:scan-changed', handler)
+    }
+  },
 
   getCachedContexts: (): Promise<ContextsCache | null> =>
     ipcRenderer.invoke('root-contexts:get-cached-contexts'),

@@ -27,7 +27,8 @@ import {
   pythonInstallHint
 } from '../core/deploy'
 import { appendBackendLog, getBackendStatus, startBackend, stopBackend } from '../core/backend'
-import { detectAgents, configureAllAgents, fixAgentIssue } from '../core/ai-clients'
+import { fixAgentIssue } from '../core/ai-clients'
+import type { HostSync } from '../core/host-sync'
 import {
   addRootContextFolder,
   getResolvedRootContextFolders,
@@ -37,6 +38,7 @@ import {
   readCachedContexts
 } from '../core/root-contexts'
 import type {
+  AgentInfo,
   AppState,
   RootContextEntry,
   DeployStatus,
@@ -60,6 +62,8 @@ export interface IpcHandlersContext {
   runMigrations: () => Promise<MigrationResult>
   /** Прочитать кешированный результат последней миграции. */
   getMigrationStatus: () => MigrationResult
+  /** Owner of the agent status (see core/host-sync.ts). */
+  agents: Pick<HostSync, 'getAgents' | 'refreshAgents' | 'configureAgents'>
 }
 
 let deployStatus: DeployStatus = { state: 'idle' }
@@ -345,7 +349,7 @@ export const setupIpcHandlers = (context: IpcHandlersContext): void => {
       // backend running (merge is an HTTP call) — skip if it didn't start.
       if (proc) {
         try {
-          await configureAllAgents(state.duetDataPath, port)
+          await context.agents.configureAgents(state.duetDataPath, port)
         } catch (e) {
           sendDeployLog(
             `Конфигурация агентов после деплоя не удалась: ${e instanceof Error ? e.message : String(e)}`
@@ -445,27 +449,31 @@ export const setupIpcHandlers = (context: IpcHandlersContext): void => {
 
   // === AI Agents ===
 
-  ipcMain.handle('agents:detect', () => {
-    const state = context.getAppState()
-    if (!state.duetDataPath) return []
-    const port = readPort()
-    const result = detectAgents(state.duetDataPath, port)
-    context.updateAppState() // Refresh tray icon (agents severity may change)
-    return result
+  // A read: no detection, no state refresh, no publishing (Idle contract, COMPONENT.md).
+  ipcMain.handle('agents:get', (): AgentInfo[] | null => context.agents.getAgents())
+
+  // The explicit "Check" button: the only way to see client edits made outside Host.
+  ipcMain.handle('agents:refresh', (): AgentInfo[] | null => {
+    context.agents.refreshAgents()
+    context.updateAppState()
+    return context.agents.getAgents()
   })
 
   ipcMain.handle('agents:configure', async () => {
     const state = context.getAppState()
     if (!state.duetDataPath) return []
     const port = readPort()
-    const result = await configureAllAgents(state.duetDataPath, port)
+    const result = await context.agents.configureAgents(state.duetDataPath, port)
     context.updateAppState()
     return result
   })
 
   ipcMain.handle('agents:fix-issue', (_event, agentId: string, reasonCode: string): boolean => {
     const fixed = fixAgentIssue(agentId, reasonCode)
-    if (fixed) context.updateAppState()
+    if (fixed) {
+      context.agents.refreshAgents()
+      context.updateAppState()
+    }
     return fixed
   })
 

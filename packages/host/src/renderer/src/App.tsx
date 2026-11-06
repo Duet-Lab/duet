@@ -2,7 +2,7 @@
  * Корневой React-компонент приложения.
  * Управляет навигацией, AppState, и вычислением статусов шагов визарда.
  */
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Layout } from './components/layout/Layout'
 import { DuetPathsPage } from './pages/wizard/DuetPathsPage'
 import { PythonPage } from './pages/wizard/PythonPage'
@@ -42,13 +42,22 @@ function App(): React.JSX.Element {
 
   const backendProcessStatus: ProcessStatus = backendStatusToProcessStatus(backendStatus)
 
-  // Page status update callback — passed to wizard pages
-  const createStatusCallback = useCallback(
-    (page: WizardPage) => (status: PageStatus) => {
-      setPageStatuses((prev) => ({ ...prev, [page]: status }))
-    },
-    []
-  )
+  // One stable status callback per page. Pages list it in effect dependencies, so a new
+  // function on every render re-runs their effects, and a new pageStatuses object on every
+  // call renders App again: a render loop that needs no event at all (Idle contract).
+  const statusCallbacks = useMemo(() => {
+    const forPage =
+      (page: WizardPage) =>
+      (status: PageStatus): void => {
+        setPageStatuses((prev) => (prev[page] === status ? prev : { ...prev, [page]: status }))
+      }
+    return {
+      'duet-paths': forPage('duet-paths'),
+      python: forPage('python'),
+      backend: forPage('backend'),
+      workspaces: forPage('workspaces')
+    }
+  }, [])
 
   // ==========================================================================
   // Subscriptions
@@ -85,14 +94,20 @@ function App(): React.JSX.Element {
     }
   }, [])
 
-  // Load cached data for steps 5-7 whenever appState updates
-  // (covers both initial mount and post-auto-scan/merge refreshes via sendAppState)
+  // Scan and agent status: read once on mount, then pushed by main only when they change.
+  // Never re-request them on an appState update: that turns a push into a read→push loop.
   useEffect(() => {
-    if (!window.api || !appState || appState.status !== 'ready') return
+    if (!window.api) return
 
     window.api.getCachedScan().then(setCachedScan).catch(console.error)
+    const unsubScan = window.api.onScanChanged(setCachedScan)
     window.api.getAgents().then(setCachedAgents).catch(console.error)
-  }, [appState]) // eslint-disable-line react-hooks/exhaustive-deps
+    const unsubAgents = window.api.onAgentsChanged(setCachedAgents)
+    return () => {
+      unsubScan()
+      unsubAgents()
+    }
+  }, [])
 
   // Migration status — fetched on mount and refreshed via push channel from main.
   // Push covers cases where main triggers a sweep but doesn't ship a fresh AppState
@@ -190,19 +205,15 @@ function App(): React.JSX.Element {
   const renderPage = (): React.ReactNode => {
     switch (currentPage) {
       case 'duet-paths':
-        return (
-          <DuetPathsPage appState={appState} onStatusChange={createStatusCallback('duet-paths')} />
-        )
+        return <DuetPathsPage appState={appState} onStatusChange={statusCallbacks['duet-paths']} />
       case 'python':
-        return <PythonPage appState={appState} onStatusChange={createStatusCallback('python')} />
+        return <PythonPage appState={appState} onStatusChange={statusCallbacks.python} />
       case 'backend':
-        return <BackendPage appState={appState} onStatusChange={createStatusCallback('backend')} />
+        return <BackendPage appState={appState} onStatusChange={statusCallbacks.backend} />
       case 'workspaces':
-        return (
-          <WorkspacesPage appState={appState} onStatusChange={createStatusCallback('workspaces')} />
-        )
+        return <WorkspacesPage appState={appState} onStatusChange={statusCallbacks.workspaces} />
       case 'agents':
-        return <WizardAgentsPage onStatusChange={createStatusCallback('agents')} />
+        return <WizardAgentsPage agents={cachedAgents} />
       case 'app:duet-backend': {
         const app = BUILTIN_APPS.find((a) => a.id === 'duet-backend')!
         return (
