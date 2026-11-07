@@ -6,7 +6,7 @@ VS Code extension — tree views, commands, and workspace management as a thin c
 
 ## Purpose
 
-Extension has two jobs.
+Extension combines the following responsibilities.
 
 **A passive view over the entities that Backend exposes via HTTP.** Here it never writes config, never owns process lifecycle, never re-derives domain rules:
 
@@ -22,7 +22,7 @@ Extension has two jobs.
 7. Show the tickets of the window's business from `work/` and `backlog/` (Корзина view), open an intent from there, move a ticket between the two folders.
 8. Build the workspace file of an intent and give its window a colour and a pinned notepad; give the window of a business a colour by the same rules.
 
-This is an experiment (DUE017): only stock side-bar features, no UI of its own. Contracts: [Intents](#intents).
+The intent views use stock side-bar features. Contracts: [Intents](#intents).
 
 **A file tree of one ticket.** The «Рабочая папка» view (DUE018) shows the folder of the window's ticket the way Explorer shows the folder of a project, with what Explorer lacks — an order of rows set by hand — and it acts on the user's files:
 
@@ -31,7 +31,9 @@ This is an experiment (DUE017): only stock side-bar features, no UI of its own. 
 
 Contracts: [Work view](#work-view).
 
-What the Extension still never does: write `settings.json`, `{machine}.json` or a manifest, edit a ticket's `INDEX.md` (it only reads `parent`, `work-type`, `routine-type` and `icon` from it; the user may rename or trash it through «Рабочая папка» like any file), delete anything for good — a deletion goes to the system trash or does not happen. Root-context editing, schema migrations, AI client configuration live in Host. Extension's correct response to «I want to add a root context» is to direct the user to the Host wizard.
+**A local chat launcher.** The new-chat chooser opens provider-owned conversations in the current window, using bounded local history reads and a Codex preparation process with the full-access policy explicitly chosen by the user. It does not become a model chat client or own Backend lifecycle. Contracts: [Local chat chooser](#local-chat-chooser-due051).
+
+What the Extension still never does: write `settings.json`, `{machine}.json` or a manifest, edit a ticket's `INDEX.md` (it only reads `parent`, `work-type`, `routine-type` and `icon` from it; the user may rename or trash it through «Рабочая папка» like any file), delete user files for good — a deletion goes to the system trash or does not happen. Root-context editing, schema migrations, AI client configuration live in Host. Extension's correct response to «I want to add a root context» is to direct the user to the Host wizard.
 
 ## Architecture
 
@@ -119,6 +121,22 @@ Both providers are synchronous wrappers around a snapshot:
 - **КОНТЕКСТ view** (`ContextProvider`) works over the same `ContextEntity[]` and the window's folders; the tree is built by the pure function `core/tree/contextPanel.ts:buildContextPanel`. Which business is current and what the panel shows: [UI.md → КОНТЕКСТ](UI.md).
 
 **Tree order:** owned by Backend's `/contexts` response (see /spec/PRODUCT.md → Invariants). `core/tree/contextTree.ts` is a passive view that preserves API order and never re-sorts.
+
+## Local chat chooser (DUE051)
+
+`duet.chats.open` contributes a stock `editor/title` add button and a Command Palette entry, with no user-settings or keybinding changes. It reveals at most one unfinished chat-chooser webview (Russian label `Новый чат`) per window. The chooser shows only available `anthropic.claude-code` / `openai.chatgpt` extensions; neither available produces an explanatory empty state. Claude's opening actions are explicitly not connected in v1; its local history is still shown. User-facing labels, progress and Duet-generated errors follow the approved Russian mockup; provider diagnostics and saved conversation names are preserved as supplied. VS Code's public extension registry does not distinguish missing from disabled providers, so the empty state asks the user to install or enable them instead of claiming which condition applies.
+
+The window context comes from `IntentsRuntime.own`, not the selected sidebar row. `ChatScopeReader` reuses `readBusinessManifest` for the business name and `ticket_code`, and the existing backend context snapshot for other manifests. No backend route is added. Remote/virtual workspaces are unsupported. Session membership requires exact normalized cwd in the window's roots and an exact, case-insensitive whole ticket ID in the first human request (including program/routine forms). Without a current ticket, known ticket prefixes exclude ticketed chats; incomplete provenance/registry/metadata is not silently treated as an unticketed chat.
+
+`core/chats/sessions.ts` reads bounded local JSONL prefixes via FileSystem DI, caches summaries by mtime/size, formats known Claude command envelopes as readable slash-command titles without changing membership input, excludes subagents and unfinished Duet preparations, and never sends transcripts to a model. Codex's paginated `thread/list` supplies names/current metadata with explicit top-level source kinds and cwd filters; SQLite is not read. Display pagination does not limit the count. Both provider lists are ordered by session creation time descending, not file modification or last activity; unknown creation times sort last. The row timestamp shows creation time too. The number is count + 1 for this provider and scope only. Initial input is the exact ticket ID or the user-specified Russian text `Новый Чат`; the saved name is `<ticket or business name> (N)`.
+
+New Codex conversations use the selected `chatgpt.cliExecutable`, otherwise the installed extension's bundled platform executable, never PATH fallback. Its experimental schema is checked before creation. A separate stdio `codex app-server` receives experimental API opt-in and explicit business cwd, all runtime workspace roots, danger-full-access sandbox and approval policy never (the app-server equivalent of --dangerously-bypass-approvals-and-sandbox). The thread/start response verifies runtimeWorkspaceRoots at the top level, falling back to optional thread environments only if the primary field is absent. The first turn completes and `thread/name/set` persists the name before the process releases its writer and the shell opens `openai-codex://route/local/<id>` with `chatgpt.conversationEditor`. No client configuration is edited and editor continuation uses Codex's own settings. The full-access choice applies to preparation, including MCP calls, and the chooser states explicitly that the first message can change files without approval prompts. Interactive requests that still require user input are not answered on the user's behalf.
+
+The stock cancellable notification is visible immediately on the new-tab action, uses a neutral title with preparation/opening messages as changing stages, and shows no invented percentages. A disabled creation action has an adjacent explanation, tooltip and aria-describedby reference. Session creation times use relative Russian labels with the full local date/time in a tooltip. Unrelated extension registry changes do not cancel a running operation; loss of Codex availability or a workspace-root change does. Double clicks cannot create a second operation. Exact TabInputCustom URI/viewType establishes handoff; new names are checked with a bounded wait and the native title truncation rule. A title mismatch after handoff closes the chooser with a warning, not another creation or archive. Old native tabs may say "Codex" because the third-party title loader only queries its 50 newest interactive threads; saved names in the chooser remain available. Internal Codex renderer errors are not duplicated or inspected through a private DOM.
+
+A local journal under `ExtensionContext.globalStorageUri/chat-preparations/` stores only preparation IDs, scope hashes, names and phases. Cross-window number reservations use per-operation atomic local files with a non-waiting bakery protocol; dead processes and previous boots do not retain a reservation. Cancellation interrupts the owned turn, closes its transport and reversibly archives only its own unhanded preparation. Failed opening retains the same ID for explicit recovery or discard. A corrupt journal fails closed without deleting unknown data; the chooser names the exact record and directory, offers to reveal that directory, and explains that the record must be repaired or restored before refreshing. JSON-RPC error.message is shown as bounded plain text; stderr and raw error payloads are not displayed. Handoff is marked before disposing the chooser, so disposal never cancels/archives the native editor's writer. No transcript, settings or ticket content is written into the business folder.
+
+Logic and orchestration live in `core/chats/`; `vscode/chats/` supplies extension discovery, current window roots, progress, webview and native tab effects. CSP permits only nonce-tagged local inline code/styles; session text is inserted using textContent and incoming actions are checked against fresh context/catalog or the owned recovery journal. This feature owns only its child Codex process, never Backend or unrelated sessions.
 
 ## Surface
 

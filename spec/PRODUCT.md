@@ -463,6 +463,7 @@ Products and components are described by **single canonical spec files** — no 
 | `DuetData/intents/{program}/windows/*.json`, `DuetData/intents/{program}/active.json` | — | **writes** (each window its own marker; any window removes dead ones and writes the order) | — | — |
 | Ticket folders under `<business>/work/` and `<business>/backlog/` | — | **creates** one in `work/` — the «new ticket» button: the folder and its `INDEX.md`, nothing else; **moves** between the two; never deletes one; reads the listing, and the listing of `archive/` for the next number | — | create and move (work rules, not the platform) |
 | Ticket `INDEX.md` | — | reads frontmatter (`parent`, `work-type`, `routine-type`, `icon`) | — | **write** (work rules, not the platform) |
+| VS Code ExtensionContext.globalStorageUri/chat-preparations/*.json | — | **writes** local chat preparation IDs/phases and cross-window count reservations; no transcripts or client configuration | — | — |
 | Ticket `notepad.md` | — | **creates**; keeps its first-line heading (through the editor's document); the rest is the user's | — | — |
 | `<business>/.vscode/duet-intents.json` | — | **writes** (order of the bin, on drag only) | — | — |
 | `<business>/.vscode/duet-work-order/{number}.json` | — | **writes** (pinned rows of a ticket in «Рабочая папка»: on pin and unpin, on a drag among pinned rows, on a rename of a pinned row, on reset) | — | — |
@@ -473,6 +474,8 @@ Products and components are described by **single canonical spec files** — no 
 **Single-writer invariant** for `settings.json` and `{machine}.json` (see Invariants): Host is the only writer. Extension does not have its own write path to them; before any root context folder edit it must direct the user to Host.
 
 **What the Extension writes.** Everything it writes belongs to opening windows: the workspace files of contexts and intents, the window markers and the order of active intents in `DuetData/`, and — in the business folder on Drive — the notepad of a ticket, the order file of the bin, the move of a ticket folder between `backlog/` and `work/`, the folder of a new ticket with its `INDEX.md`, and the order file of a ticket's rows. Apart from opening windows it writes for one view: «Рабочая папка» keeps what is expanded in `DuetData/views/work/` and, on the user's own act, creates, renames, moves, copies and trashes files inside a ticket. Files in DuetData are written through a temporary file and a rename; files on Drive are written in place by a single write, because a sync client may turn a rename into a conflict copy. Contracts: [extension COMPONENT.md → Intents](../packages/extension/spec/COMPONENT.md#intents).
+
+The local chat chooser also writes preparation and number-reservation metadata under VS Code ExtensionContext.globalStorageUri. These machine-local files contain no transcripts or client configuration. Codex owns transcript persistence and reversible archival through its app-server protocol; Extension never edits those files directly. See [Extension → Local chat chooser](../packages/extension/spec/COMPONENT.md#local-chat-chooser-due051).
 
 ### Schema Migration Policy
 

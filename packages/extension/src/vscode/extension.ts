@@ -27,11 +27,13 @@ import { binTitle } from '../core/intents/naming';
 import { registerWorkView } from './work/registerWorkView';
 import { WorkView } from './work/WorkView';
 import { BusinessViews } from './intents/businessViews';
+import { ChatChooser } from './chats/ChatChooser';
 
 let backendOutputChannel: vscode.OutputChannel | null = null;
 let sidebarState: SidebarStateManager | null = null;
 let intentsRuntime: IntentsRuntime | null = null;
 let workView: WorkView | null = null;
+let chatChooser: ChatChooser | null = null;
 
 class StubProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     getTreeItem(element: vscode.TreeItem): vscode.TreeItem { return element; }
@@ -66,6 +68,9 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         }
     }
+
+    chatChooser = new ChatChooser(context, () => intentsRuntime);
+    context.subscriptions.push(chatChooser);
 
     // Row decorations: grey separators of «Все Бизнесы», window colours of active intents.
     // Registered here, not with the backend-dependent views: «Активная Работа» needs it with the backend down.
@@ -157,6 +162,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const { contexts } = await apiClient.contexts();
 
             backendOutputChannel.appendLine(`Backend OK: ${contexts.length} contexts loaded`);
+            chatChooser?.setContexts(contexts);
 
             const initialWorkspacePaths = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
             triggerDeployInstructions(initialWorkspacePaths);
@@ -209,6 +215,7 @@ export async function activate(context: vscode.ExtensionContext) {
                             const newContexts = await refreshFromBackend(apiClient);
                             contextTreeProvider.updateContexts(newContexts);
                             contextProvider.updateContexts(newContexts);
+                            chatChooser?.setContexts(newContexts);
                             binProvider?.updateContexts(newContexts);
                             const currentPaths = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
                             triggerDeployInstructions(currentPaths);
@@ -330,7 +337,9 @@ function registerBinView(
     return provider;
 }
 
-export function deactivate() {
+export async function deactivate() {
+    await chatChooser?.shutdown();
+    chatChooser = null;
     // What is expanded in «Рабочая папка» is written with a delay; the rest of it goes out now
     workView?.flushViewSync();
     workView = null;

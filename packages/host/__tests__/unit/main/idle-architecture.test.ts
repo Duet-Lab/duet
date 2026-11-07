@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'fs'
-import { join, relative } from 'path'
+import { join, relative, sep } from 'path'
 import { HOST_STATE_CHANNELS } from '../../../src/core/host-sync'
 
 const SRC = join(import.meta.dirname, '../../../src')
@@ -23,7 +23,8 @@ const sourceFiles = (dir: string): string[] =>
 const filesMatching = (dir: string, pattern: RegExp): string[] =>
   sourceFiles(join(SRC, dir))
     .filter((file) => pattern.test(readFileSync(file, 'utf-8')))
-    .map((file) => relative(SRC, file))
+    // POSIX separators, so the expected paths below hold on Windows too.
+    .map((file) => relative(SRC, file).split(sep).join('/'))
 
 describe('Idle contract structure', () => {
   it.each(Object.values(HOST_STATE_CHANNELS))(

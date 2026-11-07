@@ -2,7 +2,7 @@
     "name": "duet",
     "displayName": "Duet",
     "description": "Life OS for VS Code",
-    "version": "0.0.69",
+    "version": "0.0.72",
     "publisher": "duet-org",
     "engines": {
         "vscode": "^1.104.0"
@@ -410,6 +410,12 @@
                 "command": "duet.bin.copyAtPath",
                 "title": "Копировать @-путь",
                 "category": "Duet"
+            },
+            {
+                "command": "duet.chats.open",
+                "title": "Новый чат",
+                "category": "Duet",
+                "icon": "$(add)"
             }
         ],
         "submenus": [
@@ -1014,6 +1020,12 @@
                     "when": "duet.work.oneFolderLevel != '3'",
                     "group": "1@3"
                 }
+            ],
+            "editor/title": [
+                {
+                    "command": "duet.chats.open",
+                    "group": "navigation@1"
+                }
             ]
         },
         "keybindings": [
@@ -1290,7 +1302,7 @@
             "activitybar": [
                 {
                     "id": "duet-explorer",
-                    "title": "Duet 0.0.69",
+                    "title": "Duet 0.0.72",
                     "icon": "resources/duet-icon.svg"
                 }
             ]
