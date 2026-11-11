@@ -9,15 +9,22 @@ text of three kinds, chosen by where the folder lies:
 - inside `DuetData/repos` — the repo and the businesses that declare it;
 - anywhere else — one line saying the folder is outside Duet.
 
+A session may also send a reading of its system prompt for calibration; the
+answer then echoes it and, when the key its prompt names matches, adds the
+common reading kept beside that prompt (`_calibration`).
+
 A business is chosen by a business folder only. A repo folder never chooses
 one, because several businesses may declare the same repo. Deploying
 instructions uses the same rule (`resolve_business`).
 """
 
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import yaml
 
 from config import (
     get_duet_data_path,
@@ -29,6 +36,7 @@ from config import (
 from db import DatabaseManager, Entity
 from normalization import normalize_path
 from paths import is_path_inside
+from services.at_paths import resolve_at_path
 from services.manifest import read_manifest
 from services.resolve_paths import ContextRef, Resolution, resolve_paths as _resolve_paths
 from services.tickets import Result as TicketResult, run as _run_ticket_action
@@ -119,9 +127,88 @@ class WorkspaceService:
 
     # === Orientation answer ===
 
-    def get_orientation(self, path: str) -> str:
-        """Build the orientation answer for one folder, as Markdown text."""
-        return f"**User:** `{get_user_name()}`\n\n{self._orientation_context(path)}"
+    def get_orientation(
+        self, path: str, key: str | None = None, interpretation: str | None = None
+    ) -> str:
+        """Build the orientation answer for one folder, as Markdown text.
+
+        `key` and `interpretation` serve calibration (see `_calibration`):
+        without them the answer is exactly the plain orientation.
+        """
+        answer = f"**User:** `{get_user_name()}`\n\n{self._orientation_context(path)}"
+        calibration = self._calibration(path, key, interpretation)
+        return f"{answer}\n\n{calibration}" if calibration else answer
+
+    # === Calibration ===
+
+    def _calibration(self, path: str, key: str | None, interpretation: str | None) -> str:
+        """The calibration block appended to orientation, or "" when there is none.
+
+        A business's system prompt may ship a calibration file beside it
+        (`<prompt stem>-calibration.md`): frontmatter `key`, body the common
+        reading. The session sends its own reading as `interpretation`, with
+        the key its prompt names. The reading is echoed whenever one is sent,
+        so the user can read it in the chat, where tool arguments are hidden.
+        The common reading follows only when the key matches and a reading
+        was sent. A key that does not match gets no sign that a key exists.
+        Duet does not judge the reading; it only compares the key.
+        """
+        reading = (interpretation or "").strip()
+        sent_key = _normalize_key(key)
+        if not reading and not sent_key:
+            return ""
+        common = None
+        if sent_key:
+            calibration = self._calibration_file(path)
+            if calibration and calibration[0] == sent_key:
+                common = calibration[1]
+        if not reading:
+            if common is None:
+                return ""
+            return "**Calibration:** send your own interpretation with the key to receive the common one."
+        quoted = "\n".join(f"> {line}" if line else ">" for line in reading.splitlines())
+        block = f"**Your interpretation, as sent:**\n\n{quoted}"
+        if common is not None:
+            block += f"\n\n**The common interpretation:**\n\n{common}"
+        return block
+
+    def _calibration_file(self, path: str) -> tuple[str, str] | None:
+        """(normalized key, body) of the calibration beside the business's system prompt.
+
+        The business is the one `path` resolves to; its manifest's
+        `system_prompt` is resolved like any deployment declaration, and the
+        calibration is read from that source on every call, so an edit to it
+        needs no deploy. Anything missing or malformed gives None.
+        """
+        entity = self.resolve_business(path)
+        folder = self._resolve_drive_path(entity) if entity else None
+        manifest = read_manifest(folder) if folder else None
+        if not (manifest and manifest.system_prompt):
+            return None
+        prompt = resolve_at_path(
+            manifest.system_prompt, get_repos_path(), self._build_context_folders()
+        )
+        if prompt is None:
+            return None
+        source = prompt.with_name(f"{prompt.stem}-calibration.md")
+        try:
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        match = _FRONTMATTER_RE.match(text)
+        if not match:
+            return None
+        try:
+            meta = yaml.safe_load(match.group(1))
+        except (yaml.YAMLError, ValueError):
+            # A value YAML recognizes but cannot build, such as the date
+            # 2026-99-99, raises ValueError rather than YAMLError.
+            return None
+        key = _normalize_key(meta.get("key")) if isinstance(meta, dict) else ""
+        body = text[match.end():].strip()
+        if not key or not body:
+            return None
+        return key, body
 
     def _orientation_context(self, path: str) -> str:
         folder = Path(normalize_path(path)).resolve()
@@ -321,6 +408,17 @@ class WorkspaceService:
             self._build_context_folders(),
         )
         return {"status": "ok", **report}
+
+
+# The same frontmatter shape the deployer reads from a system prompt.
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+
+
+def _normalize_key(value: object) -> str:
+    """A calibration key compared without regard to case, spacing or Unicode form."""
+    if not isinstance(value, str):
+        return ""
+    return unicodedata.normalize("NFC", value).strip().casefold()
 
 
 def _duet_data_line() -> str:

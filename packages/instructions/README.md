@@ -8,7 +8,7 @@ This package supplies the shared Duet session prompt. These are product sources,
 
 ## Usage
 
-`duet-core` is the public default and works without the private `duet-work` repository. An experimental work session adds the explicitly invoked `duet-work` skill on top of that same foundation. A business using the default core omits `system_prompt` from its manifest; Backend withdraws any previous generated business-level override on the next instruction deployment, leaving Host's global style in place.
+`duet-core` is the public default and works without the private `duet-work` repository. An experimental work session adds the `duet-work` skill on top of that same foundation, invoked by the user, or uses a business system prompt that carries the foundation whole and reads the references of a skill of its own, such as `duet-vizier` in the `duet-work` repository. A business using the default core omits `system_prompt` from its manifest; Backend withdraws any previous generated business-level override on the next instruction deployment, leaving Host's global style in place.
 
 ## Delivery
 

@@ -607,21 +607,31 @@ _reject_unknown_arguments(_TICKET_TOOLS)
 
 
 @mcp.tool(structured_output=False)
-def orientation(path: str) -> str:
+def orientation(
+    path: str,
+    key: Annotated[str | None, Field(
+        description="Optional. Pass only what your system prompt names for this field.")] = None,
+    interpretation: Annotated[str | None, Field(
+        description="Optional. Your own text, when your system prompt asks for it. "
+                    "The answer returns it as sent.")] = None,
+) -> str:
     """Orient a session in the folder it was opened in. Call once, before any work.
 
     Args:
         path: Absolute path of the folder the session was opened in.
+        key: Optional; only what the session's system prompt names.
+        interpretation: Optional; the session's own text, returned as sent.
 
     Returns Markdown: the user's name, the paths of this machine, the business's ticket code
     if it has one, and what to read first. A meta venture also gets the
-    folders of the other ventures.
+    folders of the other ventures. When `interpretation` is sent, the answer ends
+    with it, and with more when the system prompt calls for that.
     """
     if not Path(path).is_absolute():
         raise McpError(
             ErrorData(code=INVALID_PARAMS, message=f"path must be absolute, got {path!r}")
         )
-    return _get_workspace_service().get_orientation(path)
+    return _get_workspace_service().get_orientation(path, key, interpretation)
 
 
 @mcp.tool()

@@ -1,6 +1,7 @@
 """Tests for WorkspaceService — business resolution and the orientation answer."""
 
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -549,6 +550,106 @@ class TestDeployInstructionsService:
         assert result == {"status": "unknown", "reason": "no_owning_context"}
 
 
+class TestOrientationCalibration:
+    """A session's reading of its system prompt is echoed; the common one answers the right key."""
+
+    PROMPT = "@Duet.git/prompts/assistant.md"
+
+    def _calibrated(self, tmp_path, db, monkeypatch, key: str = "Lantern", body: str = "Common reading."):
+        builder, service, lab = _lab(tmp_path, db, monkeypatch, system_prompt=self.PROMPT)
+        prompts = builder.get_repo_path("Duet") / "prompts"
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / "assistant.md").write_text("---\nname: assistant\n---\n\nPrompt.\n", encoding="utf-8")
+        (prompts / "assistant-calibration.md").write_text(
+            f"---\nkey: {key}\n---\n\n{body}\n", encoding="utf-8"
+        )
+        return service, lab
+
+    def test_no_arguments_leave_the_answer_unchanged(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        plain = service.get_orientation(str(lab))
+        assert "Calibration" not in plain and "interpretation" not in plain
+        assert service.get_orientation(str(lab), None, "  ") == plain
+        assert service.get_orientation(str(lab), "", None) == plain
+
+    def test_right_key_and_reading_get_both(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        plain = service.get_orientation(str(lab))
+        answer = service.get_orientation(str(lab), "Lantern", "First line.\n\nThird line.")
+        assert answer == (
+            plain + "\n\n"
+            "**Your interpretation, as sent:**\n\n"
+            "> First line.\n>\n> Third line.\n\n"
+            "**The common interpretation:**\n\n"
+            "Common reading."
+        )
+
+    def test_key_is_compared_without_case_space_or_unicode_form(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch, key="Сократ")
+        decomposed = unicodedata.normalize("NFD", "  сократ ")
+        assert "Common reading." in service.get_orientation(str(lab), decomposed, "Mine.")
+
+    def test_reading_alone_is_echoed_without_the_common_one(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        answer = service.get_orientation(str(lab), None, "Mine.")
+        assert answer.endswith("**Your interpretation, as sent:**\n\n> Mine.")
+        assert "Common reading." not in answer
+
+    def test_wrong_key_gets_no_sign_of_a_key(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        plain = service.get_orientation(str(lab))
+        assert service.get_orientation(str(lab), "Candle", "Mine.") == (
+            plain + "\n\n**Your interpretation, as sent:**\n\n> Mine."
+        )
+        assert service.get_orientation(str(lab), "Candle", None) == plain
+
+    def test_right_key_without_a_reading_asks_for_one(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        answer = service.get_orientation(str(lab), "Lantern", "")
+        assert "Common reading." not in answer
+        assert answer.endswith(
+            "**Calibration:** send your own interpretation with the key to receive the common one."
+        )
+
+    def test_a_ticket_folder_finds_its_business_calibration(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        ticket = lab / "work" / "ABC001_Example"
+        ticket.mkdir(parents=True)
+        assert "Common reading." in service.get_orientation(str(ticket), "Lantern", "Mine.")
+
+    def test_no_calibration_without_a_system_prompt(self, tmp_path, db, monkeypatch) -> None:
+        _, service, lab = _lab(tmp_path, db, monkeypatch)
+        assert service.get_orientation(str(lab), "Lantern", "Mine.").endswith("> Mine.")
+
+    def test_no_calibration_without_the_file(self, tmp_path, db, monkeypatch) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        next(tmp_path.rglob("assistant-calibration.md")).unlink()
+        assert service.get_orientation(str(lab), "Lantern", "Mine.").endswith("> Mine.")
+
+    @pytest.mark.parametrize("content", [
+        "no frontmatter\n",
+        "---\nkey: [unclosed\n---\n\nBody.\n",
+        "---\nkey: Lantern\n---\n\n   \n",
+        "---\nother: Lantern\n---\n\nBody.\n",
+        "---\nkey: 2026-99-99\n---\n\nBody.\n",
+        "---\nkey: Lantern\nupdated: 2026-99-99\n---\n\nBody.\n",
+    ])
+    @pytest.mark.parametrize("key", ["Lantern", "Candle"])
+    def test_malformed_calibration_gives_nothing(self, tmp_path, db, monkeypatch, content, key) -> None:
+        service, lab = self._calibrated(tmp_path, db, monkeypatch)
+        plain = service.get_orientation(str(lab))
+        next(tmp_path.rglob("assistant-calibration.md")).write_text(content, encoding="utf-8")
+        assert service.get_orientation(str(lab), key, "Mine.") == (
+            plain + "\n\n**Your interpretation, as sent:**\n\n> Mine."
+        )
+
+    def test_outside_a_business_the_reading_is_still_echoed(self, tmp_path, db, monkeypatch) -> None:
+        _, service, _ = _lab(tmp_path, db, monkeypatch)
+        assert service.get_orientation("/some/random/path", "Lantern", "Mine.") == (
+            "**User:** `Human`\n\n" + OUTSIDE_DUET + "\n\n**Your interpretation, as sent:**\n\n> Mine."
+        )
+
+
 class TestOrientationMcpTool:
     """The MCP tool takes one folder and returns the service's text unchanged."""
 
@@ -562,6 +663,9 @@ class TestOrientationMcpTool:
         init_services(service, EntitiesService(db), time.time())
         try:
             assert orientation(str(lab)) == service.get_orientation(str(lab))
+            assert orientation(str(lab), key="k", interpretation="Mine.") == (
+                service.get_orientation(str(lab), "k", "Mine.")
+            )
             assert orientation("/some/random/path") == "**User:** `Human`\n\n" + OUTSIDE_DUET
         finally:
             reset_services()

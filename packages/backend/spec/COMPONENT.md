@@ -109,7 +109,7 @@ mcp_stdio_bridge.py          separate process: stdio ⇄ /mcp for Claude Desktop
 | `turn_plan` | Plan text as unstructured content (prototype: one turn's checklist, stateless; `fmt` picks `md` / `html` / `line` / `plain`; `structured_output=False` keeps the client from showing a `{"result": ...}` envelope) |
 | `resolve_paths` | Markdown text, one `### <path>` section per requested alpha path (see [Alpha-path resolution](#alpha-path-resolution-resolve_paths)); `structured_output=False`; empty list → `INVALID_PARAMS` |
 | `turn_report` | The given report text unchanged, as unstructured content (prototype: one agent report on preparing the answer, free-form Markdown chosen by the caller; the first non-empty line must be a `### ` heading with text, otherwise `INVALID_PARAMS`; `structured_output=False` for the same reason as `turn_plan`) |
-| `orientation` | Markdown text for one folder (see [Orientation](#orientation)); `structured_output=False` |
+| `orientation` | Markdown text for one folder (see [Orientation](#orientation)); optional `key` and `interpretation` add the calibration block; `structured_output=False` |
 | `tickets` | Markdown: an overview of a business's tickets, a filtered list (`shelf`, `parent`), or one or more tickets by number (see [Ticket tools](#ticket-tools)); read-only; `structured_output=False` |
 | `new_ticket` | Markdown: the new number, folder, stable `@NUMBER` address and the frontmatter written; not idempotent |
 | `move_ticket` | Markdown: the new folder and, when a close or reopen date was recorded, the updated frontmatter; idempotent |
@@ -152,6 +152,7 @@ Contract — what the tool answers for which folder: [PRODUCT.md → Orientation
 - **Names after `@`** are the registered entity names (`МетаЛаб`), not folder names (`!МетаЛаб`).
 - **Ticket code.** A business whose manifest declares `ticket_code` gets one line, `**Ticket code:** \`DUE\``, after the paths: it is the one thing about tickets an agent can't learn elsewhere.
 - **Repo answer.** The repo is the first path segment under `repos`; a worktree folder `X.wt-N` stands for `X.git`; the `repos` folder itself is answered as outside Duet. `Declared by` is read from the manifests on disk of every context in the DB, because a shared repo has only one `product_repo` row (see Scanner).
+- **Calibration.** `WorkspaceService._calibration` builds the block the contract describes ([PRODUCT.md → Orientation](../../../spec/PRODUCT.md#orientation), "Calibration") and `get_orientation` appends it after a blank line. The calibration file is found from the business that `resolve_business` picks: its manifest's `system_prompt` resolves with `resolve_at_path`, as the deployer resolves it, and the sibling `<stem>-calibration.md` is read as UTF-8 with the deployer's frontmatter shape. Keys are compared after NFC, `strip` and `casefold`. Any read or parse failure gives no common reading, never an error, because orientation is the session gate.
 - **Not registered.** A folder inside a venture folder for which the DB has no context — the venture has no valid manifest, or the first scan has not finished — is answered with ``Not a business folder: this path is inside a venture folder, but no business is registered for it. Run `scan` and call `orientation` again.``
 
 ### Ticket tools

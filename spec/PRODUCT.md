@@ -410,6 +410,13 @@ Not a business folder: this path is inside a git-repo.
 
 **Anywhere else.** `Not a business folder: this path is outside Duet.`
 
+**Calibration.** A business's system prompt may ask its sessions to send their own reading of it with the `orientation` call, as two optional arguments: `key`, a value the prompt names, and `interpretation`, the session's reading in its own words. The common reading lives beside the prompt's source, in `<prompt stem>-calibration.md` next to the file the manifest's `system_prompt` names: frontmatter `key`, and the body, the common reading in Markdown. It is read from the source on every call, so editing it needs no deploy.
+
+- No `interpretation` and no `key` (or blank ones): the answer is exactly the one above.
+- An `interpretation` is echoed at the end of every answer, under `**Your interpretation, as sent:**` as a quote, so the user can read it: tool arguments are not shown in the chat, the result is.
+- The common reading follows, under `**The common interpretation:**`, only when the `key` matches the calibration's, compared without regard to case, surrounding spaces or Unicode form, and an `interpretation` was sent. A matching key with no interpretation gets one line asking for it; a key that does not match changes nothing, so it gives no sign that a key exists.
+- Duet does not judge the reading: it compares the key and returns the prepared text. A business without `system_prompt`, a prompt without a calibration file, or a file without a `key` or a body gives no common reading.
+
 [Deploy Instructions](#deploy-instructions) picks the business by the same rule. The exact texts are pinned by `packages/backend/tests/test_workspace.py`; backend internals: [`packages/backend/spec/COMPONENT.md` → Orientation](../packages/backend/spec/COMPONENT.md).
 
 ### Deploy Instructions
