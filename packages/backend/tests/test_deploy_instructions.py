@@ -6,8 +6,9 @@ Covers the two components a context can declare:
   backup-before-prune into `<target>/.pruned/`.
 - `system_prompt` → one output-style source wired into Claude Code
   (`.claude/output-styles/` + `outputStyle`), Codex (`model_instructions_file`)
-  and Kimi Code (`.kimi-code/agents/agent.md`, `override: true`); key-wise edits
-  of the shared config files, banner-guarded withdrawal.
+  Kimi Code (`.kimi-code/agents/agent.md`, `override: true`) and Antigravity
+  (`.agents/agents/<name>/agent.md`); key-wise edits of the shared config
+  files, banner-guarded withdrawal.
 
 The functions take explicit arguments and use temporary business folders.
 """
@@ -529,6 +530,7 @@ STYLE_REL = ".claude/output-styles/game-master.md"
 SETTINGS_REL = ".claude/settings.json"
 CODEX_REL = ".codex/config.toml"
 KIMI_REL = ".kimi-code/agents/agent.md"
+AGY_REL = ".agents/agents/game-master/agent.md"
 STYLE_SOURCE = (
     "---\n"
     "name: game-master\n"
@@ -581,7 +583,7 @@ def test_system_prompt_absent_is_noop(ctx, sources):
     report = _withdraw_sp(ctx, sources)
     assert report["deployed"]["system_prompt_written"] == []
     assert report["deployed"]["system_prompt_withdrawn"] == []
-    for rel in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL):
+    for rel in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL, AGY_REL):
         assert not (ctx / rel).exists()
 
 
@@ -589,7 +591,7 @@ def test_system_prompt_claude_style_copy(ctx, sources):
     _style_source(sources)
     report = _deploy_sp(ctx, sources)
     assert set(report["deployed"]["system_prompt_written"]) == {
-        STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL,
+        STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL, AGY_REL,
     }
     text = (ctx / STYLE_REL).read_text(encoding="utf-8")
     # frontmatter at byte 0, banner right after it, body untouched
@@ -666,7 +668,7 @@ def test_system_prompt_without_frontmatter_uses_stem(ctx, sources):
 def test_system_prompt_redeploy_touches_nothing(ctx, sources):
     _style_source(sources)
     _deploy_sp(ctx, sources)
-    files = [ctx / r for r in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL)]
+    files = [ctx / r for r in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL, AGY_REL)]
     before = [f.stat().st_mtime_ns for f in files]
     _deploy_sp(ctx, sources)
     assert [f.stat().st_mtime_ns for f in files] == before
@@ -697,6 +699,126 @@ def test_system_prompt_backs_up_handwritten_kimi_agent(ctx, sources):
     (ctx / KIMI_REL).write_text("mine", encoding="utf-8")
     _deploy_sp(ctx, sources)
     assert (ctx / (KIMI_REL + ".bak")).read_text(encoding="utf-8") == "mine"
+
+
+# --- Antigravity custom agent ------------------------------------------------
+
+AGY_TOOLS = [
+    "read_file", "edit_file", "write_file", "run_command", "manage_task", "search_web",
+    "ask_question", "invoke_subagent", "define_subagent", "manage_subagents",
+    "send_message", "schedule",
+]
+
+
+def _agy_frontmatter(ctx: Path, rel: str = AGY_REL) -> dict:
+    import yaml
+
+    text = (ctx / rel).read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    return yaml.safe_load(text.split("---\n")[1])
+
+
+def test_system_prompt_agy_agent_frontmatter(ctx, sources):
+    # Every field of the hand-made Antigravity agent the deploy reproduces;
+    # a style that drops Claude's coding instructions drops Antigravity's
+    # default components (`keep-coding-instructions` is absent here, and false
+    # is Claude's default for an output style).
+    _style_source(sources)
+    _deploy_sp(ctx, sources)
+    assert _agy_frontmatter(ctx) == {
+        "name": "game-master",
+        "description": "Ведущий семейной игры",
+        "mainAgent": True,
+        "subagent": False,
+        "excludeDefaultComponents": True,
+        "inheritMcp": True,
+        "tools": AGY_TOOLS,
+    }
+
+
+def test_system_prompt_agy_agent_follows_keep_coding_instructions(ctx, sources):
+    for keep, exclude in (("false", True), ("true", False)):
+        _style_source(sources, STYLE_SOURCE.replace(
+            "description: Ведущий семейной игры\n",
+            f"description: Ведущий семейной игры\nkeep-coding-instructions: {keep}\n",
+        ))
+        _deploy_sp(ctx, sources)
+        assert _agy_frontmatter(ctx)["excludeDefaultComponents"] is exclude
+
+
+def test_system_prompt_agy_agent_layout(ctx, sources):
+    # A description with a colon must come out quoted (Antigravity once failed
+    # to load such agents unquoted), the tool list indented under its key, the
+    # banner right after the frontmatter and the body as in the source.
+    _style_source(sources, STYLE_SOURCE.replace(
+        "description: Ведущий семейной игры", "description: 'Ведущий: семейной игры'"
+    ))
+    _deploy_sp(ctx, sources)
+    text = (ctx / AGY_REL).read_text(encoding="utf-8")
+    assert text.startswith(
+        "---\nname: game-master\ndescription: 'Ведущий: семейной игры'\nmainAgent: true\n"
+    )
+    assert "\ntools:\n  - read_file\n  - edit_file\n" in text
+    assert text.endswith(
+        "  - schedule\n---\n"
+        f"<!-- {GENERATED_BANNER} from {SP} — edit the source, not this file -->\n"
+        "\nТы ведёшь игру.\n"
+    )
+    assert stat.S_IMODE(os.stat(ctx / AGY_REL).st_mode) == 0o444
+
+
+def test_system_prompt_agy_agent_backs_up_handwritten(ctx, sources):
+    _style_source(sources)
+    (ctx / AGY_REL).parent.mkdir(parents=True)
+    (ctx / AGY_REL).write_text("hand-made agent", encoding="utf-8")
+    _deploy_sp(ctx, sources)
+    assert (ctx / (AGY_REL + ".bak")).read_text(encoding="utf-8") == "hand-made agent"
+    assert GENERATED_BANNER in (ctx / AGY_REL).read_text(encoding="utf-8")
+
+
+def test_system_prompt_agy_rename_prunes_stale_generated_agent_only(ctx, sources):
+    _style_source(sources)
+    _deploy_sp(ctx, sources)
+    mine = ctx / ".agents/agents/mine/agent.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("hand-written agent", encoding="utf-8")
+    _style_source(sources, STYLE_SOURCE.replace("name: game-master", "name: gm2"))
+    _deploy_sp(ctx, sources)
+    assert not (ctx / AGY_REL).parent.exists()
+    assert _agy_frontmatter(ctx, ".agents/agents/gm2/agent.md")["name"] == "gm2"
+    assert mine.read_text(encoding="utf-8") == "hand-written agent"
+
+
+def test_system_prompt_agy_withdrawal_leaves_skills_and_handwritten_agents(ctx, sources):
+    _make_skill(sources, "alpha")
+    _style_source(sources)
+    deploy_instructions(
+        ctx, _manifest(skills=["@Src/alpha"], system_prompt=SP), None, _ctx_folders(sources)
+    )
+    mine = ctx / ".agents/agents/mine/agent.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("hand-written agent", encoding="utf-8")
+
+    report = deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+
+    assert AGY_REL in report["deployed"]["system_prompt_withdrawn"]
+    assert not (ctx / AGY_REL).parent.exists()
+    assert mine.read_text(encoding="utf-8") == "hand-written agent"
+    assert (ctx / ".agents/skills/alpha/SKILL.md").is_file()
+
+
+def test_system_prompt_agy_withdrawal_removes_empty_agents_dir_keeps_backup(ctx, sources):
+    _style_source(sources)
+    _deploy_sp(ctx, sources)
+    _withdraw_sp(ctx, sources)
+    assert not (ctx / ".agents/agents").exists()
+
+    (ctx / AGY_REL).parent.mkdir(parents=True)
+    (ctx / AGY_REL).write_text("hand-made agent", encoding="utf-8")
+    _deploy_sp(ctx, sources)
+    _withdraw_sp(ctx, sources)
+    assert not (ctx / AGY_REL).exists()
+    assert (ctx / (AGY_REL + ".bak")).read_text(encoding="utf-8") == "hand-made agent"
 
 
 # --- shared config files: key-wise edits -------------------------------------
@@ -815,7 +937,7 @@ def test_system_prompt_unresolvable_warns_and_leaves_deployment(ctx, sources):
     assert any("system_prompt" in w for w in report["warnings"])
     assert report["deployed"]["system_prompt_written"] == []
     assert report["deployed"]["system_prompt_withdrawn"] == []
-    for rel in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL):
+    for rel in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL, AGY_REL):
         assert (ctx / rel).is_file()
 
 
@@ -857,10 +979,10 @@ def test_system_prompt_withdrawal_removes_everything_of_ours(ctx, sources):
     _deploy_sp(ctx, sources)
     report = _withdraw_sp(ctx, sources)
     assert set(report["deployed"]["system_prompt_withdrawn"]) == {
-        STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL,
+        STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL, AGY_REL,
     }
     # settings.json / config.toml existed only for our keys → gone; so is .codex/
-    for rel in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL):
+    for rel in (STYLE_REL, SETTINGS_REL, CODEX_REL, KIMI_REL, AGY_REL):
         assert not (ctx / rel).exists()
     assert not (ctx / ".codex").exists()
 
@@ -938,7 +1060,357 @@ def test_withdraw_private_core_override_keeps_global_core(ctx, sources, tmp_path
     report = _withdraw_sp(ctx, sources)
     assert report["warnings"] == []
     assert not local_style.exists()
-    for rel in (SETTINGS_REL, CODEX_REL, KIMI_REL):
+    for rel in (SETTINGS_REL, CODEX_REL, KIMI_REL, ".agents/agents/duet-core/agent.md"):
         assert not (ctx / rel).exists()
     assert global_style.read_text(encoding="utf-8") == core_body
     assert json.loads(global_settings.read_text())["outputStyle"] == "duet-core"
+
+
+# --- Antigravity: symlinks lead out of the business --------------------------
+
+def _foreign_generated_agent(tmp_path: Path) -> Path:
+    """A generated agent of another business, as a symlink target."""
+    other = tmp_path / "other-business/.agents/agents/shared"
+    other.mkdir(parents=True)
+    agent = other / "agent.md"
+    agent.write_text(f"---\nname: shared\n---\n<!-- {GENERATED_BANNER} from @X/y.md -->\nbody\n", encoding="utf-8")
+    return agent
+
+
+def test_system_prompt_agy_withdrawal_does_not_follow_agent_dir_symlink(ctx, sources, tmp_path):
+    foreign = _foreign_generated_agent(tmp_path)
+    (ctx / ".agents/agents").mkdir(parents=True)
+    (ctx / ".agents/agents/shared").symlink_to(foreign.parent, target_is_directory=True)
+
+    report = _withdraw_sp(ctx, sources)
+
+    assert foreign.is_file()
+    assert (ctx / ".agents/agents/shared").is_symlink()
+    assert report["deployed"]["system_prompt_withdrawn"] == []
+    assert report["errors"] and ".agents/agents/shared" in report["errors"][0]
+
+
+def test_system_prompt_agy_rename_does_not_follow_agent_file_symlink(ctx, sources, tmp_path):
+    foreign = _foreign_generated_agent(tmp_path)
+    (ctx / ".agents/agents/shared").mkdir(parents=True)
+    (ctx / ".agents/agents/shared/agent.md").symlink_to(foreign)
+    _style_source(sources)
+
+    report = _deploy_sp(ctx, sources)
+
+    assert foreign.is_file()
+    assert (ctx / ".agents/agents/shared/agent.md").is_symlink()
+    assert any(".agents/agents/shared/agent.md" in e for e in report["errors"])
+    assert (ctx / AGY_REL).is_file()
+
+
+@pytest.mark.parametrize("linked", [".agents", ".agents/agents"])
+def test_system_prompt_agy_symlinked_root_is_left_alone(ctx, sources, tmp_path, linked):
+    foreign = _foreign_generated_agent(tmp_path)
+    # The link stands where the business's own agents root would be and
+    # resolves onto the other business's agents.
+    target = foreign.parent.parent if linked == ".agents/agents" else foreign.parent.parent.parent
+    (ctx / linked).parent.mkdir(parents=True, exist_ok=True)
+    (ctx / linked).symlink_to(target, target_is_directory=True)
+    _style_source(sources)
+
+    report = _deploy_sp(ctx, sources)
+    assert AGY_REL not in report["deployed"]["system_prompt_written"]
+    assert any("symlink" in e for e in report["errors"])
+    assert not (target / "game-master").exists() and not (target / "agents/game-master").exists()
+    assert (ctx / STYLE_REL).is_file()  # the other clients still deploy
+
+    report = _withdraw_sp(ctx, sources)
+    assert foreign.is_file()
+    assert (ctx / linked).is_symlink()
+    assert report["errors"] == [_symlink_error(linked)]
+
+
+def test_system_prompt_agy_symlinked_agent_dir_is_not_written_through(ctx, sources, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (ctx / ".agents/agents").mkdir(parents=True)
+    (ctx / ".agents/agents/game-master").symlink_to(elsewhere, target_is_directory=True)
+    _style_source(sources)
+
+    report = _deploy_sp(ctx, sources)
+
+    assert list(elsewhere.iterdir()) == []
+    assert AGY_REL not in report["deployed"]["system_prompt_written"]
+    assert any("symlink" in e for e in report["errors"])
+
+
+# --- the deploy never follows a symlink in the business folder ---------------
+#
+# Each symlink found on a path the deploy would write, replace, move or delete
+# is left as it is and reported once in the result's `errors`; the other
+# targets still deploy.
+
+def _symlink_error(rel: str) -> str:
+    return (
+        f"symlink: {rel} — Duet does not follow symlinks in a business folder; "
+        "the link and what lies behind it were left untouched"
+    )
+
+
+def _foreign_dir(tmp_path: Path, name: str = "elsewhere") -> Path:
+    d = tmp_path / name
+    d.mkdir()
+    return d
+
+
+def test_errors_empty_without_symlinks(ctx, sources):
+    _make_skill(sources, "alpha")
+    _style_source(sources)
+    report = deploy_instructions(
+        ctx, _manifest(skills=["@Src/alpha"], system_prompt=SP), None, _ctx_folders(sources)
+    )
+    assert report["errors"] == []
+
+
+def test_symlinked_claude_dir_is_one_error_and_other_clients_deploy(ctx, sources, tmp_path):
+    outside = _foreign_dir(tmp_path)
+    (ctx / ".claude").symlink_to(outside, target_is_directory=True)
+    _make_skill(sources, "alpha")
+    _style_source(sources)
+
+    report = deploy_instructions(
+        ctx, _manifest(skills=["@Src/alpha"], system_prompt=SP), None, _ctx_folders(sources)
+    )
+
+    assert list(outside.iterdir()) == []
+    assert report["errors"] == [_symlink_error(".claude")]
+    assert report["deployed"]["skills_deployed"] == []
+    assert report["deployed"]["agents_skills_deployed"] == ["alpha"]
+    # Codex would read the style through the symlinked `.claude`, so it is not pointed at it.
+    assert set(report["deployed"]["system_prompt_written"]) == {KIMI_REL, AGY_REL}
+    assert not (ctx / CODEX_REL).exists()
+
+
+def test_styles_withdrawal_does_not_follow_symlinked_styles_dir(ctx, sources, tmp_path):
+    # Another business's generated style behind a symlinked styles directory.
+    other = tmp_path / "other-business/.claude/output-styles"
+    other.mkdir(parents=True)
+    foreign = other / "theirs.md"
+    foreign.write_text(f"<!-- {GENERATED_BANNER} from @X/y.md -->\nbody\n", encoding="utf-8")
+    (ctx / ".claude").mkdir()
+    (ctx / ".claude/output-styles").symlink_to(other, target_is_directory=True)
+
+    report = _withdraw_sp(ctx, sources)
+
+    assert foreign.is_file()
+    assert report["deployed"]["system_prompt_withdrawn"] == []
+    assert report["errors"] == [_symlink_error(".claude/output-styles")]
+
+
+def test_styles_prune_does_not_remove_symlinked_style(ctx, sources, tmp_path):
+    foreign = _foreign_dir(tmp_path) / "theirs.md"
+    foreign.write_text(f"<!-- {GENERATED_BANNER} from @X/y.md -->\nbody\n", encoding="utf-8")
+    (ctx / ".claude/output-styles").mkdir(parents=True)
+    (ctx / ".claude/output-styles/theirs.md").symlink_to(foreign)
+    _style_source(sources)
+
+    report = _deploy_sp(ctx, sources)
+
+    assert (ctx / ".claude/output-styles/theirs.md").is_symlink()
+    assert foreign.is_file()
+    assert report["errors"] == [_symlink_error(".claude/output-styles/theirs.md")]
+    assert (ctx / STYLE_REL).is_file()
+
+
+@pytest.mark.parametrize("rel", [STYLE_REL, KIMI_REL, STYLE_REL + ".bak"])
+def test_managed_file_symlink_is_not_replaced(ctx, sources, tmp_path, rel):
+    target = _foreign_dir(tmp_path) / "file.md"
+    target.write_text("someone else's", encoding="utf-8")
+    (ctx / rel).parent.mkdir(parents=True, exist_ok=True)
+    (ctx / rel).symlink_to(target)
+    _style_source(sources)
+
+    report = _deploy_sp(ctx, sources)
+
+    assert (ctx / rel).is_symlink()
+    assert target.read_text(encoding="utf-8") == "someone else's"
+    assert report["errors"] == [_symlink_error(rel)]
+    # Codex is pointed at the Claude copy only when that copy was written.
+    assert (CODEX_REL in report["deployed"]["system_prompt_written"]) is (rel == KIMI_REL)
+
+
+@pytest.mark.parametrize("rel", [SETTINGS_REL, CODEX_REL])
+def test_shared_config_symlink_is_neither_edited_nor_removed(ctx, sources, tmp_path, rel):
+    target = _foreign_dir(tmp_path) / "config"
+    original = '{"outputStyle": "game-master"}' if rel == SETTINGS_REL else (
+        f'model_instructions_file = "x"  # {GENERATED_BANNER} (system_prompt)\n'
+    )
+    target.write_text(original, encoding="utf-8")
+    (ctx / rel).parent.mkdir(parents=True, exist_ok=True)
+    (ctx / rel).symlink_to(target)
+    _style_source(sources)
+
+    for report in (_deploy_sp(ctx, sources), _withdraw_sp(ctx, sources)):
+        assert (ctx / rel).is_symlink()
+        assert target.read_text(encoding="utf-8") == original
+        assert _symlink_error(rel) in report["errors"]
+
+
+def test_kimi_withdrawal_does_not_remove_symlinked_agent(ctx, sources, tmp_path):
+    foreign = _foreign_dir(tmp_path) / "agent.md"
+    foreign.write_text(f"<!-- {GENERATED_BANNER} -->", encoding="utf-8")
+    (ctx / KIMI_REL).parent.mkdir(parents=True)
+    (ctx / KIMI_REL).symlink_to(foreign)
+
+    report = _withdraw_sp(ctx, sources)
+
+    assert (ctx / KIMI_REL).is_symlink()
+    assert report["deployed"]["system_prompt_withdrawn"] == []
+    assert report["errors"] == [_symlink_error(KIMI_REL)]
+
+
+def test_skills_symlinked_target_root_is_left_alone(ctx, sources, tmp_path):
+    outside = _foreign_dir(tmp_path)
+    (outside / "theirs").mkdir()
+    (ctx / ".agents").mkdir()
+    (ctx / ".agents/skills").symlink_to(outside, target_is_directory=True)
+    _make_skill(sources, "alpha")
+
+    report = deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+
+    assert sorted(p.name for p in outside.iterdir()) == ["theirs"]
+    assert report["deployed"]["agents_skills_deployed"] == []
+    assert report["deployed"]["skills_deployed"] == ["alpha"]
+    assert report["errors"] == [_symlink_error(".agents/skills")]
+
+
+def test_skills_prune_does_not_move_symlinked_skill(ctx, sources, tmp_path):
+    outside = _foreign_dir(tmp_path)
+    (outside / "SKILL.md").write_text("theirs", encoding="utf-8")
+    (ctx / ".claude/skills").mkdir(parents=True)
+    (ctx / ".claude/skills/linked").symlink_to(outside, target_is_directory=True)
+
+    report = deploy_instructions(ctx, _manifest(skills=[]), None, _ctx_folders(sources))
+
+    assert (ctx / ".claude/skills/linked").is_symlink()
+    assert (outside / "SKILL.md").is_file()
+    assert report["deployed"]["skills_pruned"] == []
+    assert report["errors"] == [_symlink_error(".claude/skills/linked")]
+
+
+def test_skills_prune_does_not_move_into_symlinked_backup(ctx, sources, tmp_path):
+    outside = _foreign_dir(tmp_path)
+    _make_skill(sources, "alpha")
+    deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+    (ctx / ".claude/skills/.pruned").mkdir()
+    (ctx / ".claude/skills/.pruned/alpha").symlink_to(outside, target_is_directory=True)
+
+    report = deploy_instructions(ctx, _manifest(skills=[]), None, _ctx_folders(sources))
+
+    assert list(outside.iterdir()) == []
+    assert (ctx / ".claude/skills/alpha/SKILL.md").is_file()
+    assert report["deployed"]["skills_pruned"] == []
+    assert _symlink_error(".claude/skills/.pruned/alpha") in report["errors"]
+
+
+def test_skills_prune_keeps_backup_holding_a_symlink(ctx, sources, tmp_path):
+    outside = _foreign_dir(tmp_path)
+    (outside / "keep.txt").write_text("theirs", encoding="utf-8")
+    _make_skill(sources, "alpha")
+    deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+    old_backup = ctx / ".claude/skills/.pruned/alpha"
+    old_backup.mkdir(parents=True)
+    (old_backup / "link").symlink_to(outside, target_is_directory=True)
+
+    report = deploy_instructions(ctx, _manifest(skills=[]), None, _ctx_folders(sources))
+
+    assert (old_backup / "link").is_symlink()
+    assert (outside / "keep.txt").is_file()
+    assert (ctx / ".claude/skills/alpha").is_dir()
+    assert _symlink_error(".claude/skills/.pruned/alpha/link") in report["errors"]
+
+
+def test_mirror_leaves_symlinks_inside_a_deployed_skill(ctx, sources, tmp_path):
+    outside = _foreign_dir(tmp_path)
+    (outside / "f.txt").write_text("theirs", encoding="utf-8")
+    skill = _make_skill(sources, "alpha")
+    (skill / "nested").mkdir()
+    (skill / "nested/f.txt").write_text("ours", encoding="utf-8")
+    deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+    out = ctx / ".claude/skills/alpha"
+    # A link where the source has a directory, and one where it has nothing.
+    os.chmod(out / "nested/f.txt", 0o644)
+    shutil.rmtree(out / "nested")
+    (out / "nested").symlink_to(outside, target_is_directory=True)
+    (out / "stale").mkdir()
+    (out / "stale/link").symlink_to(outside / "f.txt")
+
+    report = deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+
+    assert (out / "nested").is_symlink()
+    assert (outside / "f.txt").read_text(encoding="utf-8") == "theirs"
+    assert (out / "stale/link").is_symlink()
+    assert sorted(report["errors"]) == sorted([
+        _symlink_error(".claude/skills/alpha/nested"),
+        _symlink_error(".claude/skills/alpha/stale/link"),
+    ])
+    # the rest of the skill is still mirrored
+    assert (out / "SKILL.md").is_file()
+
+
+@pytest.mark.parametrize("rel", [STYLE_REL, KIMI_REL, AGY_REL])
+def test_managed_write_does_not_follow_a_symlinked_tmp_name(ctx, sources, tmp_path, rel):
+    # A fixed `<name>.tmp` beside the target once stood in for the temp file:
+    # the write went through the link, and the link took the target's place.
+    outside = _foreign_dir(tmp_path) / "keep.txt"
+    outside.write_text("keep", encoding="utf-8")
+    outside.chmod(0o644)
+    tmp_link = ctx / (rel + ".tmp")
+    tmp_link.parent.mkdir(parents=True, exist_ok=True)
+    tmp_link.symlink_to(outside)
+    _style_source(sources)
+
+    _deploy_sp(ctx, sources)
+
+    assert outside.read_text(encoding="utf-8") == "keep"
+    assert _mode(outside) == 0o644
+    assert tmp_link.is_symlink()
+    assert not (ctx / rel).is_symlink()
+    assert GENERATED_BANNER in (ctx / rel).read_text(encoding="utf-8")
+    assert _mode(ctx / rel) == 0o444
+
+
+def test_mirror_keeps_a_directory_holding_a_symlink_where_the_source_has_a_file(ctx, sources, tmp_path):
+    outside = _foreign_dir(tmp_path) / "f.txt"
+    outside.write_text("theirs", encoding="utf-8")
+    skill = _make_skill(sources, "alpha")
+    (skill / "payload").write_text("now a file", encoding="utf-8")
+    for root in (".claude", ".agents"):
+        (ctx / root / "skills/alpha/payload").mkdir(parents=True)
+        (ctx / root / "skills/alpha/payload/link").symlink_to(outside)
+
+    report = deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+
+    for root in (".claude", ".agents"):
+        payload = ctx / root / "skills/alpha/payload"
+        assert payload.is_dir()
+        assert (payload / "link").is_symlink()
+        assert (ctx / root / "skills/alpha/SKILL.md").is_file()
+    assert outside.read_text(encoding="utf-8") == "theirs"
+    assert sorted(report["errors"]) == sorted(
+        _symlink_error(f"{root}/skills/alpha/payload/link") for root in (".claude", ".agents")
+    )
+
+
+def test_skills_prune_keeps_a_skill_holding_a_relative_symlink_in_place(ctx, sources, tmp_path):
+    # A relative link would point elsewhere one level deeper, inside `.pruned`.
+    (ctx.parent / "outside.txt").write_text("theirs", encoding="utf-8")
+    _make_skill(sources, "alpha")
+    deploy_instructions(ctx, _manifest(skills=["@Src/alpha"]), None, _ctx_folders(sources))
+    link = ctx / ".claude/skills/alpha/link"
+    link.symlink_to("../../../../outside.txt")
+    assert link.read_text(encoding="utf-8") == "theirs"
+
+    report = deploy_instructions(ctx, _manifest(skills=[]), None, _ctx_folders(sources))
+
+    assert link.is_symlink() and link.read_text(encoding="utf-8") == "theirs"
+    assert not (ctx / ".claude/skills/.pruned/alpha").exists()
+    assert report["deployed"]["skills_pruned"] == []
+    assert report["deployed"]["agents_skills_pruned"] == ["alpha"]
+    assert report["errors"] == [_symlink_error(".claude/skills/alpha/link")]

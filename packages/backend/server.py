@@ -227,7 +227,8 @@ async def deploy_instructions_handler(request: Request) -> JSONResponse:
     business from the business folders among the paths and materializes its `skills` / `system_prompt` declarations
     into its Drive folder. Idempotent.
 
-    Response: {status, deployed: {...}, warnings: [...]}.
+    Response: {status, deployed: {...}, warnings: [...], errors: [...]}; `errors`
+    lists the symlinks in the business folder that the deploy refused to follow.
     """
     try:
         body = await request.json()

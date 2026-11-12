@@ -46,6 +46,8 @@ export interface DeployInstructionsResponse {
     reason?: string;
     deployed?: Record<string, string[]>;
     warnings?: string[];
+    /** Symlinks in the business folder that the deploy refused to follow. */
+    errors?: string[];
 }
 
 export interface ScanResponse {

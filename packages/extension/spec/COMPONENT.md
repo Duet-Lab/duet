@@ -300,7 +300,7 @@ The intents runtime starts before this sequence, right after the pointer is read
 
 ### Deploy Instructions Trigger
 
-Extension asks Backend to deploy the instruction components of the window's business (skills / system_prompt) into its Drive folder via `apiClient.deployInstructions(workspacePaths)`. The call is **debounced** (500ms) and **fire-and-forget** — warnings/errors are logged to the "Duet Backend" output channel, never surfaced as blocking UI. Backend is idempotent and serializes concurrent calls per context.
+Extension asks Backend to deploy the instruction components of the window's business (skills / system_prompt) into its Drive folder via `apiClient.deployInstructions(workspacePaths)`. The call is **debounced** (500ms) and **fire-and-forget** — the response's `warnings` and `errors` (the symlinks the deploy refused to follow) and a failed call are logged to the "Duet Backend" output channel, never surfaced as blocking UI. Backend is idempotent and serializes concurrent calls per context.
 
 Fires on:
 - **Activation** — after the contexts load, with the current workspace folder paths.

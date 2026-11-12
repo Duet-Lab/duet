@@ -388,7 +388,7 @@ class WorkspaceService:
         The business comes from business folders only (`resolve_business`):
         a repo folder among the paths chooses nothing.
 
-        Returns `{status, deployed, warnings}` or `{status: "unknown", reason}`
+        Returns `{status, deployed, warnings, errors}` or `{status: "unknown", reason}`
         when no business resolves.
         """
         entity = self._resolve_businesses(workspace_paths)

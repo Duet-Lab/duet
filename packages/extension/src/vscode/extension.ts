@@ -147,6 +147,11 @@ export async function activate(context: vscode.ExtensionContext) {
                                 `deploy-instructions warnings: ${res.warnings.join('; ')}`
                             );
                         }
+                        if (res.errors?.length) {
+                            backendOutputChannel?.appendLine(
+                                `deploy-instructions errors: ${res.errors.join('; ')}`
+                            );
+                        }
                     })
                     .catch(e => {
                         const msg = e instanceof Error ? e.message : String(e);
