@@ -4,28 +4,32 @@ A ticket is a folder named `<number>_<Name>` under a business's `work/`,
 `backlog/`, or `archive/` directory. Its metadata (work type, parent, dates) lives
 in the YAML frontmatter of its `INDEX.md`.
 
-Four operations are exposed, each a single call:
+Five operations are exposed, each a single call:
 
 - `tickets`: list a business's tickets.
 - `new_ticket`: allocate a number, create the folder, write the frontmatter.
-- `move_ticket`: move a ticket between work, backlog, and archive.
+- `move_ticket`: move a ticket between work, backlog, and archive; a ticket
+  with a branch is closed or shelved only once the branch is ready.
 - `edit_ticket`: change a ticket's name, parent, icon, or description.
+- `add_worktree`: give a ticket in work its branch and worktree in one repo.
 
 These operations own the ticket's name and its frontmatter. The name lives
 in the folder name and in the title heading of `INDEX.md`, and a rename
 changes both. Everything else below the frontmatter belongs to whoever writes
 the ticket and is never modified.
 
-The operations take the registered contexts and the current date as
-arguments, so they have no hidden dependencies. Each returns Markdown for the
+The operations take a `TicketEnv` as their first argument: the registered
+contexts, the current date, and `DuetData/repos`. They have no hidden
+dependencies. Each returns Markdown for the
 caller to display and raises `TicketError` when it can't proceed. `run` wraps
 both outcomes in a `Result`, so callers never infer failure from the text.
 
 Failure contract: an error means nothing changed. Write operations validate
 everything first, write `INDEX.md` atomically, and roll back a folder move or
-creation if the write that follows it fails. The one exception is a failed
-rollback, and in that case the error message describes the exact state left
-on disk.
+creation if the write that follows it fails. There are two exceptions, and in
+both the error message describes the exact state left on disk: a failed
+rollback, and a failure while a ticket's worktrees are being removed, which
+can't be undone (`branches.py`).
 """
 
 from __future__ import annotations
@@ -36,16 +40,20 @@ import types
 import typing
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 from services.resolve_paths import ContextRef
-from services.tickets.model import TicketError, collect_affected
+from services.tickets.branches import add_worktree, move_ticket
+from services.tickets.model import TicketEnv, TicketError, collect_affected
 from services.tickets.views import tickets
-from services.tickets.writes import edit_ticket, move_ticket, new_ticket
+from services.tickets.writes import edit_ticket, new_ticket
 
-__all__ = ["ACTIONS", "Result", "TicketError", "argument_names", "check_arguments", "run"]
+__all__ = ["ACTIONS", "Result", "TicketEnv", "TicketError", "argument_names",
+           "check_arguments", "run"]
 
 ACTIONS = {"tickets": tickets, "new_ticket": new_ticket,
-           "move_ticket": move_ticket, "edit_ticket": edit_ticket}
+           "move_ticket": move_ticket, "edit_ticket": edit_ticket,
+           "add_worktree": add_worktree}
 
 # Arguments callers reach for that belong to a different tool.
 _MISPLACED_ARGUMENTS = {
@@ -54,6 +62,8 @@ _MISPLACED_ARGUMENTS = {
     ("edit_ticket", "to"): "To move a ticket to another shelf, use `move_ticket`.",
     ("new_ticket", "number"): "The number is allocated for you; leave it out.",
     ("move_ticket", "shelf"): "The destination is called `to`.",
+    ("add_worktree", "repos"): "One call makes one worktree; call it once per repo.",
+    ("add_worktree", "name"): "The branch name is called `branch`.",
 }
 
 
@@ -68,13 +78,15 @@ class Result:
     text: str
     is_error: bool = False
     # The tickets the operation looked up, created, moved, or edited, as data:
-    # `{number, name, shelf, folder}` each. Empty for listings and for failures.
+    # `{number, name, shelf, folder, branch, worktrees, parked}` each, where
+    # `worktrees` is `[{repo, path}]` and `parked` is `{repo: branch}`. Empty
+    # for listings and for failures.
     tickets: list[dict] = field(default_factory=list)
 
 
 def argument_names(action: str) -> list[str]:
     """The arguments a caller may pass to an operation."""
-    return list(inspect.signature(ACTIONS[action]).parameters)[2:]  # After contexts, today.
+    return list(inspect.signature(ACTIONS[action]).parameters)[1:]  # After the env.
 
 
 def check_arguments(action: str, arguments: dict) -> None:
@@ -113,6 +125,11 @@ def _has_type(value, hint) -> bool:
         return any(_has_type(value, option) for option in typing.get_args(hint))
     if typing.get_origin(hint) is list:
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    if typing.get_origin(hint) is dict:
+        return isinstance(value, dict) and all(
+            isinstance(key, str) and isinstance(item, str) for key, item in value.items())
+    if hint is type(None):
+        return value is None
     if hint is bool:
         return isinstance(value, bool)
     return isinstance(value, hint)
@@ -124,15 +141,22 @@ def _describe_type(hint) -> str:
         return " or ".join(options)
     if typing.get_origin(hint) is list:
         return "a list of strings"
+    if typing.get_origin(hint) is dict:
+        return "an object with string values"
     return {str: "a string", bool: "true or false"}.get(hint, hint.__name__)
 
 
-def run(action: str, contexts: list[ContextRef], today: date, **arguments) -> Result:
-    """Run an operation. Failures are returned as an error `Result`, not raised."""
+def run(action: str, contexts: list[ContextRef], today: date, *,
+        repos: Path | None = None, **arguments) -> Result:
+    """Run an operation. Failures are returned as an error `Result`, not raised.
+
+    `repos` is `DuetData/repos`; only the branch operations and the branch
+    blocks of the answers need it.
+    """
     try:
         check_arguments(action, arguments)
         with collect_affected() as affected:
-            text = ACTIONS[action](contexts, today, **arguments)
+            text = ACTIONS[action](TicketEnv(contexts, today, repos), **arguments)
         return Result(text, tickets=affected)
     except TicketError as error:
         return Result(f"Error: {error}", is_error=True)

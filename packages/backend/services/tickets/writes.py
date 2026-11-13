@@ -1,4 +1,8 @@
-"""The write side: `new_ticket`, `move_ticket`, and `edit_ticket`.
+"""The write side: `new_ticket`, `edit_ticket`, and the plain part of `move_ticket`.
+
+`move_ticket` itself lives in `branches.py`, because a ticket with a branch
+is moved by a different path; a ticket without one is moved here, by
+`move_plain`, and the branch path reuses the checks and the move below.
 
 Failure contract: an error means nothing changed. Each operation validates
 everything first, writes `INDEX.md` atomically, and rolls back a folder move
@@ -12,16 +16,17 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from services.resolve_paths import ContextRef, TICKET_NUMBER_RE
+from services.resolve_paths import TICKET_NUMBER_RE
 from services.tickets.frontmatter import Frontmatter, format_scalar
 from services.tickets.model import (
     INDEX_FILENAME,
-    SHELVES,
     Business,
     Ticket,
+    TicketEnv,
     TicketError,
     available_codes_hint,
     check_same_business,
@@ -179,7 +184,7 @@ def _validate_parent(biz: Business, raw: str, child_work_type: str, child: str =
     return parent
 
 
-def _require_editable(ticket: Ticket) -> None:
+def require_editable(ticket: Ticket) -> None:
     """Refuse to modify a ticket whose `INDEX.md` we couldn't read.
 
     Writing back a file we never read would destroy its content.
@@ -210,7 +215,7 @@ def _write_index(path: Path, text: str) -> None:
         raise
 
 
-def _write_frontmatter(ticket: Ticket) -> None:
+def write_frontmatter(ticket: Ticket) -> None:
     try:
         _write_index(ticket.index_path, ticket.frontmatter.render())
     except OSError as error:
@@ -218,7 +223,7 @@ def _write_frontmatter(ticket: Ticket) -> None:
                           f"changed. Try again once the drive is available.") from error
 
 
-def _move_folder_and_write(ticket: Ticket, target: Path) -> None:
+def move_folder_and_write(ticket: Ticket, target: Path) -> None:
     """Move a ticket's folder, then write its frontmatter, as one all-or-nothing step.
 
     If the write fails, the folder is moved back, so the caller sees a clean
@@ -253,7 +258,7 @@ def _move_folder(ticket: Ticket, target: Path) -> None:
     ticket.folder = target
 
 
-def _ensure_frontmatter(ticket: Ticket) -> None:
+def ensure_frontmatter(ticket: Ticket) -> None:
     """Give a ticket minimal frontmatter if it has none, so there's a place for new fields."""
     if ticket.frontmatter.present:
         return
@@ -274,20 +279,21 @@ def _created_index_note(ticket: Ticket) -> list[str]:
                 f"frontmatter and a title heading."]
 
 
-def _frontmatter_block(frontmatter: Frontmatter, label: str) -> list[str]:
+def frontmatter_block(frontmatter: Frontmatter, label: str) -> list[str]:
     return [label, "", "```yaml", *frontmatter.text().split("\n")[:-1], "```"]
 
 
 # === new_ticket ===
 
 
-def new_ticket(contexts: list[ContextRef], today: date, name: str, parent: str = "",
+def new_ticket(env: TicketEnv, name: str, parent: str = "",
                work_type: str = "project", shelf: str = "work", description: str = "",
                icon: str = "", area: str = "", code: str = "", business: str = "") -> str:
     """Create a ticket: allocate its number, create its folder, write `INDEX.md`.
 
     Not idempotent: every successful call creates a new ticket.
     """
+    contexts, today = env.contexts, env.today
     work_type = (work_type or "project").strip().lower()
     shelf = (shelf or "work").strip().lower()
     if work_type not in LETTER_BY_WORK_TYPE:
@@ -338,20 +344,20 @@ def new_ticket(contexts: list[ContextRef], today: date, name: str, parent: str =
         _create_ticket_folder(folder, number, frontmatter)
 
     created = Ticket(number, slug, folder, shelf, frontmatter)
-    record(created)
+    record(created, env.repos)
     summary = [f"{work_type.capitalize()} in {shelf}."]
     summary.append(f"Parent: {parent_ticket.title}." if parent_ticket else "No parent.")
     if area:
         summary.append(f"Business area: {area}.")
     else:
         summary.append("No business area; set one with `edit_ticket` if it belongs to one.")
-    lines = [f"### Created {created.title}", "", *location_lines(created), "",
+    lines = [f"### Created {created.title}", "", *location_lines(created, env.repos), "",
              " ".join(summary), ""]
     if note := _name_note(name, slug):
         lines += [f"{note[0].upper()}{note[1:]}.", ""]
     if description_note:
         lines += [description_note, ""]
-    lines += [*_frontmatter_block(frontmatter, f"Frontmatter written to {INDEX_FILENAME}:"), "",
+    lines += [*frontmatter_block(frontmatter, f"Frontmatter written to {INDEX_FILENAME}:"), "",
               f"{INDEX_FILENAME} already has a title heading. Add your content below it; "
               f"{_MANAGED_NOTE}."]
     return "\n".join(lines)
@@ -404,89 +410,128 @@ def _archive_month_dir(biz: Business, today: date) -> Path:
     return archive / f"{today.year:04d}{today.month:02d}"
 
 
-def move_ticket(contexts: list[ContextRef], today: date, ticket: str, to: str) -> str:
-    """Move a ticket to work, backlog, or archive, recording close and reopen dates.
+@dataclass
+class MovePlan:
+    """What a move does, decided by `plan_move` before anything changes."""
 
-    Idempotent: moving a ticket to the shelf it's already on succeeds without
-    writing anything, so a retry after a lost response never adds a date.
-    """
-    to = (to or "").strip().lower()
-    if to not in SHELVES:
-        raise TicketError(f'`to` must be "work", "backlog", or "archive"; got "{to}".')
-    number = parse_number(ticket)
-    with disk_lock():
-        biz = resolve_business(contexts, code=number[:3])
-        item = find_ticket(biz, number)
-        if item.shelf == to:
-            record(item)
-            return "\n".join([f"### {item.title} is already in {to}", "",
-                              *location_lines(item), "", "No changes."])
-        # Only closing and reopening are dated; work <-> backlog is not, and it
-        # doesn't touch INDEX.md, so it works even on a file we couldn't read.
-        date_field = None
-        if to == "archive":
-            date_field = "closed"
-        elif item.shelf == "archive":
-            date_field = "reopened"
-        if date_field:
-            _require_editable(item)
-        children = biz.children(number)
-        if to == "archive":
-            open_children = [t for t in children if t.shelf != "archive"]
-            if open_children:
-                names = ", ".join(t.title for t in open_children)
-                raise TicketError(
-                    f"{item.title} still has open tickets: {names}. Close them or "
-                    f"reassign them with `edit_ticket` first.")
-            unknown = [t for t in biz.unreadable if t.shelf != "archive"]
-            if item.is_group and unknown:
-                names = ", ".join(t.title for t in unknown)
-                raise TicketError(
-                    f"can't confirm that {item.title} has no open tickets, because "
-                    f"{INDEX_FILENAME} could not be read for {names}. Nothing was changed. "
-                    f"Ask the user to fix the file.")
-            target_dir = _archive_month_dir(biz, today)
-        else:
-            target_dir = biz.folder / to
-        target = target_dir / item.folder.name
-        if target.exists():
-            raise TicketError(f"`{target}` already exists, so {item.title} can't be moved "
-                              f"there. Nothing was changed. Ask the user how to resolve "
-                              f"the conflict.")
+    to: str
+    source_shelf: str
+    target_dir: Path
+    target: Path
+    date_field: str | None   # "closed", "reopened", or None for work <-> backlog.
+    children: list[Ticket]
 
-        source_shelf = item.shelf
-        try:
-            target_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            raise TicketError(f"couldn't create `{target_dir}`: {error}. Nothing was "
-                              f"changed. Try again once the drive is available.") from error
-        if date_field:
-            _ensure_frontmatter(item)
-            dates = item.frontmatter.get_list(date_field) + [today.isoformat()]
-            item.frontmatter.set(date_field, dates)
-            _move_folder_and_write(item, target)
-        else:
-            _move_folder(item, target)
-        closed_parent = _closed_parent(biz, item) if source_shelf == "archive" else None
-        item.shelf = to
-        record(item)
 
-    lines = [f"### Moved {item.title} from {source_shelf} to {to}", "", *location_lines(item)]
+def already_there(env: TicketEnv, item: Ticket, to: str) -> str:
+    """The answer for a move to the shelf the ticket is already on."""
+    record(item, env.repos)
+    return "\n".join([f"### {item.title} is already in {to}", "",
+                      *location_lines(item, env.repos), "", "No changes."])
+
+
+def plan_move(biz: Business, item: Ticket, to: str, today: date) -> MovePlan:
+    """The ordinary checks of a move, with nothing changed yet. Call under `disk_lock`."""
+    # Only closing and reopening are dated; work <-> backlog is not, and it
+    # doesn't touch INDEX.md, so it works even on a file we couldn't read.
+    date_field = None
+    if to == "archive":
+        date_field = "closed"
+    elif item.shelf == "archive":
+        date_field = "reopened"
     if date_field:
+        require_editable(item)
+    elif to == "backlog" and item.read_error:
+        # A ticket shelved with its branch would lose it from the records.
+        raise TicketError(
+            f"can't read `{item.index_path}` ({item.read_error}), so Duet can't confirm "
+            f"that {item.title} has no branch, and shelving a ticket with a branch would "
+            f"lose it. Nothing was changed. Ask the user to fix the file.")
+    children = biz.children(item.number)
+    if to == "archive":
+        open_children = [t for t in children if t.shelf != "archive"]
+        if open_children:
+            names = ", ".join(t.title for t in open_children)
+            raise TicketError(
+                f"{item.title} still has open tickets: {names}. Close them or "
+                f"reassign them with `edit_ticket` first.")
+        unknown = [t for t in biz.unreadable if t.shelf != "archive"]
+        if item.is_group and unknown:
+            names = ", ".join(t.title for t in unknown)
+            raise TicketError(
+                f"can't confirm that {item.title} has no open tickets, because "
+                f"{INDEX_FILENAME} could not be read for {names}. Nothing was changed. "
+                f"Ask the user to fix the file.")
+        target_dir = _archive_month_dir(biz, today)
+    else:
+        target_dir = biz.folder / to
+    target = target_dir / item.folder.name
+    if target.exists():
+        raise TicketError(f"`{target}` already exists, so {item.title} can't be moved "
+                          f"there. Nothing was changed. Ask the user how to resolve "
+                          f"the conflict.")
+    return MovePlan(to, item.shelf, target_dir, target, date_field, children)
+
+
+def apply_move(biz: Business, item: Ticket, plan: MovePlan, today: date,
+               write: bool = False) -> Ticket | None:
+    """Move the folder, writing `INDEX.md` with it when the move is dated or `write` is set.
+
+    The caller has already changed the frontmatter it wants written. Returns
+    the closed parent of a reopened ticket, for the answer. Call under `disk_lock`.
+    """
+    try:
+        plan.target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise TicketError(f"couldn't create `{plan.target_dir}`: {error}. Nothing was "
+                          f"changed. Try again once the drive is available.") from error
+    if plan.date_field:
+        ensure_frontmatter(item)
+        dates = item.frontmatter.get_list(plan.date_field) + [today.isoformat()]
+        item.frontmatter.set(plan.date_field, dates)
+    if plan.date_field or write:
+        move_folder_and_write(item, plan.target)
+    else:
+        _move_folder(item, plan.target)
+    closed_parent = _closed_parent(biz, item) if plan.source_shelf == "archive" else None
+    item.shelf = plan.to
+    return closed_parent
+
+
+def move_lines(env: TicketEnv, item: Ticket, plan: MovePlan,
+               closed_parent: Ticket | None, extra: list[str] | None = None) -> list[str]:
+    """The answer for a move: where the ticket is now, then what else happened."""
+    number = item.number
+    lines = [f"### Moved {item.title} from {plan.source_shelf} to {plan.to}", "",
+             *location_lines(item, env.repos)]
+    if plan.date_field:
         lines += _created_index_note(item)
-    if children:
-        stay = "stays where it is" if len(children) == 1 else "stay where they are"
-        lines += ["", f"Only {number} was moved; the {pluralize(len(children), 'ticket')} "
-                      f"under it {stay}."]
+    if extra:
+        lines += ["", *extra]
+    if plan.children:
+        stay = "stays where it is" if len(plan.children) == 1 else "stay where they are"
+        lines += ["", f"Only {number} was moved; the "
+                      f"{pluralize(len(plan.children), 'ticket')} under it {stay}."]
     if closed_parent:
         lines += ["", f"Note: its parent {closed_parent.title} is closed. Reopen the parent "
                       f'with `move_ticket(ticket="{closed_parent.number}", to="work")` or '
                       f"give this ticket another parent with `edit_ticket`."]
-    if date_field:
+    if plan.date_field:
+        dates = item.frontmatter.get_list(plan.date_field)
         kept = " Earlier dates were kept." if len(dates) > 1 else ""
-        lines += ["", f"Added `{date_field}: {today.isoformat()}` to the frontmatter.{kept}",
-                  "", *_frontmatter_block(item.frontmatter, "Updated frontmatter:")]
-    return "\n".join(lines)
+        lines += ["", f"Added `{plan.date_field}: {env.today.isoformat()}` to the "
+                      f"frontmatter.{kept}",
+                  "", *frontmatter_block(item.frontmatter, "Updated frontmatter:")]
+    return lines
+
+
+def move_plain(env: TicketEnv, biz: Business, item: Ticket, to: str) -> str:
+    """Move a ticket that has no branch. Call under `disk_lock`, for the whole move."""
+    if item.shelf == to:
+        return already_there(env, item, to)
+    plan = plan_move(biz, item, to, env.today)
+    closed_parent = apply_move(biz, item, plan, env.today)
+    record(item, env.repos)
+    return "\n".join(move_lines(env, item, plan, closed_parent))
 
 
 def _closed_parent(biz: Business, ticket: Ticket) -> Ticket | None:
@@ -498,7 +543,7 @@ def _closed_parent(biz: Business, ticket: Ticket) -> Ticket | None:
 # === edit_ticket ===
 
 
-def edit_ticket(contexts: list[ContextRef], today: date, ticket: str,
+def edit_ticket(env: TicketEnv, ticket: str,
                 name: str | None = None, parent: str | None = None,
                 area: str | None = None, icon: str | None = None,
                 description: str | None = None, routine_type: str | None = None) -> str:
@@ -522,7 +567,7 @@ def edit_ticket(contexts: list[ContextRef], today: date, ticket: str,
     if description is not None:
         description, description_note = _clean_description(description)
     routine_type = _clean_routine_type(routine_type) if routine_type is not None else None
-    return _edit_one(contexts, today, ticket, name, slug, parent, area, icon, description,
+    return _edit_one(env, ticket, name, slug, parent, area, icon, description,
                      description_note, routine_type)
 
 
@@ -537,15 +582,16 @@ def _describe_change(label: str, old: str | None, new: str | None, quote: bool =
     return f"{label} changed from {show(old)} to {show(new)}{suffix}"
 
 
-def _edit_one(contexts: list[ContextRef], today: date, ticket: str, name: str | None,
+def _edit_one(env: TicketEnv, ticket: str, name: str | None,
               slug: str | None, parent: str | None, area: str | None, icon: str | None,
               description: str | None, description_note: str = "",
               routine_type: str | None = None) -> str:
+    contexts, today = env.contexts, env.today
     number = parse_number(ticket)
     with disk_lock():
         biz = resolve_business(contexts, code=number[:3])
         item = find_ticket(biz, number)
-        _require_editable(item)
+        require_editable(item)
         if routine_type and item.work_type != "routine":
             raise TicketError(f"{item.title} is a {item.work_type}. Only a routine has a "
                               f"`routine-type`: it names the routine's class.")
@@ -583,7 +629,7 @@ def _edit_one(contexts: list[ContextRef], today: date, ticket: str, name: str | 
                 f"A ticket inherits its business area from its parent; omit `area`, or "
                 f"clear the parent in the same call.")
 
-        _ensure_frontmatter(item)
+        ensure_frontmatter(item)
         fm = item.frontmatter
         old_area = fm.get("business-area")
         if slug is not None:
@@ -622,26 +668,27 @@ def _edit_one(contexts: list[ContextRef], today: date, ticket: str, name: str | 
             changes.append(_describe_change(label, old, value, quote=quote))
 
         if not changes:
-            record(item)
+            record(item, env.repos)
             return "\n".join([f"### {item.title} is already up to date", "",
-                              *location_lines(item), "", "No changes."])
+                              *location_lines(item, env.repos), "", "No changes."])
 
         if slug is not None:
-            _move_folder_and_write(item, target)
+            move_folder_and_write(item, target)
         else:
-            _write_frontmatter(item)
+            write_frontmatter(item)
 
     if slug is not None:
         item.name = slug
-    record(item)
+    record(item, env.repos)
     title = item.title
     # The word-rule note matters only when this call wrote the description;
     # an idempotent retry that changed nothing shouldn't repeat it.
     description_changed = any(change.startswith("Description ") for change in changes)
     note_lines = [description_note, ""] if description_note and description_changed else []
-    lines = [f"### Updated {title}", "", *location_lines(item), *_created_index_note(item), "",
+    lines = [f"### Updated {title}", "", *location_lines(item, env.repos),
+             *_created_index_note(item), "",
              *[f"* {change}" for change in changes], "", *note_lines,
-             *_frontmatter_block(fm, "Updated frontmatter:")]
+             *frontmatter_block(fm, "Updated frontmatter:")]
     return "\n".join(lines)
 
 

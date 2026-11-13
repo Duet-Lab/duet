@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from pathlib import Path
 
 from services.resolve_paths import ContextRef
+from services.tickets.branch_info import BRANCH_FIELDS, block_lines
 from services.tickets.model import (
     INDEX_FILENAME,
     SHELVES,
     Business,
     Ticket,
+    TicketEnv,
     TicketError,
     businesses_with_codes,
     check_same_business,
@@ -77,13 +79,14 @@ def _resolve_view(contexts: list[ContextRef], code: str = "", business: str = ""
     return resolve_business(contexts, code, business)
 
 
-def tickets(contexts: list[ContextRef], today: date, code: str = "", business: str = "",
+def tickets(env: TicketEnv, code: str = "", business: str = "",
             shelf: str = "", parent: str = "", number: str | list[str] = "") -> str:
     """List a business's tickets. See the `tickets` MCP tool for the output format.
 
     `number` is a lookup and stands alone. `parent` and `shelf` are filters
     and combine. Conflicting arguments are rejected rather than ignored.
     """
+    contexts, repos = env.contexts, env.repos
     shelf = (shelf or "").strip().lower()
     if shelf and shelf not in SHELVES:
         raise TicketError(f'`shelf` must be "work", "backlog", or "archive"; got "{shelf}".')
@@ -93,8 +96,8 @@ def tickets(contexts: list[ContextRef], today: date, code: str = "", business: s
                               "`number` to look up specific tickets, or `parent` and "
                               "`shelf` to list them.")
         if isinstance(number, list):
-            return _lookup_batch(contexts, number, code, business)
-        return _lookup(contexts, number, code, business, {})
+            return _lookup_batch(contexts, repos, number, code, business)
+        return _lookup(contexts, repos, number, code, business, {})
     if isinstance(number, list):
         raise TicketError("`number` is an empty list. Pass at least one ticket number.")
     if parent and parent.lower() != "unsorted":
@@ -103,17 +106,17 @@ def tickets(contexts: list[ContextRef], today: date, code: str = "", business: s
         check_same_business(biz, group, code, "")
         if business:
             biz = _resolve_view(contexts, biz.code, business, {biz.code: biz})
-        return _render_group(biz, group, shelf)
+        return _render_group(biz, group, repos, shelf)
     biz = _resolve_view(contexts, code, business)
     if parent:
-        return _render_group(biz, None, shelf)
+        return _render_group(biz, None, repos, shelf)
     if shelf:
-        return _render_shelf(biz, shelf)
-    return _render_overview(biz)
+        return _render_shelf(biz, shelf, repos)
+    return _render_overview(biz, repos)
 
 
-def _lookup(contexts: list[ContextRef], raw: str, code: str, business: str,
-            loaded: dict[str, Business]) -> str:
+def _lookup(contexts: list[ContextRef], repos: Path | None, raw: str, code: str,
+            business: str, loaded: dict[str, Business]) -> str:
     """Look up one ticket. `loaded` caches businesses so a batch reads each one once."""
     number = parse_number(raw)
     if code and code != number[:3]:
@@ -130,11 +133,11 @@ def _lookup(contexts: list[ContextRef], raw: str, code: str, business: str,
         if isinstance(biz, AreaView) and ticket not in biz.tickets:
             raise TicketError(f"{number} is not in business area {biz.area}. Omit "
                               "`business` to look it up without an area filter.")
-    record(ticket)
-    return _render_ticket(biz, ticket)
+    record(ticket, repos)
+    return _render_ticket(biz, ticket, repos)
 
 
-def _lookup_batch(contexts: list[ContextRef], numbers: list[str],
+def _lookup_batch(contexts: list[ContextRef], repos: Path | None, numbers: list[str],
                   code: str, business: str) -> str:
     """Look up several tickets. One failure doesn't affect the others.
 
@@ -148,7 +151,7 @@ def _lookup_batch(contexts: list[ContextRef], numbers: list[str],
     for raw in numbers:
         label = str(raw).strip().lstrip("@")
         try:
-            sections.append(_lookup(contexts, raw, code, business, loaded))
+            sections.append(_lookup(contexts, repos, raw, code, business, loaded))
         except TicketError as error:
             failed.append(label)
             sections.append(f"### {label}\n\nError: {error}")
@@ -168,7 +171,14 @@ def _count_line(items: list[Ticket]) -> str:
     return "Tickets: " + (", ".join(parts) if parts else "none")
 
 
-def _ticket_line(ticket: Ticket, current_shelf: str) -> str:
+def _ticket_line(ticket: Ticket, current_shelf: str, repos: Path | None) -> str:
+    """Format a list entry with its branch block indented under it, if it has one."""
+    text = _ticket_entry(ticket, current_shelf)
+    branch = block_lines(ticket.number, ticket.branches, repos)
+    return "\n".join([text, *(f"  {line}" for line in branch)])
+
+
+def _ticket_entry(ticket: Ticket, current_shelf: str) -> str:
     """Format a list entry; tickets outside `current_shelf` get a shelf tag."""
     text = f"* `{ticket.number}`"
     if ticket.name:
@@ -194,18 +204,25 @@ def _group_heading(biz: Business, number: str, current_shelf: str) -> tuple[str,
 
 
 def _render_section(title: str, group: Ticket | None, items: list[Ticket],
-                    listed: list[Ticket], current_shelf: str) -> list[str]:
+                    listed: list[Ticket], current_shelf: str, repos: Path | None) -> list[str]:
     lines = [f"#### {title}", ""]
     if group and group.description:
         lines += [group.description, ""]
+    lines += _group_branch(group, repos)
     lines.append(_count_line(items))
     if listed:
         ordered = sorted(listed, key=lambda t: (SHELVES.index(t.shelf), t.number))
-        lines += [""] + [_ticket_line(t, current_shelf) for t in ordered]
+        lines += [""] + [_ticket_line(t, current_shelf, repos) for t in ordered]
     return lines + [""]
 
 
-def _render_overview(biz: Business) -> str:
+def _group_branch(group: Ticket | None, repos: Path | None) -> list[str]:
+    """The branch block of a program or routine shown as a heading, as its own line has none."""
+    branch = block_lines(group.number, group.branches, repos) if group else []
+    return [*branch, ""] if branch else []
+
+
+def _render_overview(biz: Business, repos: Path | None) -> str:
     """Render the default view: active work, with each group's backlog alongside."""
     lines = [f"### Tickets of {biz.name} ({biz.code})", "",
              f"**Business folder:** `{biz.folder}`", ""]
@@ -218,14 +235,15 @@ def _render_overview(biz: Business) -> str:
         has_active = any(t.shelf == "work" for t in items)
         if group and group.shelf == "backlog" and not has_active:
             # A shelved group is summarized by its counts only.
-            backlog_groups += _render_section(title, group, items, [], "work")
+            backlog_groups += _render_section(title, group, items, [], "work", repos)
         elif (group and group.shelf == "work") or has_active or (listed and not group) \
                 or (listed and group.shelf == "archive"):
-            lines += _render_section(title, group, items, listed, "work")
+            lines += _render_section(title, group, items, listed, "work", repos)
     unsorted = biz.children(None)
     if any(t.shelf in open_shelves for t in unsorted):
         lines += _render_section(UNSORTED, None, unsorted,
-                                 [t for t in unsorted if t.shelf in open_shelves], "work")
+                                 [t for t in unsorted if t.shelf in open_shelves], "work",
+                                 repos)
     lines += backlog_groups
     lines += _render_unreadable(biz, open_shelves)
     lines += _render_archive_summary(biz)
@@ -287,7 +305,7 @@ def _render_archive_summary(biz: Business) -> list[str]:
     return lines + ([f"{count}, including:", "", *notable] if notable else [f"{count}."])
 
 
-def _render_shelf(biz: Business, shelf: str) -> str:
+def _render_shelf(biz: Business, shelf: str, repos: Path | None) -> str:
     """Render every ticket on one shelf, grouped by parent."""
     lines = [f"### {biz.name} ({biz.code}) {shelf}", ""]
     if not any(t.shelf == shelf for t in biz.tickets):
@@ -300,16 +318,17 @@ def _render_shelf(biz: Business, shelf: str) -> str:
             if group and group.shelf == shelf == "archive":
                 closed = group.frontmatter.get_list("closed")
                 title += f" (closed {closed[-1]})" if closed else ""
-            lines += _render_section(title, group, items, listed, shelf)
+            lines += _render_section(title, group, items, listed, shelf, repos)
     unsorted = biz.children(None)
     if any(t.shelf == shelf for t in unsorted):
         lines += _render_section(UNSORTED, None, unsorted,
-                                 [t for t in unsorted if t.shelf == shelf], shelf)
+                                 [t for t in unsorted if t.shelf == shelf], shelf, repos)
     lines += _render_unreadable(biz, (shelf,))
     return "\n".join(lines).rstrip("\n")
 
 
-def _render_group(biz: Business, number: str | None, shelf: str = "") -> str:
+def _render_group(biz: Business, number: str | None, repos: Path | None,
+                  shelf: str = "") -> str:
     """Render one group's tickets: every shelf by default, or just `shelf`."""
     items = biz.children(number)
     if isinstance(biz, AreaView) and number and not items and not any(
@@ -334,25 +353,27 @@ def _render_group(biz: Business, number: str | None, shelf: str = "") -> str:
     lines = [f"### {title} — {biz.name} ({biz.code})", "", *note]
     if group and group.description:
         lines += [group.description, ""]
+    lines += _group_branch(group, repos)
     lines.append(_count_line(items))
     listed = [t for t in items if t.shelf == shelf] if shelf else items
     if shelf:
         lines += ["", f"Showing {shelf} only:" if listed else f"No tickets in {shelf}."]
     if listed:
         ordered = sorted(listed, key=lambda t: (SHELVES.index(t.shelf), t.number))
-        lines += [""] + [_ticket_line(t, shelf or "work") for t in ordered]
+        lines += [""] + [_ticket_line(t, shelf or "work", repos) for t in ordered]
     return "\n".join(lines)
 
 
 _STATE_LABELS = {"work": "in work", "backlog": "in backlog", "archive": "closed (archived)"}
 
 
-def _render_ticket(biz: Business, ticket: Ticket) -> str:
-    """Render a single ticket: its location, its frontmatter fields, and any tickets under it."""
+def _render_ticket(biz: Business, ticket: Ticket, repos: Path | None) -> str:
+    """Render a single ticket: its location and branches, its frontmatter fields, and any
+    tickets under it. The branch fields are shown by the branch block, not in the list."""
     lines = [f"### {ticket.title}", "",
              f"{ticket.work_type.capitalize()}, {_STATE_LABELS[ticket.shelf]}. "
              f"Business: {biz.name} ({biz.code}).", "",
-             *location_lines(ticket), ""]
+             *location_lines(ticket, repos), ""]
     if ticket.read_error:
         return "\n".join(lines + [f"{INDEX_FILENAME} could not be read ({ticket.read_error}), "
                                   f"so its frontmatter is unknown."])
@@ -361,6 +382,8 @@ def _render_ticket(biz: Business, ticket: Ticket) -> str:
     elif not ticket.frontmatter.present:
         lines.append(f"{INDEX_FILENAME} has no frontmatter.")
     for key in ticket.frontmatter.keys():
+        if key in BRANCH_FIELDS:
+            continue
         values = ticket.frontmatter.get_list(key)
         text = ", ".join(values) if values else "none"
         if key == "parent" and ticket.parent and biz.find(ticket.parent):
@@ -371,5 +394,23 @@ def _render_ticket(biz: Business, ticket: Ticket) -> str:
         ordered = sorted(children, key=lambda t: (SHELVES.index(t.shelf), t.number))
         lines += ["", _count_line(children)]
         if ordered:
-            lines += [""] + [_ticket_line(t, "work") for t in ordered]
+            lines += [""] + [_ticket_line(t, "work", repos) for t in ordered]
     return "\n".join(lines)
+
+
+def ticket_orientation(env: TicketEnv, raw: str) -> str:
+    """The section `orientation(ticket=...)` adds: where the ticket is and its branches."""
+    number = parse_number(raw)
+    biz = resolve_business(env.contexts, code=number[:3])
+    ticket = find_ticket(biz, number)
+    lines = [f"**Ticket:** `@{ticket.number}` {ticket.name or ticket.number} — "
+             f"{ticket.work_type}, {_STATE_LABELS[ticket.shelf]}. Business: {biz.name}.", "",
+             f"**Folder:** `{ticket.folder}`", ""]
+    if ticket.read_error:
+        return "\n".join(lines + [f"{INDEX_FILENAME} could not be read ({ticket.read_error}), "
+                                  f"so its branches are unknown."])
+    branch = block_lines(ticket.number, ticket.branches, env.repos)
+    if not branch or not ticket.branches.active:
+        branch = ["No branch: work on this ticket goes to `main` in the main clones "
+                  "(`@<repo>.git`).", *([""] + branch if branch else [])]
+    return "\n".join(lines + branch)

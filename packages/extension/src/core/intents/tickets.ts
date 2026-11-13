@@ -44,7 +44,11 @@ export interface TicketFrontmatter {
     /** `routine-type` from INDEX.md, lower case; null when absent. */
     routineType: string | null;
     icon: string;
+    /** `git-branch-name`: the ticket's branch, written by the server; null when it has none. */
+    branch: string | null;
 }
+
+const NO_FRONTMATTER: TicketFrontmatter = { parent: null, workType: null, routineType: null, icon: '', branch: null };
 
 export interface TicketPlace {
     shelf: Shelf;
@@ -60,19 +64,19 @@ const MAX_PARENT_CHAIN = 16;
 const ARCHIVE_DEPTH = 3;
 
 /**
- * Read `parent`, `work-type`, `routine-type` and `icon` from the frontmatter at the start of a
+ * Read `parent`, `work-type`, `routine-type`, `icon` and `git-branch-name` from the frontmatter at the start of a
  * ticket's `INDEX.md`. An empty value and `null` both mean "no parent" and "no
  * icon". A parent written as a folder name or an alpha path is reduced to its
  * ticket number.
  */
 export function parseTicketFrontmatter(head: string): TicketFrontmatter {
-    const result: TicketFrontmatter = { parent: null, workType: null, routineType: null, icon: '' };
+    const result: TicketFrontmatter = { ...NO_FRONTMATTER };
     const lines = head.replace(/^﻿/, '').split(/\r?\n/);
     if (lines[0] !== '---') {
         return result;
     }
     for (let i = 1; i < lines.length && lines[i] !== '---'; i++) {
-        const match = /^(parent|work-type|routine-type|icon)\s*:(.*)$/.exec(lines[i]);
+        const match = /^(parent|work-type|routine-type|icon|git-branch-name)\s*:(.*)$/.exec(lines[i]);
         if (!match) {
             continue;
         }
@@ -83,6 +87,8 @@ export function parseTicketFrontmatter(head: string): TicketFrontmatter {
             result.routineType = value ? value.toLowerCase() : null;
         } else if (match[1] === 'icon') {
             result.icon = value ?? '';
+        } else if (match[1] === 'git-branch-name') {
+            result.branch = value;
         } else {
             result.parent = value ? (parseTicketFolderName(value.replace(/^@/, ''))?.number ?? value) : null;
         }
@@ -187,6 +193,24 @@ export class TicketReader {
         return pickRoutine(tickets, routineType);
     }
 
+    /**
+     * The ticket's branch from `git-branch-name`: a flag that it has worktrees
+     * to ask the server for. Null when the ticket has no branch or no `INDEX.md`.
+     *
+     * @throws when `INDEX.md` is there but cannot be read: then it is unknown
+     */
+    async ticketBranch(ticketPath: string): Promise<string | null> {
+        const indexPath = path.join(ticketPath, 'INDEX.md');
+        try {
+            return (await withTimeout(this.readFrontmatter(indexPath, true), this.timeoutMs)).branch;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                return null;
+            }
+            throw new Error(`INDEX.md тикета не читается: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
     /** Revalidate the criterion on the resolved folder before opening it. */
     async isRoutineAt(ticketPath: string, routineType: string): Promise<boolean> {
         const front = await this.checkedFrontmatter(path.join(ticketPath, 'INDEX.md'));
@@ -199,7 +223,7 @@ export class TicketReader {
             return await withTimeout(this.readFrontmatter(indexPath, true), this.timeoutMs);
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-                return { parent: null, workType: null, routineType: null, icon: '' };
+                return { ...NO_FRONTMATTER };
             }
             throw new Error(`Не удалось проверить Куратора: ${indexPath}: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -273,7 +297,7 @@ export class TicketReader {
         try {
             return await withTimeout(this.readFrontmatter(indexPath), this.timeoutMs);
         } catch {
-            return { parent: null, workType: null, routineType: null, icon: '' };
+            return { ...NO_FRONTMATTER };
         }
     }
 

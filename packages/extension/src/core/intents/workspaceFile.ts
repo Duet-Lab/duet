@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/naming-convention -- VS Code setting keys are dotted */
 import { parseJsonc } from '../jsonc';
 import { backdropColor, chooseIntentColor, isPaletteColor, normalizeRemembered } from './colors';
+import { TicketWorktree, repoFolders } from './worktrees';
 
 /**
  * The workspace file of an intent: `DuetData/workspaces/<business>/<ticket
@@ -22,8 +23,10 @@ export const INTENT_CANON_KEY = 'duet.intent.canon';
  * 3 — and the backdrop of highlighted text.
  * 4 — the tab label of the notepad carries the intent's emoji by the three
  *     steps of its row (`naming.ts:intentIcon`), not always the business's.
+ * 5 — the ticket's worktrees follow the main clones, each with a `name`
+ *     (`worktrees.ts:repoFolders`).
  */
-export const INTENT_CANON_VERSION = 4;
+export const INTENT_CANON_VERSION = 5;
 
 const WINDOW_COLOR_KEY = 'titleBar.activeBackground';
 
@@ -32,6 +35,8 @@ export interface IntentWorkspaceSpec {
     businessPath: string;
     /** `git_repos` aliases in declared order. */
     aliases: string[];
+    /** Worktrees of the ticket whose folders exist, in the server's order; absent or empty without a branch. */
+    worktrees?: TicketWorktree[];
     /** Additional folders of a meta business (`core/workspace.ts:metaExtraFolders`); absent or empty otherwise. */
     extraFolders?: Array<{ path: string; name?: string }>;
     /** Ticket folder name: `DUE017_IntentSwitcher`. */
@@ -83,7 +88,7 @@ export function buildIntentWorkspaceText(
 ): string {
     const folders = [
         { path: spec.businessPath },
-        ...spec.aliases.map(alias => ({ path: `../../repos/${alias}.git` })),
+        ...repoFolders(spec.aliases, spec.worktrees ?? []),
         ...(spec.extraFolders ?? [])
     ];
     const settings = {

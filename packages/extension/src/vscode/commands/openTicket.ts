@@ -7,6 +7,7 @@ import { intentIcon, intentIdentity, intentTabLabel } from '../../core/intents/n
 import { TicketService } from '../../core/intents/ticketService';
 import { BUSINESS_CURATION, TicketInfo, readBusinessManifest, resolveTicketNow } from '../../core/intents/tickets';
 import { IntentWorkspacePlan, planIntentWorkspace } from '../../core/intents/workspaceFile';
+import { TicketWorktree } from '../../core/intents/worktrees';
 import { metaExtraFolders } from '../../core/workspace';
 import { IntentsRuntime } from '../intents/IntentsRuntime';
 import { messageOf, say } from '../notify';
@@ -28,7 +29,8 @@ export class TicketOpener {
     /**
      * Open the intent of a ticket: move it out of the backlog, bring the
      * business's repos to disk, build the workspace file anew, hold the intent
-     * and its colour, open the file.
+     * and its colour, open the file. A ticket with a branch gets its worktrees
+     * beside the main clones (`ticketWorktrees`).
      *
      * @returns whether a window was opened or brought forward
      */
@@ -103,9 +105,11 @@ export class TicketOpener {
         }
         // One emoji for the row of the window and for the tab of its notepad
         const ticketIcon = await this.runtime.tickets.inheritedIcon(businessPath, place.path);
+        const worktrees = await this.ticketWorktrees(ticketNumber, place.path);
         const plan = await this.planWorkspaceFile(workspacePath, {
             businessPath,
             aliases: Object.keys(gitRepos),
+            worktrees,
             extraFolders: metaExtraFolders(business.meta, businessPath, getVentureFolders(), this.paths.root),
             ticketFolder: place.folder,
             tabLabel: intentTabLabel(intentIcon(ticketIcon, manifest.icon), identity)
@@ -142,6 +146,53 @@ export class TicketOpener {
         }
         await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspacePath), { forceNewWindow });
         return true;
+    }
+
+    /**
+     * Worktrees of the ticket whose folders exist, as the server names them.
+     * Only a ticket with `git-branch-name` asks the server. When the server
+     * does not answer or `INDEX.md` cannot be read, the window opens without
+     * them and says why: it is then incomplete, but never wrong, because the
+     * main clones are always there.
+     */
+    private async ticketWorktrees(ticketNumber: string, ticketPath: string): Promise<TicketWorktree[]> {
+        let branch: string | null;
+        try {
+            branch = await this.runtime.tickets.ticketBranch(ticketPath);
+        } catch (error) {
+            say(`Worktree тикета ${ticketNumber} не добавлены в окно: ${messageOf(error)}.`);
+            return [];
+        }
+        if (!branch) {
+            return [];
+        }
+        let named: TicketWorktree[];
+        try {
+            if (!this.tickets.worktrees) {
+                throw new Error('нет сервера Duet');
+            }
+            named = await this.tickets.worktrees(ticketNumber);
+        } catch (error) {
+            say(`Worktree тикета ${ticketNumber} не добавлены в окно: сервер Duet не ответил (${messageOf(error)}).`);
+            return [];
+        }
+        const present: TicketWorktree[] = [];
+        for (const worktree of named) {
+            if (await this.isDirectory(worktree.path)) {
+                present.push(worktree);
+            } else {
+                say(`Папки worktree ${worktree.path} тикета ${ticketNumber} нет на диске — в окно она не добавлена.`);
+            }
+        }
+        return present;
+    }
+
+    private async isDirectory(folderPath: string): Promise<boolean> {
+        try {
+            return (await this.fs.stat(folderPath)).isDirectory;
+        } catch {
+            return false;
+        }
     }
 
     private async planWorkspaceFile(

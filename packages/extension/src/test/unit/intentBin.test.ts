@@ -35,7 +35,7 @@ function index(workType: string | null, parent: string | null): string {
 
 describe('parseTicketFrontmatter', () => {
     it('reads parent and work-type', () => {
-        expect(parseTicketFrontmatter(index('project', 'DUEX02'))).toEqual({ parent: 'DUEX02', workType: 'project', routineType: null, icon: '' });
+        expect(parseTicketFrontmatter(index('project', 'DUEX02'))).toEqual({ parent: 'DUEX02', workType: 'project', routineType: null, icon: '', branch: null });
     });
 
     it('an empty value and null both mean no parent', () => {
@@ -71,8 +71,8 @@ describe('parseTicketFrontmatter', () => {
     });
 
     it('a file without frontmatter gives nothing', () => {
-        expect(parseTicketFrontmatter('# Title\nparent: DUEX02\n')).toEqual({ parent: null, workType: null, routineType: null, icon: '' });
-        expect(parseTicketFrontmatter('')).toEqual({ parent: null, workType: null, routineType: null, icon: '' });
+        expect(parseTicketFrontmatter('# Title\nparent: DUEX02\n')).toEqual({ parent: null, workType: null, routineType: null, icon: '', branch: null });
+        expect(parseTicketFrontmatter('')).toEqual({ parent: null, workType: null, routineType: null, icon: '', branch: null });
     });
 
     it('does not read past the closing line', () => {
@@ -81,7 +81,7 @@ describe('parseTicketFrontmatter', () => {
 
     it('reads Windows line breaks', () => {
         expect(parseTicketFrontmatter('---\r\nparent: DUEX02\r\nwork-type: project\r\n---\r\n'))
-            .toEqual({ parent: 'DUEX02', workType: 'project', routineType: null, icon: '' });
+            .toEqual({ parent: 'DUEX02', workType: 'project', routineType: null, icon: '', branch: null });
     });
 });
 

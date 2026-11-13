@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { Shelf, TicketPlace } from './tickets';
+import { TicketWorktree } from './worktrees';
 
 /**
  * Creating and moving tickets. The extension does neither itself: the Duet
@@ -27,6 +28,12 @@ export interface TicketRecord {
     shelf: string;
     /** Absolute path of the ticket folder. */
     folder: string;
+    /** The ticket's branch, `git-branch-name`; null without one. */
+    branch?: string | null;
+    /** Its worktrees: the repo and the absolute path of each; `path` is null when the server has no repos folder. */
+    worktrees?: Array<{ repo: string; path: string | null }>;
+    /** Parked branches by repo: where the next resume starts. */
+    parked?: Record<string, string>;
 }
 
 /** Answer of `POST /tickets/{action}`. */
@@ -60,6 +67,14 @@ export interface TicketService {
      * @throws with the server's reason when the ticket was not moved
      */
     move(ticketNumber: string, to: Shelf): Promise<string>;
+
+    /**
+     * The ticket's worktrees as the server knows them, from the fields of its
+     * `INDEX.md`. Absent in a service that has no server behind it.
+     *
+     * @throws when the server did not answer or refused
+     */
+    worktrees?(ticketNumber: string): Promise<TicketWorktree[]>;
 }
 
 /**
@@ -82,6 +97,14 @@ export class ServerTicketService implements TicketService {
 
     async move(ticketNumber: string, to: Shelf): Promise<string> {
         return (await this.run('move_ticket', { ticket: ticketNumber, to })).folder;
+    }
+
+    async worktrees(ticketNumber: string): Promise<TicketWorktree[]> {
+        const ticket = await this.run('tickets', { number: ticketNumber });
+        const branch = ticket.branch ?? '';
+        return (ticket.worktrees ?? [])
+            .filter((w): w is { repo: string; path: string } => typeof w.path === 'string' && w.path !== '')
+            .map(w => ({ repo: w.repo, path: w.path, branch }));
     }
 
     private async run(action: string, args: Record<string, unknown>): Promise<TicketRecord> {

@@ -210,6 +210,37 @@ class TestFrontmatter:
         fm.set("closed", "2026-10-08")
         assert fm.keys() == ["folder-type", "opened", "closed", "custom-field", "parent"]
 
+    def test_map_is_written_after_parent_and_read_back(self) -> None:
+        fm = Frontmatter.parse(self.SOURCE)
+        fm.set_map("git-parked-branches", {"Duet": "DUE054_parked-saved-work",
+                                           "duet-work": "DUE054_parked-skill"})
+        assert fm.render().startswith(
+            "---\nfolder-type: work\nopened: 2026-10-01   # set by hand\n"
+            "custom-field: [a, b]\nparent: DUEX02\ngit-parked-branches:\n"
+            "  Duet: DUE054_parked-saved-work\n  duet-work: DUE054_parked-skill\n---\n")
+        assert fm.get_map("git-parked-branches") == {
+            "Duet": "DUE054_parked-saved-work", "duet-work": "DUE054_parked-skill"}
+        assert fm.keys()[-1] == "git-parked-branches"
+
+    def test_map_is_replaced_and_removed_in_place(self) -> None:
+        fm = Frontmatter.parse(self.SOURCE.replace(
+            "parent: DUEX02\n", "git-parked-branches:\n  Duet: a\n  Tool: b\nparent: DUEX02\n"))
+        fm.set_map("git-parked-branches", {"Tool": "b"})
+        assert "git-parked-branches:\n  Tool: b\nparent: DUEX02\n" in fm.render()
+        fm.set_map("git-parked-branches", {})
+        assert fm.render() == self.SOURCE
+
+    def test_map_of_a_missing_or_scalar_field_is_empty(self) -> None:
+        fm = Frontmatter.parse(self.SOURCE)
+        assert fm.get_map("git-parked-branches") == {}
+        assert fm.get_map("parent") == {}
+
+    def test_branch_fields_follow_parent(self) -> None:
+        fm = Frontmatter.parse(self.SOURCE)
+        fm.set("git-branch-repos", ["Duet", "duet-work"])
+        fm.set("git-branch-name", "DUE054_TicketBranches")
+        assert fm.keys()[-3:] == ["parent", "git-branch-name", "git-branch-repos"]
+
     def test_second_value_turns_a_field_into_a_list_and_back(self) -> None:
         fm = Frontmatter.parse(self.SOURCE)
         fm.set("closed", ["2026-10-03", "2026-10-08"])

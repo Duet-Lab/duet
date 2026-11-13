@@ -347,6 +347,7 @@ class TestTicketsEndpoint:
         assert body["tickets"] == [{
             "number": "DUE037", "name": "Thesaurus", "shelf": "work",
             "folder": str(lab / "work" / "DUE037_Thesaurus"),
+            "branch": None, "worktrees": [], "parked": {},
         }]
         assert (lab / "work" / "DUE037_Thesaurus" / "INDEX.md").is_file()
 
@@ -360,6 +361,7 @@ class TestTicketsEndpoint:
         assert body["tickets"] == [{
             "number": "DUE008", "name": "CoreProtocols", "shelf": "backlog",
             "folder": str(lab / "backlog" / "DUE008_CoreProtocols"),
+            "branch": None, "worktrees": [], "parked": {},
         }]
 
     async def test_failed_operation_is_flagged_not_an_http_error(

@@ -284,17 +284,18 @@ def resolve_paths(paths: list[str]) -> str:
 
 # === Ticket tools ===
 #
-# All four tools share a contract:
+# All five tools share a contract:
 # - The response is Markdown. A failed call starts with `Error:` and is flagged
 #   with `isError`, so clients don't have to infer failure from the text.
-# - An error means nothing was changed, unless the message says otherwise.
+# - An error means nothing was changed, unless the message says otherwise
+#   (removing a ticket's worktrees can fail halfway, and then it says so).
 # - Unknown arguments are rejected (see `_reject_unknown_arguments`) instead of
 #   being dropped, so a misspelled argument can't silently fall back to a default.
 # - The work runs in a worker thread. Tickets live on a cloud-synced drive where
 #   a read can stall, and a stalled read on the event loop would freeze the
 #   server for every client.
 
-_TICKET_TOOLS = ("tickets", "new_ticket", "move_ticket", "edit_ticket")
+_TICKET_TOOLS = ("tickets", "new_ticket", "move_ticket", "edit_ticket", "add_worktree")
 
 
 def _one_of(*values: str) -> dict:
@@ -471,6 +472,14 @@ async def move_ticket(
         description="The shelf to move to: work (active), backlog (shelved), or archive "
                     "(closed).",
         json_schema_extra=_one_of("work", "backlog", "archive"))],
+    parked: Annotated[dict[str, str] | None, Field(
+        description='Only with `to="backlog"`, for a ticket with a branch: where its work was '
+                    'saved, as repo -> parked branch, e.g. {"Duet": "DUE054_parked-'
+                    'branch-workflow"}. A parked branch is the ticket number, `_parked-`, '
+                    "and lowercase words joined by hyphens; the next worktree in that repo "
+                    "starts from it. A repo with the branch that isn't named here was "
+                    'discarded or merged, and its entry is dropped. "" drops the entry of '
+                    "a repo without a branch.")] = None,
 ) -> str:
     """Close, reopen, shelve, or resume a ticket by moving it to work, backlog, or archive.
 
@@ -485,6 +494,15 @@ async def move_ticket(
     the tickets under it, and one can't be closed while any ticket under it
     is still in work or backlog: close those first.
 
+    A ticket with a branch (`git-branch-name`) is closed or shelved only
+    when, in every repo, its worktree has no uncommitted changes and its
+    branch is contained in a fresh `origin/main`, or, when shelving, in the
+    parked branch named in `parked`. Then its worktrees and branches are
+    removed, the branch fields are erased, and the folder moves. This tool
+    never discards, squashes, or resets work: prepare the branch with the
+    user first. Parked branches are kept. Moving a ticket to work doesn't
+    create a worktree, and reopening one doesn't restore its branch.
+
     Safe to retry: moving a ticket to the shelf it's already on succeeds
     with "No changes" and records no date.
 
@@ -493,11 +511,15 @@ async def move_ticket(
 
     Returns:
         Markdown with the new folder path, the stable `@NUMBER` address,
-        and, if a date was recorded, the updated frontmatter. A failed call
-        returns a message starting with `Error:`; nothing is moved unless
-        the message says otherwise.
+        what was removed, and, if a date was recorded, the updated
+        frontmatter. A failed call returns a message starting with `Error:`;
+        nothing is moved unless the message says otherwise. A failure while
+        worktrees are being removed names the repo, worktree, branch, and
+        commit, and what was already done.
     """
-    return await _ticket_tool("move_ticket", ticket=ticket, to=to)
+    if parked is None:
+        return await _ticket_tool("move_ticket", ticket=ticket, to=to)
+    return await _ticket_tool("move_ticket", ticket=ticket, to=to, parked=parked)
 
 
 @mcp.tool(structured_output=False,
@@ -561,6 +583,42 @@ async def edit_ticket(
                               routine_type=routine_type)
 
 
+@mcp.tool(structured_output=False,
+          annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=True, openWorldHint=True))
+async def add_worktree(
+    ticket: Annotated[str, Field(description='The ticket number, e.g. "DUE028".')],
+    repo: Annotated[str, Field(
+        description='The repo alias as the business declares it in `git_repos`, e.g. '
+                    '"Duet". One call, one repo.')],
+    branch: Annotated[str, Field(
+        description="The branch name: the full ticket number, an underscore, and a short "
+                    "English name in Latin letters and digits, e.g. `DUE054_TicketBranches`. "
+                    "If the ticket already has a branch, pass that name.")],
+) -> str:
+    """Give a ticket in work its branch and worktree in one repo.
+
+    Only when the user asks for a branch: by default work goes to `main` of
+    the main clone. Make up the name from the ticket's intent, not from its
+    folder name. For a second repo, pass the name the ticket already has.
+
+    Creates the branch from a fresh `origin/main`, or from the repo's parked
+    branch if the ticket has one, in a worktree `DuetData/repos/<repo>.wt-<ticket>`,
+    and records it in `git-branch-name` and `git-branch-repos`. Work on the
+    ticket only in that worktree; `@<repo>.git` stays the main clone on `main`.
+
+    Safe to retry: the same call after a success returns "No changes". A
+    branch or folder that is already there without being recorded is an
+    error, never adopted.
+
+    Returns:
+        Markdown with the ticket's branch and worktree paths. A failed call
+        returns a message starting with `Error:`; nothing is created unless
+        the message says otherwise.
+    """
+    return await _ticket_tool("add_worktree", ticket=ticket, repo=repo, branch=branch)
+
+
 def _reject_unknown_arguments(names: tuple[str, ...]) -> None:
     """Make tools fail, in their own words, on arguments they don't declare.
 
@@ -614,6 +672,9 @@ def orientation(
     interpretation: Annotated[str | None, Field(
         description="Optional. Your own text, when your system prompt asks for it. "
                     "The answer returns it as sent.")] = None,
+    ticket: Annotated[str | None, Field(
+        description='Optional. A ticket number, e.g. "DUE054": the answer adds where the '
+                    "ticket is, its branch, and the paths of its worktrees.")] = None,
 ) -> str:
     """Orient a session in the folder it was opened in. Call once, before any work.
 
@@ -621,6 +682,9 @@ def orientation(
         path: Absolute path of the folder the session was opened in.
         key: Optional; only what the session's system prompt names.
         interpretation: Optional; the session's own text, returned as sent.
+        ticket: Optional; a ticket number. Adds the ticket's state, folder,
+            branch, and worktree paths after the plain answer. Repo addresses
+            like `@Duet.git` always mean the main clone, never a worktree.
 
     Returns Markdown: the user's name, the paths of this machine, the business's ticket code
     if it has one, and what to read first. A meta venture also gets the
@@ -631,7 +695,7 @@ def orientation(
         raise McpError(
             ErrorData(code=INVALID_PARAMS, message=f"path must be absolute, got {path!r}")
         )
-    return _get_workspace_service().get_orientation(path, key, interpretation)
+    return _get_workspace_service().get_orientation(path, key, interpretation, ticket)
 
 
 @mcp.tool()

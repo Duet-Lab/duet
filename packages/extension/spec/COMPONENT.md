@@ -347,9 +347,10 @@ The API has no call that brings another window forward. Switching is opening the
 | Never written while a window has it open: a ticket with a live marker is switched to, not rebuilt | Rewriting the settings of a living window would recolour it under the user |
 | Deterministic text, written only when the bytes differ, through a temporary file and a rename | No needless write; DuetData is a local disk |
 | Folders: the business folder (absolute path of this machine), then `../../repos/<alias>.git` per `git_repos` alias. A business without repos gives a file of one folder. Missing repos are cloned first, exactly as for a business (`openFolder.ts:prepareBusinessRepos`) | The window shows the same folders as the business window |
+| A ticket with a branch also gets its worktrees, in addition to the main clones and never instead of them: the worktree of a repo right after its main clone, the worktree of a repo the business doesn't declare (a repo of a business inside it) after the last repo, before the additional folders of a meta business. Each has a `name`, `<alias> (<branch>)`, and an absolute path (`worktrees.ts:repoFolders`). See [Worktrees of a ticket window](#worktrees-of-a-ticket-window) | The person sees the ticket's branch in the explorer and in the git panel of the window they work in; the main clones keep the window right even without the worktrees |
 | File absent → first open. File present but unreadable → opened as it is, with one line of notice | A rebuild would roll the intent's main colour again |
 | Read as JSON with comments (`core/jsonc.ts`) | That is the dialect of `.code-workspace` |
-| `duet.intent.canon` — version of what Duet writes (now `4`: since `2` the colour block also sets the selection of lists, since `3` the backdrop of highlighted text, since `4` the tab label carries the intent's emoji, not always the business's). A file with a newer version is opened as it is | Several programs carry their own installed Duet; two versions must not rewrite the file after each other |
+| `duet.intent.canon` — version of what Duet writes (now `5`: since `2` the colour block also sets the selection of lists, since `3` the backdrop of highlighted text, since `4` the tab label carries the intent's emoji, not always the business's, since `5` the file may carry worktrees with a `name`). A file with a newer version is opened as it is | Several programs carry their own installed Duet; two versions must not rewrite the file after each other |
 | `duet.intent.colors` — the colours the intent remembers, main first. Absent key and a palette colour in the file → that colour is the main one | Files of older builds keep their colour |
 | Both keys are declared in `contributes.configuration` | Otherwise VS Code marks them as unknown settings |
 
@@ -370,9 +371,29 @@ The API has no call that brings another window forward. Switching is opening the
     "list.filterMatchBackground": "#1f6f4333"
   },
   "duet.intent.colors": ["#1f6f43"],
-  "duet.intent.canon": 4
+  "duet.intent.canon": 5
 }
 ```
+
+#### Worktrees of a ticket window
+
+A ticket gets a branch only when the person asks; the server then makes a worktree of each repo the ticket touches, `DuetData/repos/<alias>.wt-<number>`, and records the branch in the fields `git-branch-name` and `git-branch-repos` of its `INDEX.md` (`packages/backend/spec/COMPONENT.md`, "Ticket branches"). The window is the person's workplace, so it shows them; an agent doesn't need the window, because it gets the paths from the ticket tools and `orientation`.
+
+| Rule | Why |
+|------|-----|
+| Whether a ticket has worktrees, the extension learns from `git-branch-name`, read with the rest of the head of `INDEX.md` (`TicketReader.ticketBranch`). Without the field the server isn't asked and the window is built as before | Most tickets have no branch; their windows cost nothing more |
+| The paths come from the server: the `worktrees` of the ticket's record in `POST /tickets/tickets` (`ServerTicketService.worktrees`). Only worktrees whose folders exist go into the window; a missing one is named in one line | The rule of worktree paths lives in the server in one place, as the rule of ticket names does |
+| When the server doesn't answer or `INDEX.md` can't be read, the window opens with the main clones only, and one line says the worktrees weren't added and why | The window without its worktrees is incomplete, not wrong: the main clones are always there, and refusing to open would only take the workplace away |
+| An open ticket window checks its folders on every event about its own ticket folder or its `INDEX.md` (the ticket number from the path), by watchers on the business folder (`vscode/intents/worktreeSync.ts`), and once at every start (`core/intents/worktreeSync.ts:WorktreeSync`) | The server writes `INDEX.md` after it creates a worktree and after it removes one, so the event comes when the folder is already there or already gone. There is no channel from the server to the extension, and none is needed |
+| The check adds the worktrees the server names and that exist, at the places of the composition rule, and removes a worktree folder of its own ticket (`repos/<alias>.wt-<number>`) only when that folder is gone; an existing folder is never removed. When the server doesn't answer, it only removes the gone ones and says that the worktrees will be updated on the next change of the ticket or when the window is reopened (`worktrees.ts:reconcileFolders`). When `INDEX.md` can't be read, the branch is unknown, not absent: nothing is added, gone folders still leave, and the window says why | Closing or shelving a ticket removes its worktrees; the window follows |
+| The new list is built from the window's current list, so folders the person added by hand stay. It is built from the folders as they are right before the edit, after the server and the disk were asked, and a list that changes during the disk checks is read again: the person may change the folders while the check waits. The first folder, the business, is never touched. One `updateWorkspaceFolders` call replaces only the slice between the common start and the common end of the two lists (`worktrees.ts:folderEdit`), and the next check waits for `onDidChangeWorkspaceFolders` | The VS Code documentation: changing the first folder restarts the window's extensions, and no new call may come before the change is reported |
+| The start check runs after the activation's first request to the server (`apiClient.contexts()`): with the server's answer when it succeeded, by the "server didn't answer" rule when it failed. That outcome binds the start check only; every later check asks the server afresh. Events that come earlier only mark that a check is due. All checks go through one `coalesce`: an event during a check leads to one more pass | A worktree made between the building of the file and the start of watching, and a window VS Code restored from an old file, are covered without an event; a window that starts before the server doesn't ask it blindly |
+| A ticket without the field and without worktree folders of its own in the window doesn't ask the server, at start or on events | Windows of tickets without branches do nothing more |
+| A window whose file is opened as it is (unreadable, or written by a newer Duet) never checks its folders | Its folders don't belong to this extension |
+| `TicketOpener.open` still never writes the file of an open window. The check changes the folders through VS Code, which writes only the `folders` key of the file (`setFolders`, VS Code 1.146.0); colours and canon stay. The next open by button rebuilds the file with the same composition | The rule "Duet doesn't write into the file of an open window" holds: nobody rebuilds it from outside |
+| Calls of `move_ticket` from the bin are unchanged. The bin moves tickets only between `work` and `backlog` and doesn't shelve a ticket with an open window; the server's refusal of a ticket whose branch isn't ready comes back as «Не удалось перенести …» with its reason | Closing a ticket is the agent's act, through the server's readiness check |
+
+VS Code's own worktree detection in the git panel (`git.detectWorktrees`) is off by default in VS Code 1.146 and in the user settings of VS Code, Cursor and VSCodium, so a worktree that is a folder of the window is shown once. Duet doesn't change the setting: client settings aren't Duet's.
 
 The colour block (`workspaceFile.ts:windowColorBlock`) is everything in the window that carries its colour. A workspace file cannot aim at one view, so each colour acts in every list of the window — which is the point: the window is painted, and everything in it is in its colour.
 
@@ -594,6 +615,7 @@ Extension is a thin UI client — no backend bundling. Host handles backend depl
 | Remembered order (both views) | `core/intents/order.ts`, `core/intents/binOrder.ts` |
 | Notepad heading decision | `core/intents/notepad.ts` (`planNotepadFix`) |
 | Intents state of a window (own marker, watcher) | `vscode/intents/IntentsRuntime.ts` |
+| Worktrees of a ticket window: composition, check of an open window | `core/intents/worktrees.ts` (`repoFolders`, `reconcileFolders`, `folderEdit`), `core/intents/worktreeSync.ts` (`WorktreeSync`), `vscode/intents/worktreeSync.ts` (`watchWorktrees`) |
 | «Активная Работа» / Корзина views | `vscode/providers/IntentsProvider.ts`, `vscode/providers/BinProvider.ts` |
 | Board of tickets, its watcher, joined readings | `core/intents/board.ts`, `vscode/intents/boardWatch.ts`, `core/intents/coalesce.ts` |
 | Intent commands | `vscode/commands/intents.ts` (`BinActions`, `switchToIntent`); `vscode/commands/openTicket.ts` (`TicketOpener`) |

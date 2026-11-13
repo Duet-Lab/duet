@@ -28,6 +28,8 @@ import { registerWorkView } from './work/registerWorkView';
 import { WorkView } from './work/WorkView';
 import { BusinessViews } from './intents/businessViews';
 import { ChatChooser } from './chats/ChatChooser';
+import { watchWorktrees } from './intents/worktreeSync';
+import { WorktreeSync } from '../core/intents/worktreeSync';
 
 let backendOutputChannel: vscode.OutputChannel | null = null;
 let sidebarState: SidebarStateManager | null = null;
@@ -161,10 +163,19 @@ export async function activate(context: vscode.ExtensionContext) {
         };
         context.subscriptions.push({ dispose: () => { if (deployTimer) { clearTimeout(deployTimer); } } });
 
+        // A ticket window watches its ticket for worktrees now; its start check waits for the server below
+        let worktreeSync: WorktreeSync | null = null;
+        try {
+            worktreeSync = intentsRuntime ? watchWorktrees(context, intentsRuntime, paths, ticketService) : null;
+        } catch (e) {
+            console.error('[Duet] worktrees of the window not watched:', e);
+        }
+
         try {
             await sidebarState.setInitializing('Подключение к backend...');
             backendOutputChannel.appendLine(`Connecting to http://127.0.0.1:${port}/contexts...`);
             const { contexts } = await apiClient.contexts();
+            void worktreeSync?.start(true);
 
             backendOutputChannel.appendLine(`Backend OK: ${contexts.length} contexts loaded`);
             chatChooser?.setContexts(contexts);
@@ -257,6 +268,7 @@ export async function activate(context: vscode.ExtensionContext) {
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error('Failed to connect to backend:', msg);
+            void worktreeSync?.start(false);
             await sidebarState.setFromHealthCheck(false);
             backendOutputChannel.appendLine(`Backend offline: ${msg}`);
             backendOutputChannel.show(true); // Show output panel so user sees the error

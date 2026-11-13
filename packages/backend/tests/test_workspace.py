@@ -12,6 +12,7 @@ from db import DatabaseManager
 from scanner import Scanner
 from services.workspace import (
     INSIDE_REPO,
+    INSIDE_WORKTREE,
     NOT_REGISTERED,
     OUTSIDE_DUET,
     WorkspaceService,
@@ -326,6 +327,57 @@ class TestOrientationRepo:
         answer = service.get_orientation(str(worktree))
         assert f"* `@Duet.git` (git-repo): `{builder.get_repo_path('Duet')}`" in answer
         assert "`@Lab` (business folder)" in answer
+
+
+class TestOrientationTicket:
+    """The worktree of a ticket, and the `ticket` parameter."""
+
+    def test_worktree_of_a_ticket_is_named_as_such(self, tmp_path, db, monkeypatch) -> None:
+        builder, service, lab = _lab(
+            tmp_path, db, monkeypatch, git_repos={"Duet": "https://github.com/x/duet"}
+        )
+        repo = builder.get_repo_path("Duet")
+        worktree = builder.get_repos_path() / "Duet.wt-LAB001"
+        worktree.mkdir()
+        (worktree / "README.md").write_text("# Duet", encoding="utf-8")
+        (repo / "README.md").write_text("# Duet", encoding="utf-8")
+        duet_data = builder.duet_data_path.resolve()
+
+        assert service.get_orientation(str(worktree / "packages")) == (
+            "**User:** `Human`\n\n"
+            f"{INSIDE_WORKTREE}\n"
+            "\n"
+            "**Paths:**\n"
+            f"* `@DuetData` (path to DuetData): `{duet_data}`\n"
+            f"* `@Duet.wt-LAB001` (worktree of ticket `@LAB001`): `{worktree.resolve()}`\n"
+            f"* `@Duet.git` (git-repo, the main clone on `main`): `{repo.resolve()}`\n"
+            "\n"
+            "**Declared by:**\n"
+            f"* `@Lab` (business folder): `{lab}`\n"
+            "\n"
+            "**Next immediate steps:**\n"
+            f"* Read git-repo entry point: `{worktree.resolve() / 'README.md'}`"
+        )
+
+    def test_ticket_parameter_adds_a_section(self, tmp_path, db, monkeypatch) -> None:
+        _, service, lab = _lab(tmp_path, db, monkeypatch, ticket_code="LAB")
+        ticket = lab / "work" / "LAB001_Task"
+        ticket.mkdir(parents=True)
+        (ticket / "INDEX.md").write_text(
+            "---\nfolder-type: work\nwork-type: project\n---\n", encoding="utf-8")
+        plain = service.get_orientation(str(lab))
+        answer = service.get_orientation(str(lab), ticket="LAB001")
+        assert answer == (
+            f"{plain}\n\n**Ticket:** `@LAB001` Task — project, in work. Business: Lab.\n\n"
+            f"**Folder:** `{ticket}`\n\n"
+            "No branch: work on this ticket goes to `main` in the main clones (`@<repo>.git`).")
+
+    def test_unknown_ticket_is_an_error_line_in_its_section(self, tmp_path, db, monkeypatch) -> None:
+        _, service, lab = _lab(tmp_path, db, monkeypatch, ticket_code="LAB")
+        plain = service.get_orientation(str(lab))
+        answer = service.get_orientation(str(lab), ticket="LAB009")
+        assert answer == f"{plain}\n\n**Ticket:** Error: ticket LAB009 not found in Lab " \
+                         "(checked work, backlog, and archive)."
 
 
 class TestOrientationOutside:

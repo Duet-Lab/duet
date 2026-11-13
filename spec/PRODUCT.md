@@ -218,7 +218,8 @@ DuetData/
 │   ├── contexts.json              # Entity tree cache (atomic write)
 │   └── duet-instructions-errors.json
 ├── repos/
-│   └── {alias}.git/               # cloned repositories
+│   ├── {alias}.git/               # cloned repositories, the main clones: always on `main`
+│   └── {alias}.wt-{ticket}/       # worktree of a ticket's branch (`add_worktree` makes it, closing or shelving removes it)
 ├── workspaces/
 │   ├── {Context}.code-workspace   # every context: its Drive folder, then its repos if it declares any
 │   └── {Business}/
@@ -313,7 +314,7 @@ DuetConfig/
 | Pattern | Meaning |
 |---------|---------|
 | `{alias}.git` | Main clone of a product (alias from `git_repos` or `reference_repos` name) |
-| `{alias}.wt-N` | Worktree N (planned) |
+| `{alias}.wt-{ticket number}` | Worktree of a ticket's branch, e.g. `Duet.wt-DUE054`: made by `add_worktree`, removed by `move_ticket` when the ticket is closed or shelved; its alpha path is `@Duet.wt-DUE054`. `@{alias}.git` always means the main clone. Backend detail: [backend COMPONENT.md → Ticket branches](../packages/backend/spec/COMPONENT.md#ticket-branches) |
 
 Aliases from `git_repos` live in a global `{alias}.git` namespace shared with `reference_repos`. Manifest validation rejects within-manifest overlap.
 
@@ -408,6 +409,10 @@ Not a business folder: this path is inside a git-repo.
 
 `Declared by` reads `no business declares this repo` when none does; the step is omitted when the repo has no `README.md`.
 
+**Inside the worktree of a ticket** (`DuetData/repos/Duet.wt-DUE054`). The same answer, opened by `Not a business folder: this path is inside the worktree of a ticket.`, with the worktree as its own line, `` `@Duet.wt-DUE054` (worktree of ticket `@DUE054`) ``, the main clone beside it as `` `@Duet.git` (git-repo, the main clone on `main`) ``, and the worktree's `README.md` to read.
+
+**`ticket`.** `orientation(path, ticket="DUE054")` adds, after the answer and before calibration, a section on that ticket: where it is, and its branch with the alpha path and absolute path of each worktree, or a line saying it has no branch and its work goes to `main` of the main clones.
+
 **Anywhere else.** `Not a business folder: this path is outside Duet.`
 
 **Calibration.** A business's system prompt may ask its sessions to send their own reading of it with the `orientation` call, as two optional arguments: `key`, a value the prompt names, and `interpretation`, the session's reading in its own words. The common reading lives beside the prompt's source, in `<prompt stem>-calibration.md` next to the file the manifest's `system_prompt` names: frontmatter `key`, and the body, the common reading in Markdown. It is read from the source on every call, so editing it needs no deploy.
@@ -471,7 +476,8 @@ Products and components are described by **single canonical spec files** — no 
 | `DuetData/workspaces/{Business}/{Ticket folder}.code-workspace` | — | **writes** (whole file, rebuilt on every open of the intent by button; never while a window has it open) | — | — |
 | `DuetData/intents/{program}/windows/*.json`, `DuetData/intents/{program}/active.json` | — | **writes** (each window its own marker; any window removes dead ones and writes the order) | — | — |
 | Ticket folders under `<business>/work/` and `<business>/backlog/` | — | **creates** one in `work/` — the «new ticket» button: the folder and its `INDEX.md`, nothing else; **moves** between the two; never deletes one; reads the listing, and the listing of `archive/` for the next number | — | create and move (work rules, not the platform) |
-| Ticket `INDEX.md` | — | reads frontmatter (`parent`, `work-type`, `routine-type`, `icon`) | — | **write** (work rules, not the platform) |
+| Ticket `INDEX.md` | — | reads frontmatter (`parent`, `work-type`, `routine-type`, `icon`, `git-branch-name`) | — | **write** (work rules, not the platform) |
+| `DuetData/repos/{alias}.wt-{ticket}` (a ticket's worktrees) and the ticket branches in the main clones | — | reads (folders of the ticket window) | **creates** with `add_worktree`, **removes** when the ticket is closed or shelved (after checking the branch is ready) | work in them, by the rules of working in ticket branches |
 | VS Code ExtensionContext.globalStorageUri/chat-preparations/*.json | — | **writes** local chat preparation IDs/phases and cross-window count reservations; no transcripts or client configuration | — | — |
 | Ticket `notepad.md` | — | **creates**; keeps its first-line heading (through the editor's document); the rest is the user's | — | — |
 | `<business>/.vscode/duet-intents.json` | — | **writes** (order of the bin, on drag only) | — | — |
@@ -531,6 +537,6 @@ npm run verify:backend  # pytest
 2. `cd packages/host && npm run release` (or `cd packages/extension && npm run vsix` for Extension).
 3. Copy the artifacts into `DuetData/`: `packages/host/dist/Duet-{version}.dmg` and `packages/extension/dist/duet-{version}.vsix`. Always, on every release: the user installs Host and the Extension from there.
 4. Commit: code + bumped `version` together — the package's `package.json` and the root `package-lock.json`, which the release script updates through `scripts/sync-lockfile-version.cjs` (`resources/BUILD_SHA` is gitignored — it ships inside the build, not in the commit).
-5. Push.
+5. Push — only when the user has said so in so many words.
 
 Per-package build & release pipelines: each component's `Engineering` chapter. CI workflows: `.github/workflows/build-host.yml` (build artifacts for macOS/Windows/Linux on push to main if `packages/host/` changed) and `.github/workflows/host-test.yml` (vitest on the same trigger; E2E disabled — monorepo symlink issues). No auto-publish — artifacts are downloaded manually from Actions → GitHub Release.

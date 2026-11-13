@@ -20,7 +20,7 @@ instructions uses the same rule (`resolve_business`).
 
 import re
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -39,12 +39,17 @@ from paths import is_path_inside
 from services.at_paths import resolve_at_path
 from services.manifest import read_manifest
 from services.resolve_paths import ContextRef, Resolution, resolve_paths as _resolve_paths
-from services.tickets import Result as TicketResult, run as _run_ticket_action
+from services.tickets import Result as TicketResult, TicketEnv, run as _run_ticket_action
+from services.tickets.model import TicketError
+from services.tickets.views import ticket_orientation
 from services.deploy_instructions import deploy_instructions as _deploy_instructions
 
 
 OUTSIDE_DUET = "Not a business folder: this path is outside Duet."
 INSIDE_REPO = "Not a business folder: this path is inside a git-repo."
+INSIDE_WORKTREE = "Not a business folder: this path is inside the worktree of a ticket."
+# `Duet.wt-DUE054`: the worktree of a ticket (`services/tickets/branch_info.py`).
+_TICKET_WORKTREE_RE = re.compile(r"(?P<alias>.+)\.wt-(?P<number>[A-Z]{3}(?:\d{3}|[A-Z]\d{2}))")
 OTHER_VENTURES_HEADING = "**Other Ventures** (this venture is meta: it manages others):"
 NOT_REGISTERED = (
     "Not a business folder: this path is inside a venture folder, but no business "
@@ -128,14 +133,18 @@ class WorkspaceService:
     # === Orientation answer ===
 
     def get_orientation(
-        self, path: str, key: str | None = None, interpretation: str | None = None
+        self, path: str, key: str | None = None, interpretation: str | None = None,
+        ticket: str | None = None,
     ) -> str:
         """Build the orientation answer for one folder, as Markdown text.
 
         `key` and `interpretation` serve calibration (see `_calibration`):
-        without them the answer is exactly the plain orientation.
+        without them the answer is exactly the plain orientation. `ticket`
+        adds a section on that ticket and its branches after the plain answer.
         """
         answer = f"**User:** `{get_user_name()}`\n\n{self._orientation_context(path)}"
+        if ticket and ticket.strip():
+            answer += "\n\n" + self._ticket_section(ticket)
         calibration = self._calibration(path, key, interpretation)
         return f"{answer}\n\n{calibration}" if calibration else answer
 
@@ -209,6 +218,17 @@ class WorkspaceService:
         if not key or not body:
             return None
         return key, body
+
+    def _ticket_section(self, ticket: str) -> str:
+        """The ticket's state, folder and branches; an `Error:` line if it can't be found."""
+        contexts = [ContextRef(name=name, folder=Path(folder))
+                    for name, folder in self._build_context_folders().items()]
+        # The section reads the ticket and writes nothing, so no date is needed from settings.
+        env = TicketEnv(contexts, date.today(), get_repos_path())
+        try:
+            return ticket_orientation(env, ticket)
+        except TicketError as error:
+            return f"**Ticket:** Error: {error}"
 
     def _orientation_context(self, path: str) -> str:
         folder = Path(normalize_path(path)).resolve()
@@ -297,15 +317,18 @@ class WorkspaceService:
     def _render_repo(self, folder: Path, repos_path: Path) -> str:
         """Answer for a folder inside `DuetData/repos`: the repo and who declares it.
 
-        The repo is the first segment under `repos`; a worktree folder
-        (`X.wt-N`) stands for its repo `X.git`. Declaring businesses are
-        collected from the manifests on disk — one repo may be declared by
-        several, so no business is chosen here.
+        The repo is the first segment under `repos`. A ticket's worktree
+        (`Duet.wt-DUE054`) is named as such, with its own address and README,
+        and the main clone of its repo beside it; any other `X.wt-N` folder
+        stands for its repo `X.git`. Declaring businesses are collected from
+        the manifests on disk — one repo may be declared by several, so no
+        business is chosen here.
         """
         parts = folder.relative_to(repos_path).parts
         if not parts:
             return OUTSIDE_DUET
-        repo_name = re.sub(r"\.wt-[^/]*$", "", parts[0])
+        worktree = _TICKET_WORKTREE_RE.fullmatch(parts[0])
+        repo_name = worktree.group("alias") if worktree else re.sub(r"\.wt-[^/]*$", "", parts[0])
         if not repo_name.endswith(".git"):
             repo_name += ".git"
         alias = repo_name[: -len(".git")]
@@ -328,17 +351,27 @@ class WorkspaceService:
         if not declared:
             declared = ["no business declares this repo"]
 
+        paths = [_duet_data_line()]
+        entry_folder = repo_folder
+        if worktree:
+            entry_folder = repos_path / parts[0]
+            paths.append(_path_line(parts[0], f"worktree of ticket `@{worktree.group('number')}`",
+                                    entry_folder))
+            paths.append(_path_line(repo_name, "git-repo, the main clone on `main`", repo_folder))
+        else:
+            paths.append(_path_line(repo_name, "git-repo", repo_folder))
+
         steps = []
-        readme = repo_folder / "README.md"
+        readme = entry_folder / "README.md"
         if readme.is_file():
             steps.append(f"* Read git-repo entry point: `{readme}`")
 
         body = _join_sections([
-            ("Paths", [_duet_data_line(), _path_line(repo_name, "git-repo", repo_folder)]),
+            ("Paths", paths),
             ("Declared by", declared),
             ("Next immediate steps", steps),
         ])
-        return f"{INSIDE_REPO}\n\n{body}"
+        return f"{INSIDE_WORKTREE if worktree else INSIDE_REPO}\n\n{body}"
 
     def _build_context_folders(self) -> dict[str, str]:
         """Map every context name → its absolute Drive folder.
@@ -368,7 +401,8 @@ class WorkspaceService:
         return _resolve_paths(paths, get_repos_path(), contexts)
 
     def ticket_action(self, action: str, **arguments) -> TicketResult:
-        """Run a ticket operation: `tickets`, `new_ticket`, `move_ticket`, or `edit_ticket`.
+        """Run a ticket operation: `tickets`, `new_ticket`, `move_ticket`, `edit_ticket`,
+        or `add_worktree`.
 
         Contexts come from the entities DB, ticket codes are read from the
         manifests on every call, and "today" is the current date in the
@@ -379,7 +413,7 @@ class WorkspaceService:
             for name, folder in self._build_context_folders().items()
         ]
         today = datetime.now(ZoneInfo(get_timezone()["value"])).date()
-        return _run_ticket_action(action, contexts, today, **arguments)
+        return _run_ticket_action(action, contexts, today, repos=get_repos_path(), **arguments)
 
     def deploy_instructions(self, workspace_paths: list[str]) -> dict:
         """Resolve the business for `workspace_paths` and deploy its

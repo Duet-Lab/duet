@@ -11,10 +11,16 @@ FIELD_ORDER = (
     "folder-type", "work-type", "routine-type", "icon", "description",
     "opened", "closed", "reopened", "renamed-from", "renamed",
     "business-area", "parent",
+    # Written only by the branch operations (`services/tickets/branches.py`).
+    # They come right after `parent` because the extension reads only the
+    # first 2 KB of INDEX.md and must still see the fields above them.
+    "git-branch-name", "git-branch-repos", "git-parked-branches",
 )
 
 _FRONTMATTER_RE = re.compile(r"\A(\ufeff?)---[ \t]*\r?\n(.*?)^---[ \t]*(?:\r?\n|\Z)", re.S | re.M)
 _FIELD_RE = re.compile(r"([A-Za-z][\w-]*)[ \t]*:(.*)")
+# One entry of a map field as `set_map` writes it: an indented key without spaces or colons.
+_MAP_ENTRY_RE = re.compile(r"[ \t]+([^\s:#\-][^\s:]*)[ \t]*:(.*)")
 
 
 @dataclass
@@ -79,6 +85,44 @@ class Frontmatter:
         else:
             values = [parse_scalar(inline)]
         return [value for value in values if value is not None]
+
+    def get_map(self, key: str) -> dict[str, str]:
+        """Return a field whose value is a mapping of plain `name: value` lines.
+
+        Only the shape `set_map` writes is read: one indented `name: value`
+        line per entry. Entries without a value are skipped.
+        """
+        span = self._span(key)
+        if span is None:
+            return {}
+        start, end = span
+        found: dict[str, str] = {}
+        for line in self.lines[start + 1:end]:
+            # Keys are repo aliases, not field names: `Igor.source` and `1repo` are valid.
+            match = _MAP_ENTRY_RE.fullmatch(line.rstrip())
+            if not match:
+                continue
+            value = parse_scalar(match.group(2))
+            if value is not None:
+                found[match.group(1)] = value
+        return found
+
+    def set_map(self, key: str, mapping: dict[str, str] | None) -> None:
+        """Set a field to a mapping, one indented `name: value` line per entry.
+
+        None or an empty mapping removes the field.
+        """
+        if not mapping:
+            self.set(key, None)
+            return
+        new = [f"{key}:"] + [f"  {name}: {format_scalar(value)}"
+                             for name, value in mapping.items()]
+        span = self._span(key)
+        if span is not None:
+            self.lines[span[0]:span[1]] = new
+            return
+        at = self._insertion_point(key)
+        self.lines[at:at] = new
 
     def get(self, key: str) -> str | None:
         values = self.get_list(key)

@@ -27,7 +27,8 @@ server.py (entry point, lifecycle)
     │   ├── deploy_instructions.py  deploy a context's skills/system_prompt into its Drive folder
     │   ├── at_paths.py      alpha-path grammar: form, repo/context heads, containment
     │   ├── resolve_paths.py agent-facing alpha-path resolver (repos / contexts / tickets) behind `resolve_paths`
-    │   ├── tickets/         ticket operations behind `tickets`, `new_ticket`, `move_ticket`, `edit_ticket`
+    │   ├── tickets/         ticket operations behind `tickets`, `new_ticket`, `move_ticket`, `edit_ticket`, `add_worktree`;
+    │   │                    `branches.py` ticket branches, `branch_info.py` branch fields and answers, `git.py` the only git runner
     │   └── manifest.py      strict v4 manifest reader
     ├── scanner.py           hierarchy scan, strict v4 reader
     ├── watcher.py           manifest file watcher, auto-rescan
@@ -55,7 +56,8 @@ mcp_stdio_bridge.py          separate process: stdio ⇄ /mcp for Claude Desktop
 | `services/deploy_instructions.py` | Materialize a context's `skills` (`.claude/skills/<name>/` + `.agents/skills/<name>/`) + `system_prompt` (`.claude/output-styles/` + `outputStyle`, `.codex/config.toml` key, `.kimi-code/agents/agent.md`, `.agents/agents/<name>/agent.md`) into its Drive folder; idempotent | HTTP, @-path resolution policy, DB |
 | `services/at_paths.py` | The one grammar of alpha paths, shared by deploy and `resolve_paths`: parse `@<head>/<rest>`, find the repo dir (under `DuetData/repos`) or context (→ its Drive folder) a head stands for, keep the target inside it; refuse `.` / `..` segments | Tickets, file copy, HTTP, DB |
 | `services/resolve_paths.py` | Resolve agent alpha paths incl. tickets (`@DUE009`), explain every failure, render the tool's Markdown | DB (gets contexts from `WorkspaceService`), HTTP, manifest writes |
-| `services/tickets/` | List, create, move and edit tickets; own the ticket folder name and the `INDEX.md` frontmatter; atomic writes with rollback | DB (gets contexts from `WorkspaceService`), HTTP, manifest writes, anything below the frontmatter |
+| `services/tickets/` | List, create, move and edit tickets; own the ticket folder name and the `INDEX.md` frontmatter; atomic writes with rollback; give a ticket its branch and worktrees and remove them when it is closed or shelved | DB (gets contexts from `WorkspaceService`), HTTP, manifest writes, anything below the frontmatter |
+| `services/tickets/git.py` | The one place the Backend starts a process: git, for ticket branches | Anything but running git and parsing its output |
 | `watcher.py` | Watch manifest files, debounce, trigger rescan | DB, HTTP, config |
 | `instructions.py` | Build the platform session prompt from duet-core.md | DB, HTTP |
 | `description.py` | Read explicit business INDEX descriptions; legacy Markdown and spec utilities | DB, HTTP |
@@ -73,6 +75,7 @@ mcp_stdio_bridge.py          separate process: stdio ⇄ /mcp for Claude Desktop
 | `scanner.py` never imports `mcp_handler` | Domain isolation |
 | `config.py` never writes files | Read-only contract |
 | `db.py` never validates business rules | Just CRUD |
+| Only `services/tickets/git.py` starts a process (git), by a list of arguments without a shell, with `git -C <folder>`, `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C` and a timeout on every call (minutes for `fetch`, seconds for local commands); `tests/test_branches.py` checks that no other module imports `subprocess` | The ticket branch operations made the Backend run a program for the first time; one module keeps the boundary visible: no credential prompt can hang the server, and git's output reaches an agent only in the text of an error |
 
 ### Key Decisions
 
@@ -97,7 +100,7 @@ mcp_stdio_bridge.py          separate process: stdio ⇄ /mcp for Claude Desktop
 | GET | `/contexts` | `{ contexts: [...] }` — `type='context'` entities. Each entity carries `absolute_path`, `git_url`, `git_repos` (map or `null`), `meta`, `reference_repos`, `description`. **Order: roots in `root_context_folders` config order; non-root siblings alphabetical by `name`** — see /spec/PRODUCT.md → Invariants |
 | POST | `/scan` | `{ status, entities_count, duration_ms, errors[] }` |
 | POST | `/deploy-instructions` | Body: `{"workspace_paths": [...]}`. Picks the business from the paths, deploys its `skills`/`system_prompt` declarations into its Drive folder (idempotent). Returns `{ status: "ok", deployed, warnings }` or `{ status: "unknown", reason }` — see Deploy Instructions below |
-| POST | `/tickets/{action}` | `action` is `tickets`, `new_ticket`, `move_ticket` or `edit_ticket`; body is a JSON object of that operation's arguments. Runs the same code as the MCP tool of that name and returns `{ text, is_error, tickets }`: Markdown, whether the operation failed, and the tickets it looked up, created, moved or edited as `{ number, name, shelf, folder }`, so a client never parses the text. 404 for an unknown action, 400 for a body that is not a JSON object; a failed operation is HTTP 200 with `is_error: true` — see [Ticket tools](#ticket-tools) |
+| POST | `/tickets/{action}` | `action` is `tickets`, `new_ticket`, `move_ticket`, `edit_ticket` or `add_worktree`; body is a JSON object of that operation's arguments. Runs the same code as the MCP tool of that name and returns `{ text, is_error, tickets }`: Markdown, whether the operation failed, and the tickets it looked up, created, moved or edited as `{ number, name, shelf, folder, branch, worktrees, parked }` (`worktrees` is `[{ repo, path }]`, `parked` is `{ repo: branch }`), so a client never parses the text. 404 for an unknown action, 400 for a body that is not a JSON object; a failed operation is HTTP 200 with `is_error: true` — see [Ticket tools](#ticket-tools) |
 | POST | `/merge-duet-instructions` | Builds `duet.md` from the `duet-core.md` platform prompt. Returns `{ status, output_style, errors[] }` |
 
 ### MCP Tools
@@ -109,11 +112,12 @@ mcp_stdio_bridge.py          separate process: stdio ⇄ /mcp for Claude Desktop
 | `turn_plan` | Plan text as unstructured content (prototype: one turn's checklist, stateless; `fmt` picks `md` / `html` / `line` / `plain`; `structured_output=False` keeps the client from showing a `{"result": ...}` envelope) |
 | `resolve_paths` | Markdown text, one `### <path>` section per requested alpha path (see [Alpha-path resolution](#alpha-path-resolution-resolve_paths)); `structured_output=False`; empty list → `INVALID_PARAMS` |
 | `turn_report` | The given report text unchanged, as unstructured content (prototype: one agent report on preparing the answer, free-form Markdown chosen by the caller; the first non-empty line must be a `### ` heading with text, otherwise `INVALID_PARAMS`; `structured_output=False` for the same reason as `turn_plan`) |
-| `orientation` | Markdown text for one folder (see [Orientation](#orientation)); optional `key` and `interpretation` add the calibration block; `structured_output=False` |
+| `orientation` | Markdown text for one folder (see [Orientation](#orientation)); optional `key` and `interpretation` add the calibration block; optional `ticket` adds the ticket's state, folder, branch and worktree paths; `structured_output=False` |
 | `tickets` | Markdown: an overview of a business's tickets, a filtered list (`shelf`, `parent`), or one or more tickets by number (see [Ticket tools](#ticket-tools)); read-only; `structured_output=False` |
 | `new_ticket` | Markdown: the new number, folder, stable `@NUMBER` address and the frontmatter written; not idempotent |
-| `move_ticket` | Markdown: the new folder and, when a close or reopen date was recorded, the updated frontmatter; idempotent |
+| `move_ticket` | Markdown: the new folder, the worktrees and branches removed, and, when a close or reopen date was recorded, the updated frontmatter; optional `parked` (map repo → parked branch, backlog only); idempotent (see [Ticket branches](#ticket-branches)) |
 | `edit_ticket` | Markdown: what changed (with the previous values) and the updated frontmatter; idempotent |
+| `add_worktree` | Markdown: the ticket card with its branch and worktree paths, the base the branch started from, and the updated frontmatter; one call, one repo; idempotent (see [Ticket branches](#ticket-branches)) |
 | `business_tree` | Flat list of registered businesses linked by `id` / `parent_id`, with repository declarations; areas without their own manifest are not separate records |
 | `scan` | dict directly |
 | `health` | `{ status, version, uptime_seconds }` |
@@ -151,13 +155,14 @@ Contract — what the tool answers for which folder: [PRODUCT.md → Orientation
 - **`resolve_business(folder)`** is the one rule "folder → business", shared with Deploy Instructions. The folder's path relative to its venture folder is matched against `drive_path` with `db.find_closest_entity`, so the nearest registered context wins. A folder under `DuetData/repos` resolves to `None`.
 - **Names after `@`** are the registered entity names (`МетаЛаб`), not folder names (`!МетаЛаб`).
 - **Ticket code.** A business whose manifest declares `ticket_code` gets one line, `**Ticket code:** \`DUE\``, after the paths: it is the one thing about tickets an agent can't learn elsewhere.
-- **Repo answer.** The repo is the first path segment under `repos`; a worktree folder `X.wt-N` stands for `X.git`; the `repos` folder itself is answered as outside Duet. `Declared by` is read from the manifests on disk of every context in the DB, because a shared repo has only one `product_repo` row (see Scanner).
+- **Repo answer.** The repo is the first path segment under `repos`; the `repos` folder itself is answered as outside Duet. A ticket's worktree, `<alias>.wt-<ticket number>`, is answered as ``Not a business folder: this path is inside the worktree of a ticket.``: its own line `@<alias>.wt-<number>` (worktree of ticket `@<number>`) with its path, the main clone `@<alias>.git` beside it, and the worktree's `README.md` to read. Any other `X.wt-N` folder stands for `X.git`.
+- **`ticket`.** `orientation(path, ticket=…)` appends, after the plain answer and before calibration, a section on that ticket (`views.ticket_orientation`): number, name, work type, state, business, folder, and its branch block (see [Ticket branches](#ticket-branches)), or a line saying it has no branch and its work goes to `main` of the main clones. A ticket that can't be found gives `**Ticket:** Error: …` in that section; the rest of the answer stays. `Declared by` is read from the manifests on disk of every context in the DB, because a shared repo has only one `product_repo` row (see Scanner).
 - **Calibration.** `WorkspaceService._calibration` builds the block the contract describes ([PRODUCT.md → Orientation](../../../spec/PRODUCT.md#orientation), "Calibration") and `get_orientation` appends it after a blank line. The calibration file is found from the business that `resolve_business` picks: its manifest's `system_prompt` resolves with `resolve_at_path`, as the deployer resolves it, and the sibling `<stem>-calibration.md` is read as UTF-8 with the deployer's frontmatter shape. Keys are compared after NFC, `strip` and `casefold`. Any read or parse failure gives no common reading, never an error, because orientation is the session gate.
 - **Not registered.** A folder inside a venture folder for which the DB has no context — the venture has no valid manifest, or the first scan has not finished — is answered with ``Not a business folder: this path is inside a venture folder, but no business is registered for it. Run `scan` and call `orientation` again.``
 
 ### Ticket tools
 
-Four operations let an agent work with tickets in one call each instead of listing folders, counting numbers and editing frontmatter by hand: `tickets` (read), `new_ticket`, `move_ticket` and `edit_ticket` (write). They have two entry points over one implementation: the MCP tools of those names for agents, and `POST /tickets/{action}` for the Extension. Logic: the `services/tickets/` package; `WorkspaceService.ticket_action` supplies the contexts from the DB and today's date in the configured timezone. This is the one place the Backend writes to a business's Drive folder. It still never writes manifests.
+Five operations let an agent work with tickets in one call each instead of listing folders, counting numbers and editing frontmatter by hand: `tickets` (read), `new_ticket`, `move_ticket`, `edit_ticket` and `add_worktree` (write). They have two entry points over one implementation: the MCP tools of those names for agents, and `POST /tickets/{action}` for the Extension. Logic: the `services/tickets/` package; each operation takes a `TicketEnv` first — the contexts, today's date and `DuetData/repos` — which `WorkspaceService.ticket_action` builds from the DB, the configured timezone and `config.get_repos_path`. This is the one place the Backend writes to a business's Drive folder. It still never writes manifests.
 
 **Model.** A ticket is a folder `<number>_<Name>` under a business's `work/`, `backlog/` or `archive/`, found by the same walk as `resolve_paths` (`list_ticket_folders`), so a number the tools consider free is one the resolver can't find. Its metadata is the YAML frontmatter of its `INDEX.md`. The tools own the ticket's name and the frontmatter. The name lives in the folder name and in the title heading (the first `# ` line) of `INDEX.md`, and a rename changes both — where the heading contains the old name; a heading that doesn't mention it is left alone and reported. Everything else below the frontmatter is never modified. The frontmatter is edited line by line (`frontmatter.py`), never re-serialized, so untouched lines, comments, line endings and the body stay byte for byte.
 
@@ -166,7 +171,7 @@ Four operations let an agent work with tickets in one call each instead of listi
 **Contract.**
 
 - Every operation returns a `Result(text, is_error, tickets)`; `tickets` is the affected tickets as data, for clients that are programs. MCP maps `is_error` to `isError: true`; the text of a failure starts with `Error:` and says how to fix it. A batch lookup (`tickets(number=[...])`) that resolves at least one ticket is a success that names the numbers that failed.
-- An error means nothing changed. Writes validate first, write `INDEX.md` atomically (temp file + `os.replace`), and roll back a folder move or creation when the write after it fails. If the rollback itself fails, the message describes the exact state left on disk.
+- An error means nothing changed. Writes validate first, write `INDEX.md` atomically (temp file + `os.replace`), and roll back a folder move or creation when the write after it fails. If the rollback itself fails, the message describes the exact state left on disk. Removing a ticket's worktrees can fail halfway and can't be undone; that follows the rule of partial failures in [Ticket branches](#ticket-branches).
 - An `INDEX.md` that can't be read (I/O error, invalid UTF-8) is not an empty one: the ticket is listed as unreadable and can't be modified, and a folder that can't be listed fails the call rather than producing a partial list.
 - `move_ticket` and `edit_ticket` are idempotent: asking for the state a ticket is already in succeeds with "No changes". `new_ticket` is not: a caller that doesn't know whether its call went through must look with `tickets` before calling again.
 - Reads and writes share one lock (`model.disk_lock`): a read holds it while it lists the folders, a write for its whole duration. Without it a read that overlaps a move can find the ticket in neither place or in both. Taking the lock has a 20-second deadline, so an operation stalled on the drive makes the next ones fail with an error instead of queueing behind it forever.
@@ -196,9 +201,62 @@ Unreadable ticket metadata fails an area search because area membership cannot b
 determined safely. Follow-up listing examples retain the area and owner code.
 Write operations keep their existing business resolution and `area` argument.
 
-**Arguments.** Values with a fixed set (`shelf`, `to`, `work_type`) are published as an `enum` in the schema but accepted as plain strings, so that `"Archive"` reaches the service: it normalizes the case and answers an unknown value in the tools' own error format instead of a validation dump.
+**Arguments.** `parked` of `move_ticket` is an object of strings; `check_arguments` checks the type of each key and value, and the MCP schema publishes it as an object with string values. Values with a fixed set (`shelf`, `to`, `work_type`) are published as an `enum` in the schema but accepted as plain strings, so that `"Archive"` reaches the service: it normalizes the case and answers an unknown value in the tools' own error format instead of a validation dump.
 
 **Tests.** `tests/test_ticket_cases.py` runs every folder under `tests/ticket_cases/` (a starting tree, a call, the expected response, the expected changes on disk; index in `tests/ticket_cases/CASES.md`). Behavior changes start there: the case first, then the code. The same file holds `TestRollback` (failed writes, file permissions), `TestConcurrency` (reads during moves), `TestMcpBoundary` (strict arguments, `isError`, timeouts) and `TestFrontmatter`; the REST entry point is covered by `tests/test_api.py::TestTicketsEndpoint`. To check behavior on the real cloud drive rather than a local temp folder, point pytest's `--basetemp` at a scratch folder on the drive that lies outside every root context.
+
+### Ticket branches
+
+A ticket in work may get a short-lived branch when the user asks for one. The rules of working in branches are the skill's (`@duet-work.git/skills/duet-work/references/git-working-in-branches.md`); this is the server's part. Logic: `services/tickets/branches.py` (operations, locks, checks), `branch_info.py` (the fields and the block every answer shows), `git.py` (the git calls).
+
+**Fields.** Only these operations write them; `new_ticket` and `edit_ticket` don't accept them. They follow `parent` in `FIELD_ORDER`, because the Extension reads only the first 2 KB of `INDEX.md`.
+
+```yaml
+git-branch-name: ABC001_ShortName     # one branch name in every repo of the ticket
+git-branch-repos:                     # the repos that have it, each with a worktree
+  - Duet
+  - duet-work
+git-parked-branches:                  # per repo, where the next resume starts
+  Duet: ABC001_parked-saved-work
+```
+
+`git-branch-repos` is written like any list (one value inline, more as items); the map is read and written by `Frontmatter.get_map` / `set_map`, one indented `repo: branch` line per entry. Map keys are repo aliases, not field names, so `Igor.source` or an alias starting with a digit reads back as written. The server writes and erases the first two fields together; a ticket with only one of them is refused by `add_worktree` and by closing and shelving, because a missing list doesn't prove that nothing is left.
+
+**Names.** A ticket branch is the full ticket number, `_`, and Latin letters and digits (`DUE054_TicketBranches`); a parked branch is the number, `_parked-`, and lowercase words joined by hyphens (`DUE054_parked-branch-workflow`). Both also pass `git check-ref-format --branch`. The forms can't meet: a ticket branch has no hyphen. The server checks the form; choosing the name from the ticket's intent is the agent's job.
+
+**Repos.** A repo is allowed when it is in `git_repos` of the ticket's owner or of a registered business inside the owner's folder: businesses such as Genesis inside DuetLab run their work as DUE tickets. `reference_repos` never are. The main clone is `DuetData/repos/<alias>.git`, always on `main`; the worktree is `DuetData/repos/<alias>.wt-<ticket number>`.
+
+**`add_worktree(ticket, repo, branch)`.** The ticket must be in `work` with a readable `INDEX.md`, the repo allowed, the name right, and equal to `git-branch-name` when that is set. The clone must exist and be a git repository. A retry — the worktree of this clone on this branch registered at the path, and both fields naming it — is "No changes" without touching the network. Anything else already there is an error and nothing is adopted: a folder at the path that isn't that worktree, a branch of that name without the worktree, a repo listed in the fields without its worktree. The base is the repo's entry in `git-parked-branches` when there is one (it must exist locally; a missing one is an error, never a fallback to `main`), otherwise `origin/main` right after `git fetch origin main`. `git worktree add --no-track -b <branch> <path> <base>` creates it, and only then are the fields written; a failed write removes the worktree and the branch again.
+
+**`move_ticket` with a branch.** A ticket without branch fields and a call without `parked` take the plain path, entirely under one hold of `disk_lock`. A ticket whose fields are set, moved to `archive` or `backlog`, takes the branch path:
+
+1. The ordinary checks of the move.
+2. For each repo in `git-branch-repos`: the target is the parked branch named in `parked`, or `origin/main` after a fetch; the worktree must be registered at its path on the branch, `git status --porcelain --untracked-files=normal` must be empty (with `-c status.showUntrackedFiles=normal`, so a user setting can't hide a new file), and the branch tip must be an ancestor of the target. The checked tip is kept. The first failure is an error naming the repo and the condition; nothing is removed.
+3. Under `disk_lock` the move is checked again and the fields compared with the ones checked.
+4. Repo by repo, in field order: the tip still equals the checked one and the worktree is clean; `git worktree remove` without `--force` and with the same setting, so git refuses a worktree with an untracked file; `git update-ref -d refs/heads/<branch> <checked tip>`; then one write of `INDEX.md` drops the repo from `git-branch-repos` and, when shelving, sets or drops its entry in the map. For the last repo the same write erases both fields, records `closed` when closing, and moves the folder.
+
+The branch is deleted with `update-ref` and the checked tip as the old value, a compare-and-delete: an agent's commit in the worktree after the check makes git refuse, and the branch stays with the new work (measured on git 2.54.0). The worktree goes first, because `update-ref` doesn't check whether a worktree has the branch. The server never deletes a commit it didn't check, and never discards, squashes or resets work. Closing leaves the parked branches and the map alone. Moving a ticket to `work` creates no worktree; reopening one doesn't restore its branch.
+
+**Partial failures.** The fields stay the truth until the server itself has removed a repo's resources. A failure before step 4 changes nothing. A failure in step 4 names the repo, the worktree path, the branch, the checked tip, and what was already removed: a refused `worktree remove` (a locked worktree) leaves everything as it was; a refused `update-ref` leaves the branch with a tip the server didn't check and no worktree; a failed write leaves the fields naming a repo whose worktree and branch are gone. In each case the agent puts the repo back with git as the fields name it and retries; repos already removed have left the fields, so a retry doesn't need them back. The skill carries no recipes: the error carries the facts.
+
+**`parked`** (backlog only) is a map repo → parked branch; an entry means "the base of the next resume" in that repo. For a repo with the branch, the named parked branch must match the form and exist, and becomes that repo's target in step 2; a repo with the branch that isn't named was discarded or merged, and its entry is dropped. For a repo without the branch, `""` drops the entry, the current value changes nothing (so a retry after a partial failure passes), and anything else is an error. A call with `parked` on a ticket without branch fields takes the parked path under the ticket's lock: it checks the map by the same rules and writes it with the move in one write of `INDEX.md`; a ticket already in `backlog` gets only the map written ("Updated parked branches of …", or "No changes").
+
+**Unreadable `INDEX.md`.** Shelving a ticket whose `INDEX.md` can't be read is an error ("can't confirm that … has no branch"): shelving a ticket with a branch without its check would lose the branch from the records. Moving it to `work` works as before; to `archive` it never did.
+
+**Locks and order.** Git work can take minutes and never runs under `disk_lock`, whose waiters give up after 20 seconds. A branch operation holds a lock per ticket for its whole length, and a lock per main clone while git runs in it, always in that order, ticket first; `disk_lock` is taken only briefly inside them, never the other way round. Waiting for them is limited to the fetch timeout plus a minute, then "another branch operation is still running". `move_ticket` reads the fields under `disk_lock`; with fields present it lets go, takes the ticket's lock and reads the ticket again. The fields disappear only in the last step, so a call over a ticket whose removal is unfinished also takes the branch path and waits. All these locks live in the server process; an agent's git in a terminal is not stopped by them, which is why the branch is deleted conditionally.
+
+**Answers.** Every answer that returns a ticket shows the same block (`branch_info.block_lines`), only for a ticket with branch fields:
+
+```markdown
+**Branch:** `ABC001_ShortName`
+* `Duet`: `@Duet.wt-ABC001` — `/…/DuetData/repos/Duet.wt-ABC001`
+**Parked branches** (no worktree):
+* `Duet`: `ABC001_parked-saved-work`
+```
+
+The card (lookup by number, and the answers of `new_ticket`, `move_ticket`, `edit_ticket`, `add_worktree`) shows it after the `INDEX.md` address and leaves the three fields out of its field list; a list indents it under the ticket's line; `resolve_paths` adds it after the ticket's type and state line; `orientation(ticket=…)` ends its ticket section with it. A worktree whose folder is missing is marked so. `@<alias>.git` always means the main clone; a worktree has its own address, `@<alias>.wt-<number>`, because `resolve_paths` takes any folder under `repos` as a head.
+
+**Tests.** `tests/test_branches.py` builds a bare `origin`, main clones in `repos` and a business in a temporary folder, with git isolated from the user's configuration, and covers creation and its refusals, closing and shelving with their refusals and partial failures, the cycles of the parked map, and the answers.
 
 ### Alpha-path resolution (`resolve_paths`)
 
@@ -475,7 +533,7 @@ Backend has no standalone build — bundled into Host's `extraResources` (see [`
 | Deploy skills/system_prompt | `services/deploy_instructions.py:deploy_instructions()` |
 | `@<name>/<rest>` resolution | `services/at_paths.py` (`parse_at_path`, `find_base`, `join_under`, `resolve_at_path`) |
 | Agent alpha paths, tickets | `services/resolve_paths.py:resolve_paths()`, `WorkspaceService.resolve_paths()` |
-| Ticket tools | `services/tickets/` (`views.py` read, `writes.py` write, `frontmatter.py`, `naming.py`, `model.py`), `WorkspaceService.ticket_action()` |
+| Ticket tools | `services/tickets/` (`views.py` read, `writes.py` write, `branches.py` branches and `move_ticket`, `branch_info.py`, `git.py`, `frontmatter.py`, `naming.py`, `model.py`), `WorkspaceService.ticket_action()` |
 | Business description | `description.py:read_business_description()` |
 | Spec file fallback (legacy) | `description.py:find_spec_file()` |
 | Merge pipeline | `instructions.py:merge_duet_instructions()` |

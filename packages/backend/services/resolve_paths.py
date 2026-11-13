@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from normalization import normalize_path
@@ -106,6 +106,8 @@ class Resolution:
     exists: bool = False
     nearest: tuple[str, Path] | None = None
     ticket: TicketInfo | None = None
+    # The ticket's branch block (`services/tickets/branch_info.py`); empty without branches.
+    branch_lines: list[str] = field(default_factory=list)
     error_code: str | None = None
     error: str | None = None
 
@@ -176,7 +178,19 @@ class _Resolver:
 
         folder, parts = found[0]
         res.ticket = _ticket_info(number, owner.name, parts)
+        res.branch_lines = self._branch_lines(number, folder)
         return self._finish(res, number, folder.resolve(), rest)
+
+    def _branch_lines(self, number: str, folder: Path) -> list[str]:
+        """The ticket's branches and worktrees, as every answer about a ticket shows them."""
+        # Imported here: `services.tickets` imports this module.
+        from services.tickets.branch_info import BranchFields, block_lines
+        from services.tickets.frontmatter import Frontmatter
+        try:
+            text = (folder / "INDEX.md").read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return []
+        return block_lines(number, BranchFields.of(Frontmatter.parse(text)), self.repos_path)
 
     def _unregistered_code(self, res: Resolution, number: str, code: str) -> Resolution:
         hits = [(c, found) for c in self.contexts
@@ -355,6 +369,8 @@ def render_markdown(results: list[Resolution]) -> str:
             lines.append(f"`{res.absolute}`")
             if res.ticket:
                 lines += ["", describe_ticket(res.ticket)]
+                if res.branch_lines:
+                    lines += ["", *res.branch_lines]
             if not res.exists and res.nearest:
                 alpha, folder = res.nearest
                 lines += ["", f"Doesn't exist yet. Nearest existing folder: `{alpha}`",

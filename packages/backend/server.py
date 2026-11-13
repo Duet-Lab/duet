@@ -258,16 +258,16 @@ async def deploy_instructions_handler(request: Request) -> JSONResponse:
 async def tickets_handler(request: Request) -> JSONResponse:
     """POST /tickets/{action} - Run a ticket operation.
 
-    `action` is `tickets`, `new_ticket`, `move_ticket`, or `edit_ticket`; the
-    body is a JSON object with the operation's arguments. This is the same
-    code the MCP tools of those names run (`services/tickets`), so the
-    Extension and agents get identical behavior.
+    `action` is `tickets`, `new_ticket`, `move_ticket`, `edit_ticket`, or
+    `add_worktree`; the body is a JSON object with the operation's arguments.
+    This is the same code the MCP tools of those names run (`services/tickets`),
+    so the Extension and agents get identical behavior.
 
     Response: `{text, is_error, tickets}`. `text` is Markdown; a failed
     operation has `is_error: true` and a text starting with `Error:`.
     `tickets` lists the tickets the operation looked up, created, moved, or
-    edited as `{number, name, shelf, folder}`, so a client never has to parse
-    the text. HTTP 400 is only for a request that isn't a JSON object, 404
+    edited as `{number, name, shelf, folder, branch, worktrees, parked}`, so a
+    client never has to parse the text. HTTP 400 is only for a request that isn't a JSON object, 404
     for an unknown action.
     """
     action = request.path_params["action"]

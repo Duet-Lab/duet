@@ -6,10 +6,12 @@ import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from services.manifest import MANIFEST_FILENAME, read_manifest
 from services.resolve_paths import ContextRef, TICKET_NUMBER_RE, list_ticket_folders
+from services.tickets.branch_info import BranchFields, block_lines, record_fields
 from services.tickets.frontmatter import Frontmatter
 from services.tickets.naming import WORK_TYPE_BY_LETTER
 
@@ -40,6 +42,20 @@ def disk_lock():
 
 class TicketError(Exception):
     """An operation can't be completed. The message says why and how to fix it."""
+
+
+@dataclass(frozen=True)
+class TicketEnv:
+    """What every ticket operation is given instead of reaching for globals.
+
+    `contexts` are the registered businesses, `today` is the date in Duet's
+    time zone, and `repos` is `DuetData/repos`, where the clones and the
+    tickets' worktrees live (None if it doesn't exist yet).
+    """
+
+    contexts: list[ContextRef]
+    today: date
+    repos: Path | None = None
 
 
 @dataclass
@@ -84,6 +100,10 @@ class Ticket:
     @property
     def index_path(self) -> Path:
         return self.folder / INDEX_FILENAME
+
+    @property
+    def branches(self) -> BranchFields:
+        return BranchFields.of(self.frontmatter)
 
 
 @dataclass
@@ -246,10 +266,12 @@ def pluralize(count: int, word: str) -> str:
     return f"{count} {word}es" if word.endswith("s") else f"{count} {word}s"
 
 
-def location_lines(ticket: Ticket) -> list[str]:
-    """Where a ticket is now, plus an address that survives moves and renames."""
-    return [f"**Folder:** `{ticket.folder}`", "",
-            f"**Index:** `@{ticket.number}/{INDEX_FILENAME}`"]
+def location_lines(ticket: Ticket, repos: Path | None) -> list[str]:
+    """Where a ticket is now, an address that survives moves and renames, and its branches."""
+    lines = [f"**Folder:** `{ticket.folder}`", "",
+             f"**Index:** `@{ticket.number}/{INDEX_FILENAME}`"]
+    branch = block_lines(ticket.number, ticket.branches, repos)
+    return lines + ["", *branch] if branch else lines
 
 
 
@@ -270,9 +292,10 @@ def collect_affected():
         _affected.reset(token)
 
 
-def record(ticket: Ticket) -> None:
-    """Report a ticket the current operation resolved or changed."""
+def record(ticket: Ticket, repos: Path | None) -> None:
+    """Report a ticket the current operation resolved or changed, with its branches."""
     collected = _affected.get()
     if collected is not None:
         collected.append({"number": ticket.number, "name": ticket.name,
-                          "shelf": ticket.shelf, "folder": str(ticket.folder)})
+                          "shelf": ticket.shelf, "folder": str(ticket.folder),
+                          **record_fields(ticket.number, ticket.branches, repos)})
