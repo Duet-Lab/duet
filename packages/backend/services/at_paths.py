@@ -21,6 +21,9 @@ What an alpha path is, decided once:
   reached the parent of the repos dir.
 - The target must stay inside the base after ``resolve()``, which is what
   refuses a symlink pointing out of the root.
+- The path handed back is built on the base as configured, not resolved:
+  a root reached through a symlink (``~/Google Drive`` for the cloud folder)
+  keeps that form. Symlinks are resolved only for the containment check.
 
 Resolution never reads or copies; callers decide what to do with the path.
 """
@@ -91,23 +94,26 @@ def find_base(
         context_folders: Context name → absolute Drive folder.
 
     A directory ``<repos_path>/<head>`` that exists is checked first, then a
-    context named ``<head>``.
+    context named ``<head>``. The folder is returned as configured, with any
+    symlink in it left in place.
     """
     if repos_path is not None and (repos_path / head).is_dir():
-        return (repos_path / head).resolve()
+        return repos_path / head
     for name, folder in context_folders.items():
         if normalize_path(name) == head:
-            return Path(folder).resolve()
+            return Path(folder)
     return None
 
 
 def join_under(base: Path, rest: str) -> Path:
-    """``base/rest`` resolved. Raises `AtPathError` if it leaves `base`."""
-    target = (base / rest).resolve() if rest else base
-    try:
-        target.relative_to(base)
-    except ValueError:
-        raise AtPathError("escapes_root") from None
+    """``base/rest``, unresolved. Raises `AtPathError` if it leaves `base`.
+
+    Containment is checked on the resolved forms of both, so a symlink inside
+    the base that points out of it is refused.
+    """
+    target = base / rest if rest else base
+    if rest and not target.resolve().is_relative_to(base.resolve()):
+        raise AtPathError("escapes_root")
     return target
 
 

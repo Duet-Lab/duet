@@ -179,7 +179,7 @@ class _Resolver:
         folder, parts = found[0]
         res.ticket = _ticket_info(number, owner.name, parts)
         res.branch_lines = self._branch_lines(number, folder)
-        return self._finish(res, number, folder.resolve(), rest)
+        return self._finish(res, number, folder, rest)
 
     def _branch_lines(self, number: str, folder: Path) -> list[str]:
         """The ticket's branches and worktrees, as every answer about a ticket shows them."""
@@ -232,6 +232,12 @@ class _Resolver:
     # --- shared tail ---
 
     def _finish(self, res: Resolution, head: str, base: Path, rest: str) -> Resolution:
+        if not base.is_dir():
+            # A registered folder that moved or sits on an unmounted drive: refuse this
+            # address alone, so the rest of the call still resolves.
+            return _fail(res, "root_unavailable",
+                         f"the folder of `@{head}` is not available: `{base}`. It may have "
+                         f"moved or its drive may not be mounted; if it moved, run `scan`.")
         try:
             target = join_under(base, rest)
         except AtPathError as e:

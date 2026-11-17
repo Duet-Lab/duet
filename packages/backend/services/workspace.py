@@ -36,7 +36,7 @@ from config import (
 from db import DatabaseManager, Entity
 from normalization import normalize_path
 from paths import is_path_inside
-from services.at_paths import resolve_at_path
+from services.at_paths import AT_PREFIX, resolve_at_path
 from services.manifest import read_manifest
 from services.resolve_paths import ContextRef, Resolution, resolve_paths as _resolve_paths
 from services.tickets import Result as TicketResult, TicketEnv, run as _run_ticket_action
@@ -419,13 +419,15 @@ class WorkspaceService:
         """Resolve the business for `workspace_paths` and deploy its
         instruction components (skills / system_prompt) into its Drive folder.
 
-        The business comes from business folders only (`resolve_business`):
-        a repo folder among the paths chooses nothing.
+        Each path is absolute or an alpha path (`@DuetDev`, `@DUE062/design.md`);
+        alpha paths are resolved first, and one that doesn't resolve leads to no
+        business. The business comes from business folders only
+        (`resolve_business`): a repo folder among the paths chooses nothing.
 
         Returns `{status, deployed, warnings, errors}` or `{status: "unknown", reason}`
         when no business resolves.
         """
-        entity = self._resolve_businesses(workspace_paths)
+        entity = self._resolve_businesses(self._expand_alpha_paths(workspace_paths))
 
         if not (entity and entity.id):
             return {"status": "unknown", "reason": "no_owning_context"}
@@ -442,6 +444,23 @@ class WorkspaceService:
             self._build_context_folders(),
         )
         return {"status": "ok", **report}
+
+    def _expand_alpha_paths(self, paths: list[str]) -> list[str]:
+        """Replace alpha paths with their absolute paths, in order; drop those that don't resolve."""
+        def is_alpha(path: object) -> bool:
+            return isinstance(path, str) and path.strip().startswith(AT_PREFIX)
+
+        alpha = [p for p in paths if is_alpha(p)]
+        if not alpha:
+            return paths
+        resolved = iter(self.resolve_paths(alpha))
+        expanded = []
+        for path in paths:
+            if not is_alpha(path):
+                expanded.append(path)
+            elif (res := next(resolved)).absolute is not None:
+                expanded.append(str(res.absolute))
+        return expanded
 
 
 # The same frontmatter shape the deployer reads from a system prompt.

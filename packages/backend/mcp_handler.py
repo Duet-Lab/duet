@@ -718,6 +718,26 @@ def business_tree() -> list[dict]:
 
 
 @mcp.tool()
+def deploy_instructions(workspace_paths: list[str]) -> dict:
+    """Deploy a business's skills and system prompt from its context.json into its folder.
+
+    Call it only when the user or your session's instructions allow it: a deploy replaces
+    the instruction files that every session of that business reads.
+
+    Args:
+        workspace_paths: Paths inside the business, each absolute or an alpha path
+            (`@DuetDev`, `@DUE062/design.md`). The business is the nearest one up the
+            folder tree; when the paths lead to several, the meta business wins,
+            otherwise the first. An alpha path that doesn't resolve is skipped.
+
+    Returns the same report as `POST /deploy-instructions`: `{status: "ok", deployed,
+    warnings, errors}`, or `{status: "unknown", reason}` when no path leads to a business
+    (`no_owning_context`) or the business has no manifest (`no_context_manifest`).
+    """
+    return _get_workspace_service().deploy_instructions(workspace_paths)
+
+
+@mcp.tool()
 def scan() -> dict:
     """Rescan configured business folders and rebuild the entity hierarchy.
 

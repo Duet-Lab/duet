@@ -426,7 +426,7 @@ Not a business folder: this path is inside a git-repo.
 
 ### Deploy Instructions
 
-A context can declare per-context AI artifacts that Duet materializes into its Drive folder. The Extension calls `POST /deploy-instructions` (on activation, on workspace-folder change, and on `duet.refresh`); the Backend picks the business by the [Orientation](#orientation) rule from the window's folders (with several business folders the meta-context wins, else the first) and deploys. Idempotent (atomic writes + prune), so safe to call on every trigger; Host is not involved.
+A context can declare per-context AI artifacts that Duet materializes into its Drive folder. The Extension calls `POST /deploy-instructions` (on activation, on workspace-folder change, and on `duet.refresh`); the Backend picks the business by the [Orientation](#orientation) rule from the window's folders (with several business folders the meta-context wins, else the first) and deploys. Idempotent (atomic writes + prune), so safe to call on every trigger; Host is not involved. Agents deploy through the MCP tool `deploy_instructions`, a synchronous wrapper with the same `workspace_paths` and the same report. Paths are absolute or alpha paths (`@DuetDev`, `@DUE062/design.md`), resolved as `resolve_paths` resolves them; an alpha path that does not resolve is skipped, so it leads to no business.
 
 | Component | `context.json` field | Target | Behavior |
 |-----------|---------------------|--------|----------|

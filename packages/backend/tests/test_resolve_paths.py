@@ -321,3 +321,106 @@ class TestThroughWorkspaceService:
         assert results[1].absolute == (lab / "archive/202609/DUE002_DuetChat/INDEX.md").resolve()
         assert results[1].ticket.state == "closed" and not results[1].exists
         assert results[2].absolute == builder.get_repo_path("Duet").resolve()
+
+
+class TestRootBehindSymlink:
+    """A root configured through a symlink keeps that form in every answer.
+
+    On macOS the cloud folder is reached as `~/Google Drive`, a symlink to the
+    real mount. Resolving it would hand agents the real path instead of the one
+    the user configured. Symlinks are resolved only to check containment.
+    """
+
+    @pytest.fixture
+    def linked(self, tmp_path: Path) -> dict:
+        real = _dir(tmp_path / "real")
+        lab = real / "DuetLab"
+        _manifest(lab, "DuetLab", ticket_code="DUE")
+        (lab / "INDEX.md").write_text("x", encoding="utf-8")
+        _dir(lab / "work" / "DUE009_AlphaPaths")
+        outside = _dir(tmp_path / "outside")
+        (lab / "escape").symlink_to(outside, target_is_directory=True)
+        (lab / "inner").symlink_to(lab / "work", target_is_directory=True)
+
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+        return {"lab": link / "DuetLab", "contexts": [ContextRef("DuetLab", link / "DuetLab")]}
+
+    def _resolve(self, linked: dict, *paths: str):
+        return resolve_paths(list(paths), None, linked["contexts"])
+
+    def test_business_and_file_keep_the_symlink(self, linked: dict) -> None:
+        lab = linked["lab"]
+        business, index = self._resolve(linked, "@DuetLab", "@DuetLab/INDEX.md")
+        assert business.absolute == lab
+        assert index.absolute == lab / "INDEX.md" and index.exists
+
+    def test_missing_file_and_nearest_keep_the_symlink(self, linked: dict) -> None:
+        lab = linked["lab"]
+        (res,) = self._resolve(linked, "@DuetLab/work/new/file.md")
+        assert res.absolute == lab / "work" / "new" / "file.md" and not res.exists
+        assert res.nearest == ("@DuetLab/work", lab / "work")
+
+    def test_ticket_keeps_the_symlink(self, linked: dict) -> None:
+        lab = linked["lab"]
+        folder, inside = self._resolve(linked, "@DUE009", "@DUE009/INDEX.md")
+        assert folder.absolute == lab / "work" / "DUE009_AlphaPaths"
+        assert inside.absolute == lab / "work" / "DUE009_AlphaPaths" / "INDEX.md"
+
+    def test_symlink_inside_the_root_stays_unresolved(self, linked: dict) -> None:
+        (res,) = self._resolve(linked, "@DuetLab/inner/DUE009_AlphaPaths")
+        assert res.absolute == linked["lab"] / "inner" / "DUE009_AlphaPaths" and res.exists
+
+    def test_symlink_out_of_the_root_is_still_refused(self, linked: dict) -> None:
+        (res,) = self._resolve(linked, "@DuetLab/escape/x")
+        assert res.error_code == "escapes_root"
+
+    def test_deploy_resolution_agrees(self, linked: dict) -> None:
+        folders = {"DuetLab": str(linked["lab"])}
+        assert resolve_at_path("@DuetLab/INDEX.md", None, folders) == linked["lab"] / "INDEX.md"
+        assert resolve_at_path("@DuetLab/escape/x", None, folders) is None
+
+    def test_root_configured_through_a_symlink(
+        self, tmp_path: Path, db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Scanner, registry and resolver keep the configured symlink end to end."""
+        import scanner as scanner_module
+        import services.workspace as workspace_module
+        from scanner import Scanner
+        from services.workspace import WorkspaceService
+        from tests.fixtures import DuetDataBuilder, ManifestBuilder
+
+        builder = DuetDataBuilder(tmp_path)
+        builder.add_root_context("Root", folder_name="!Root")
+        builder.build(monkeypatch)
+        real_root = builder.get_root_context_path(0)
+        lab = real_root / "DuetLab"
+        ManifestBuilder.context(lab, "DuetLab", ticket_code="DUE")
+        _dir(lab / "work" / "DUE002_DuetChat")
+
+        link = tmp_path / "linked"
+        link.symlink_to(real_root.parent, target_is_directory=True)
+        linked_root = link / real_root.name
+        for module in (scanner_module, workspace_module):
+            monkeypatch.setattr(module, "get_root_context_folders", lambda: [str(linked_root)])
+        Scanner(db, repos_path=builder.get_repos_path()).scan()
+
+        business, ticket = WorkspaceService(db).resolve_paths(["@DuetLab", "@DUE002/INDEX.md"])
+
+        assert business.absolute == linked_root / "DuetLab"
+        assert ticket.absolute == linked_root / "DuetLab" / "work" / "DUE002_DuetChat" / "INDEX.md"
+
+
+class TestUnavailableRoot:
+    """A registered business folder that is gone refuses its own addresses only."""
+
+    def test_missing_business_folder_does_not_stop_the_call(self, tmp_path: Path) -> None:
+        present = _dir(tmp_path / "Present")
+        contexts = [ContextRef("Gone", tmp_path / "Gone"), ContextRef("Present", present)]
+
+        bare, inside, other = resolve_paths(["@Gone", "@Gone/INDEX.md", "@Present"], None, contexts)
+
+        assert bare.error_code == "root_unavailable" and bare.absolute is None
+        assert inside.error_code == "root_unavailable"
+        assert other.absolute == present and other.exists
+        assert "Error:" in render_markdown([bare])
