@@ -3,36 +3,36 @@ import { FileSystem, nodeFs } from '../fs';
 import { parseOrder, serializeOrder } from './order';
 
 /**
- * The remembered order of a business's tickets in the bin:
- * `<business>/.vscode/duet-intents.json`, one flat list of ticket numbers. It
- * lies in the business folder, so it is the same for every program and machine.
+ * The remembered order of a workspace's tickets in the bin:
+ * `<workspace>/.vscode/duet-intents.json`, one flat list of ticket numbers. It
+ * lies in the workspace folder, so it is the same for every program and machine.
  *
  * The file is on a cloud drive: it is written in place by a single write, never
  * through a temporary file and a rename, which a sync client may turn into a
  * conflict copy. Only the exact file name is read, so such copies are harmless.
  */
-export function binOrderPath(businessPath: string): string {
-    return path.join(businessPath, '.vscode', 'duet-intents.json');
+export function binOrderPath(workspacePath: string): string {
+    return path.join(workspacePath, '.vscode', 'duet-intents.json');
 }
 
 /**
  * Read the order. An absent file is an empty order; a file that cannot be read
  * gives null, and the caller keeps the last order it read well.
  */
-export async function readBinOrder(businessPath: string, fileSystem?: FileSystem): Promise<string[] | null> {
+export async function readBinOrder(workspacePath: string, fileSystem?: FileSystem): Promise<string[] | null> {
     const fs = fileSystem ?? nodeFs;
     let text: string;
     try {
-        text = await fs.readFile(binOrderPath(businessPath), 'utf8');
+        text = await fs.readFile(binOrderPath(workspacePath), 'utf8');
     } catch (error) {
         return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
     }
     return parseOrder(text);
 }
 
-export async function writeBinOrder(businessPath: string, order: string[], fileSystem?: FileSystem): Promise<void> {
+export async function writeBinOrder(workspacePath: string, order: string[], fileSystem?: FileSystem): Promise<void> {
     const fs = fileSystem ?? nodeFs;
-    const file = binOrderPath(businessPath);
+    const file = binOrderPath(workspacePath);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, serializeOrder(order), 'utf8');
 }

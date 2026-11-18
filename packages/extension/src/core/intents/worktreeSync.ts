@@ -1,13 +1,24 @@
 import { coalesce } from './coalesce';
-import { TicketWorktree, WindowFolder, folderEdit, isOwnWorktree, reconcileFolders } from './worktrees';
+import { TicketWorktree, WindowFolder, folderEdit, isOwnWorktree, isTicketFolderOf, reconcileFolders, samePath } from './worktrees';
 
 /**
- * An open ticket window keeps its worktrees in step with the ticket. The
- * server writes `INDEX.md` of the ticket after it creates a worktree and
+ * An open ticket window keeps its folders in step with the ticket: the second
+ * folder, the ticket's own, and the worktrees of its branch.
+ *
+ * The ticket may move between the shelves of its owner — `work/`, `backlog/`,
+ * the archive — and the second folder would then point at nothing. So each
+ * check first finds where the ticket lies now, by the owner and the number,
+ * and replaces the second folder when it is elsewhere; that needs no branch,
+ * and most tickets have none. A window restored after the move is the same
+ * case: the old path is gone, the number comes from the window's workspace
+ * file and the owner from the registry. The first folder is never touched.
+ *
+ * The server writes `INDEX.md` of the ticket after it creates a worktree and
  * after it removes one, so an event about the ticket's folder or its
  * `INDEX.md` comes when the worktree folder already exists or is already
  * gone. On such an event, and once at every start of the window, the window
- * checks its folders (`reconcileFolders`).
+ * checks its folders (`reconcileFolders`). Worktrees are added only when the
+ * ticket has a branch.
  *
  * The start check covers what no event brings: a worktree made between the
  * building of the workspace file and the start of watching, and a window that
@@ -26,16 +37,29 @@ export interface WorktreeSyncHost {
     reposDir: string;
     /** Whether the window's folders belong to Duet: false for a window opened from its file as it is. */
     owned(): Promise<boolean>;
-    /** The folders of the window now, the business first. */
+    /** The folders of the window now, the workspace first, the ticket second. */
     folders(): WindowFolder[];
-    /** The ticket's `git-branch-name`; null without one. Throws when `INDEX.md` cannot be read. */
-    branch(): Promise<string | null>;
+    /**
+     * Where the ticket lies now among the shelves of its owner, the archive
+     * included; null when its number is nowhere or the folders did not answer.
+     */
+    ticketPlace(): Promise<string | null>;
+    /** The `git-branch-name` of the ticket at this folder; null without one. Throws when `INDEX.md` cannot be read. */
+    branch(ticketPath: string): Promise<string | null>;
     /** The worktrees the server names; throws when it does not answer. */
     worktrees(): Promise<TicketWorktree[]>;
     exists(folderPath: string): Promise<boolean>;
     /** Change the folders and wait until VS Code reports the change; false when it refused. */
     update(start: number, deleteCount: number, insert: WindowFolder[]): Promise<boolean>;
+    /** The second folder now points at this folder of the ticket. */
+    followed?(ticketPath: string): void;
     say(line: string): void;
+}
+
+/** Whether the second folder is this ticket's and lies elsewhere than the ticket now. */
+function mustFollow(folders: WindowFolder[], ticketNumber: string, ticketPath: string | null): boolean {
+    const second = folders[1];
+    return !!ticketPath && !!second && isTicketFolderOf(second.path, ticketNumber) && !samePath(second.path, ticketPath);
 }
 
 /** How many times a check reads the folders again when they change under it. */
@@ -86,16 +110,24 @@ export class WorktreeSync {
             return;
         }
         const hasOwnFolders = () => ownWorktrees(host.folders(), host).length > 0;
+        let ticketPath: string | null = null;
+        try {
+            ticketPath = await host.ticketPlace();
+        } catch {
+            ticketPath = null; // the folders did not answer: the second folder stays as it is
+        }
         let branch: string | null = null;
         let unreadable: string | null = null;
-        try {
-            branch = await host.branch();
-        } catch (error) {
-            // Unknown is not "no branch": nothing is added, gone folders still leave, and the window says why.
-            unreadable = error instanceof Error ? error.message : String(error);
+        if (ticketPath) {
+            try {
+                branch = await host.branch(ticketPath);
+            } catch (error) {
+                // Unknown is not "no branch": nothing is added, gone folders still leave, and the window says why.
+                unreadable = error instanceof Error ? error.message : String(error);
+            }
         }
-        if (!branch && !unreadable && !hasOwnFolders()) {
-            return; // A ticket without a branch: nothing to ask, nothing to remove.
+        if (!branch && !unreadable && !hasOwnFolders() && !mustFollow(host.folders(), host.ticketNumber, ticketPath)) {
+            return; // In place and without a branch: nothing to ask, nothing to change.
         }
 
         let named: TicketWorktree[] | null = unreadable ? null : [];
@@ -110,7 +142,7 @@ export class WorktreeSync {
             }
         }
         const present = named === null ? null : await this.existing(named);
-        await this.apply(present);
+        await this.apply(present, ticketPath);
 
         if (unreadable) {
             host.say(`Worktree тикета ${host.ticketNumber} в окне не обновлены: ${unreadable}.`);
@@ -126,7 +158,7 @@ export class WorktreeSync {
      * the person may add or remove folders while the server is asked; a list
      * that changes under the disk checks is read again.
      */
-    private async apply(present: TicketWorktree[] | null): Promise<void> {
+    private async apply(present: TicketWorktree[] | null, ticketPath: string | null): Promise<void> {
         const { host } = this;
         for (let attempt = 0; attempt < APPLY_ATTEMPTS; attempt++) {
             const current = host.folders();
@@ -138,10 +170,15 @@ export class WorktreeSync {
                 continue;
             }
             const next = reconcileFolders(current, host.reposDir, host.ticketNumber, present,
-                folderPath => exists.get(folderPath) ?? true);
+                folderPath => exists.get(folderPath) ?? true, ticketPath);
             const edit = folderEdit(current, next);
-            if (edit && !await host.update(edit.start, edit.deleteCount, edit.insert)) {
+            if (!edit) {
+                return;
+            }
+            if (!await host.update(edit.start, edit.deleteCount, edit.insert)) {
                 host.say(`Папки окна ${host.ticketNumber} не обновлены: VS Code отказал в изменении.`);
+            } else if (ticketPath && mustFollow(current, host.ticketNumber, ticketPath)) {
+                host.followed?.(ticketPath);
             }
             return;
         }

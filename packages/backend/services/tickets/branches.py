@@ -45,14 +45,13 @@ from services.tickets.branch_info import (
     BRANCH_FIELD, PARKED_FIELD, REPOS_FIELD, BranchFields, worktree_path,
 )
 from services.tickets.model import (
-    SHELVES, Business, Ticket, TicketEnv, TicketError, disk_lock, find_ticket,
-    location_lines, parse_number, record, resolve_business,
+    SHELVES, TicketOwner, Ticket, TicketEnv, TicketError, disk_lock, find_ticket,
+    allowed_workspaces, location_lines, parse_number, record, resolve_owner,
 )
 from services.tickets.writes import (
     already_there, apply_move, ensure_frontmatter, frontmatter_block, move_lines,
     move_plain, plan_move, require_editable, write_frontmatter,
 )
-from paths import is_path_inside
 
 # Longer than the fetch timeout, so a caller never gives up on a lock whose
 # holder is still within its own deadline.
@@ -107,33 +106,32 @@ def check_parked_name(number: str, branch: str) -> None:
             f"hyphens, e.g. `{number}_parked-saved-work`. Nothing was changed.")
 
 
-def allowed_repos(env: TicketEnv, biz: Business) -> list[str]:
-    """Repos a ticket may branch in: `git_repos` of its owner and of every business inside it.
+def allowed_repos(env: TicketEnv, owner: TicketOwner) -> list[str]:
+    """Repos a ticket may branch in: `git_repos` of its owner and of the owner's desks.
 
-    Businesses inside the owner's folder without a ticket code of their own
-    (Genesis in DuetLab) run their work as the owner's tickets, so their
-    repos count. Reference repos never do: they are read-only.
+    A desk (`ticket-code: inherit`, its tickets workspace the owner) works on
+    the owner's tickets, so its repos count. Nothing else does: a workspace
+    nested in the owner with a code of its own owns its own tickets, and its
+    repos are not given to outside tickets — a repo both need is declared by
+    both. Reference repos never count: they are read-only.
     """
-    folders = [Path(c.folder) for c in env.contexts
-               if is_path_inside(Path(c.folder).resolve(), biz.folder.resolve())]
-    folders.sort(key=lambda f: (f.resolve() != biz.folder.resolve(), str(f)))
     aliases: list[str] = []
-    for folder in folders:
-        manifest = read_manifest(folder)
+    for workspace in allowed_workspaces(env.workspaces, owner.folder):
+        manifest = read_manifest(workspace.folder)
         for alias in (manifest.git_repos or {}) if manifest else {}:
             if alias not in aliases:
                 aliases.append(alias)
     return aliases
 
 
-def _check_repo(env: TicketEnv, biz: Business, alias: str) -> None:
-    allowed = allowed_repos(env, biz)
+def _check_repo(env: TicketEnv, owner: TicketOwner, alias: str) -> None:
+    allowed = allowed_repos(env, owner)
     if alias not in allowed:
         listing = ", ".join(f"`{a}`" for a in allowed) or "none"
         raise TicketError(
-            f"`{alias}` is not declared in `git_repos` of {biz.name} or of a business "
-            f"inside it, so {biz.name} tickets can't have a branch there. Declared: "
-            f"{listing}. Nothing was changed.")
+            f"`{alias}` is not declared in `git_repos` of {owner.name} or of a desk "
+            f"inheriting its tickets, so {owner.name} tickets can't have a branch there. "
+            f"Declared: {listing}. Nothing was changed.")
 
 
 def _repos(env: TicketEnv) -> Path:
@@ -165,14 +163,14 @@ def add_worktree(env: TicketEnv, ticket: str, repo: str, branch: str) -> str:
     check_branch_name(number, branch)
     with ticket_lock(number):
         with disk_lock():
-            biz, item = _load(env, number)
-            fields = _check_can_add(env, biz, item, alias, branch)
+            owner, item = _load(env, number)
+            fields = _check_can_add(env, owner, item, alias, branch)
         clone = _clone(env, alias)
         path = worktree_path(_repos(env), alias, number)
         with clone_lock(alias):
             if not git.is_repository(clone):
                 raise TicketError(f"the clone `{clone}` doesn't exist or isn't a git "
-                                  f"repository. Duet clones it when {biz.name} is opened. "
+                                  f"repository. Duet clones it when {owner.name} is opened. "
                                   f"Nothing was changed.")
             if not git.valid_ref_format(clone, branch):
                 raise TicketError(f"git doesn't accept `{branch}` as a branch name. "
@@ -191,8 +189,8 @@ def add_worktree(env: TicketEnv, ticket: str, repo: str, branch: str) -> str:
                 raise TicketError(_after_failed_add(error, clone, path, alias, branch)) from error
         try:
             with disk_lock():
-                biz, item = _load(env, number)
-                fields = _check_can_add(env, biz, item, alias, branch)
+                owner, item = _load(env, number)
+                fields = _check_can_add(env, owner, item, alias, branch)
                 ensure_frontmatter(item)
                 item.frontmatter.set(BRANCH_FIELD, branch)
                 item.frontmatter.set(REPOS_FIELD, fields.repos + [alias])
@@ -210,12 +208,12 @@ def add_worktree(env: TicketEnv, ticket: str, repo: str, branch: str) -> str:
         *frontmatter_block(item.frontmatter, "Updated frontmatter:")])
 
 
-def _load(env: TicketEnv, number: str) -> tuple[Business, Ticket]:
-    biz = resolve_business(env.contexts, code=number[:3])
-    return biz, find_ticket(biz, number)
+def _load(env: TicketEnv, number: str) -> tuple[TicketOwner, Ticket]:
+    owner = resolve_owner(env.workspaces, code=number[:3])
+    return owner, find_ticket(owner, number)
 
 
-def _check_can_add(env: TicketEnv, biz: Business, item: Ticket, alias: str,
+def _check_can_add(env: TicketEnv, owner: TicketOwner, item: Ticket, alias: str,
                    branch: str) -> BranchFields:
     if item.shelf != "work":
         raise TicketError(f"{item.title} is in {item.shelf}. A worktree is made only for a "
@@ -223,7 +221,7 @@ def _check_can_add(env: TicketEnv, biz: Business, item: Ticket, alias: str,
                           f'`move_ticket(ticket="{item.number}", to="work")`. Nothing was '
                           f"changed.")
     require_editable(item)
-    _check_repo(env, biz, alias)
+    _check_repo(env, owner, alias)
     fields = item.branches
     if fields.branch and fields.branch != branch:
         raise TicketError(f"{item.title} already has the branch `{fields.branch}`; a ticket "
@@ -342,21 +340,21 @@ def move_ticket(env: TicketEnv, ticket: str, to: str,
             if value:
                 check_parked_name(number, value)
     with disk_lock():
-        biz, item = _load(env, number)
+        owner, item = _load(env, number)
         if parked is None and not item.branches.active:
-            return move_plain(env, biz, item, to)
+            return move_plain(env, owner, item, to)
     with ticket_lock(number):
         with disk_lock():
-            biz, item = _load(env, number)
+            owner, item = _load(env, number)
             fields = item.branches
             if fields.active and to in ("archive", "backlog") and item.shelf != to:
                 _check_complete(item, fields)
-                plan_move(biz, item, to, env.today)  # The ordinary checks, before any git.
-                parked_plan = _plan_parked(env, biz, item, parked or {}) if parked else None
+                plan_move(owner, item, to, env.today)  # The ordinary checks, before any git.
+                parked_plan = _plan_parked(env, owner, item, parked or {}) if parked else None
             elif parked is not None and not fields.active:
-                return _move_with_parked(env, biz, item, parked)
+                return _move_with_parked(env, owner, item, parked)
             else:
-                return move_plain(env, biz, item, to)
+                return move_plain(env, owner, item, to)
         return _move_with_branches(env, number, to, fields, parked_plan)
 
 
@@ -368,7 +366,7 @@ class _ParkedPlan:
     others: dict[str, str | None] = field(default_factory=dict)
 
 
-def _plan_parked(env: TicketEnv, biz: Business, item: Ticket,
+def _plan_parked(env: TicketEnv, owner: TicketOwner, item: Ticket,
                  parked: dict[str, str]) -> _ParkedPlan:
     """Check `parked` against the ticket's fields. Call under `disk_lock`."""
     fields = item.branches
@@ -376,7 +374,7 @@ def _plan_parked(env: TicketEnv, biz: Business, item: Ticket,
     for alias, value in parked.items():
         if alias in fields.repos:
             if value:
-                _check_repo(env, biz, alias)
+                _check_repo(env, owner, alias)
             continue
         current = fields.parked.get(alias)
         if value == "":
@@ -401,11 +399,11 @@ def _apply_parked(fields_map: dict[str, str], changes: dict[str, str | None]) ->
     return dropped
 
 
-def _move_with_parked(env: TicketEnv, biz: Business, item: Ticket,
+def _move_with_parked(env: TicketEnv, owner: TicketOwner, item: Ticket,
                       parked: dict[str, str]) -> str:
     """Shelve a ticket without a branch and change only its map. Call under `disk_lock`."""
     require_editable(item)
-    plan = _plan_parked(env, biz, item, parked)
+    plan = _plan_parked(env, owner, item, parked)
     new_map = dict(item.branches.parked)
     dropped = _apply_parked(new_map, plan.others)
     changed = new_map != item.branches.parked
@@ -420,8 +418,8 @@ def _move_with_parked(env: TicketEnv, biz: Business, item: Ticket,
         record(item, env.repos)
         return "\n".join([f"### Updated parked branches of {item.title}", "",
                           *location_lines(item, env.repos), "", *summary])
-    move = plan_move(biz, item, "backlog", env.today)
-    closed_parent = apply_move(biz, item, move, env.today, write=changed)
+    move = plan_move(owner, item, "backlog", env.today)
+    closed_parent = apply_move(owner, item, move, env.today, write=changed)
     record(item, env.repos)
     return "\n".join(move_lines(env, item, move, closed_parent, summary if changed else None))
 
@@ -452,8 +450,8 @@ def _move_with_branches(env: TicketEnv, number: str, to: str, fields: BranchFiel
     checked = [_check_ready(env, number, alias, branch, targets[alias]) for alias in fields.repos]
 
     with disk_lock():
-        biz, item = _load(env, number)
-        plan_move(biz, item, to, env.today)
+        owner, item = _load(env, number)
+        plan_move(owner, item, to, env.today)
         now = item.branches
         if now.branch != branch or now.repos != fields.repos:
             raise TicketError(f"the branch fields of {item.title} changed while its branches "
@@ -496,8 +494,8 @@ def _write_step(env: TicketEnv, number: str, to: str, alias: str,
     and the dropped entries.
     """
     with disk_lock():
-        biz, item = _load(env, number)
-        plan = plan_move(biz, item, to, env.today) if last else None
+        owner, item = _load(env, number)
+        plan = plan_move(owner, item, to, env.today) if last else None
         fm = item.frontmatter
         new_map = dict(item.branches.parked)
         changes: dict[str, str | None] = (
@@ -512,7 +510,7 @@ def _write_step(env: TicketEnv, number: str, to: str, alias: str,
             return item, None, None, new_map, dropped
         fm.set(BRANCH_FIELD, None)
         fm.set(REPOS_FIELD, None)
-        closed_parent = apply_move(biz, item, plan, env.today, write=True)
+        closed_parent = apply_move(owner, item, plan, env.today, write=True)
         return item, plan, closed_parent, new_map, dropped
 
 

@@ -1,26 +1,29 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { TreeNode } from '../../core/tree/contextTree';
+import { TreeNode } from '../../core/tree/workspaceTree';
 import { WorkspaceManager, metaExtraFolders } from '../../core/workspace';
+import { ticketsWorkspaceOf, workspaceByPath } from '../../core/workspaces';
 import { Paths } from '../../core/paths';
 import { readPointer } from '../../core/pointer';
-import { planBusinessColor } from '../../core/intents/workspaceFile';
-import { BUSINESS_CURATION, TicketReader, readBusinessManifest } from '../../core/intents/tickets';
-import { businessKey } from '../../core/intents/window';
+import { planWorkspaceColor } from '../../core/intents/workspaceFile';
+import { WORKSPACE_CURATION, TicketReader, readWorkspaceManifest } from '../../core/intents/tickets';
+import { workspaceKey } from '../../core/intents/window';
 import { getIntentsRuntime, getTicketService } from '../intents/current';
-import { getVentureFolders } from '../ventures';
-import { isSafeRepoName, prepareBusinessRepos } from './businessRepos';
+import { getRootFolders, getWorkspaces } from '../registry';
+import { isSafeRepoName, prepareWorkspaceRepos } from './workspaceRepos';
 import { TicketOpener } from './openTicket';
-export { buildGitCloneArgs, findUnsafeAliases, isSafeRepoName, prepareBusinessRepos, disposeGitOutputChannel } from './businessRepos';
+export { buildGitCloneArgs, findUnsafeAliases, isSafeRepoName, prepareWorkspaceRepos, disposeGitOutputChannel } from './workspaceRepos';
 
 /**
- * Open a context node. Every context is opened through a workspace file Duet
- * writes for it — `DuetData/workspaces/<context>.code-workspace`: the Drive
- * folder first, then one folder per `git_repos` alias, cloned when missing. A
- * context without `git_repos` gets a file of one folder. The window is opened
- * by a file in both cases because the file is where its colour lives. A meta
- * business gets the folders of the other ventures and DuetData after its own.
+ * Open a workspace node. Every workspace is opened through a workspace file
+ * Duet writes for it — `DuetData/workspaces/<workspace>.code-workspace`: the
+ * workspace folder first, then its tickets workspace when that is another one
+ * (for a desk, `ticket-code: inherit`), then one folder per
+ * `git_repos` alias, cloned when missing. The window is opened by a file
+ * because the file is where its colour lives. A meta workspace gets the
+ * folders of the other roots and DuetData after its own. A workspace with a
+ * curation routine on its own shelves opens the window of that routine.
  */
 async function openNode(
     node: TreeNode,
@@ -34,14 +37,15 @@ async function openNode(
 
     if (!path.isAbsolute(node.id)) {
         vscode.window.showErrorMessage(
-            `Cannot open "${node.label}": backend returned relative path. Check settings.json root_context_folders and reposPath.`
+            `Cannot open "${node.label}": backend returned relative path. Check settings.json root_workspace_folders and reposPath.`
         );
         return;
     }
 
     const runtime = getIntentsRuntime();
     const reader = runtime?.tickets ?? new TicketReader();
-    const curator = await reader.findRoutine(node.id, BUSINESS_CURATION);
+    // The workspace's own shelves only, never through `inherit`: the curation of its tickets workspace is not this workspace's
+    const curator = await reader.findRoutine(node.id, WORKSPACE_CURATION);
     if (curator) {
         const tickets = getTicketService();
         if (!runtime || !tickets) {
@@ -54,57 +58,57 @@ async function openNode(
         return;
     }
     const hasGitRepos = node.hasGit && Object.keys(node.gitRepos).length > 0;
-    if (!await prepareBusinessRepos(node.label, hasGitRepos ? node.gitRepos : {}, node.referenceRepos, paths)) {
+    if (!await prepareWorkspaceRepos(node.label, hasGitRepos ? node.gitRepos : {}, node.referenceRepos, paths)) {
         return;
     }
 
-    // The context name becomes the name of its workspace file. A name that cannot be a
+    // The workspace name becomes the name of its file. A name that cannot be a
     // file name is the one case left where the folder is opened directly, without a file.
     if (!isSafeRepoName(node.label)) {
         await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(node.id), { forceNewWindow });
         return;
     }
 
-    await openContextWorkspace(node, hasGitRepos ? Object.keys(node.gitRepos) : [], forceNewWindow, paths);
+    await openWorkspaceWindow(node, hasGitRepos ? Object.keys(node.gitRepos) : [], forceNewWindow, paths);
 }
 
 /**
- * Write the workspace file of a context and open it.
+ * Write the file of a workspace window and open it.
  *
- * Until 0.0.48 a context without `git_repos` was opened as a plain folder, and
- * only a context with repos got a file. That split left the windows of such
- * businesses without a colour, which is kept in the file — so the file is now
- * written for every context, and `aliases` is simply empty when it has no repos.
+ * Until 0.0.48 a workspace without `git_repos` was opened as a plain folder, and
+ * only one with repos got a file. That split left such windows without a
+ * colour, which is kept in the file — so the file is now written for every
+ * workspace, and `aliases` is simply empty when it has no repos.
  *
  * @param aliases - `git_repos` keys in declared order; already cloned
  */
-async function openContextWorkspace(
+async function openWorkspaceWindow(
     node: TreeNode,
     aliases: string[],
     forceNewWindow: boolean,
     paths: Paths
 ): Promise<void> {
     const workspaceManager = new WorkspaceManager(paths.workspacesPath, paths.reposPath);
-    const workspacePath = workspaceManager.getContextWithReposWorkspacePath(node.label);
+    const workspaceFile = workspaceManager.workspaceFilePath(node.label);
 
-    // The window of a business gets a colour by the same rules as the window of an intent.
+    // The window of a workspace gets a colour by the same rules as the window of an intent.
     // Without the intents runtime the file is written exactly as it always was: folders only.
     const runtime = getIntentsRuntime();
     let settings: Record<string, unknown> | undefined;
     let write = true;
     let reserveColor: string | null | undefined;
     if (runtime) {
-        const key = businessKey(node.label);
+        const key = workspaceKey(node.label);
         await runtime.refresh();
         // The file of a window that is open is not recoloured under it
-        const windowOpen = runtime.hasFileOpen(workspacePath);
+        const windowOpen = runtime.hasFileOpen(workspaceFile);
         let existing: string | null = null;
         try {
-            existing = await fs.readFile(workspacePath, 'utf8');
+            existing = await fs.readFile(workspaceFile, 'utf8');
         } catch {
             // no file yet: the first open
         }
-        const plan = planBusinessColor(existing, runtime.occupiedColors(key), windowOpen);
+        const plan = planWorkspaceColor(existing, runtime.occupiedColors(key), windowOpen);
         write = plan.action === 'write';
         settings = plan.action === 'write' ? plan.settings : undefined;
         // An open window keeps its marker; only a window that is about to start needs its colour held
@@ -112,26 +116,33 @@ async function openContextWorkspace(
     }
 
     if (write) {
-        const extraFolders = metaExtraFolders(node.meta, node.id, getVentureFolders(), paths.root);
-        await workspaceManager.writeContextWithReposWorkspace(node.label, aliases, node.id, settings, extraFolders);
+        const registry = getWorkspaces();
+        const entity = workspaceByPath(registry, node.id);
+        const tickets = entity ? ticketsWorkspaceOf(entity, registry) : null;
+        await workspaceManager.writeWorkspaceFile(node.label, {
+            workspacePath: node.id,
+            ticketsWorkspacePath: tickets?.kind === 'inherited' ? tickets.workspace.absolute_path : null,
+            aliases,
+            extraFolders: metaExtraFolders(node.meta, node.id, getRootFolders(), paths.root)
+        }, settings);
     }
     if (runtime && reserveColor !== undefined) {
-        const manifest = await readBusinessManifest(node.id);
+        const manifest = await readWorkspaceManifest(node.id);
         await runtime.reserve({
-            subject: 'business',
-            ticket: businessKey(node.label),
+            subject: 'workspace',
+            ticket: workspaceKey(node.label),
             ticketFolder: '',
-            business: manifest.name ?? node.label,
-            businessPath: node.id,
+            workspace: manifest.name ?? node.label,
+            workspacePath: node.id,
             icon: manifest.icon,
             ticketIcon: '',
-            workspaceFile: workspacePath,
+            workspaceFile,
             location: 'missing',
             color: reserveColor
         });
     }
 
-    const uri = vscode.Uri.file(workspacePath);
+    const uri = vscode.Uri.file(workspaceFile);
     await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow });
 }
 

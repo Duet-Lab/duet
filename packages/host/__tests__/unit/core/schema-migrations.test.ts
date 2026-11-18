@@ -2,15 +2,17 @@
  * Unit тесты для src/core/schema-migrations.ts
  *
  * Покрытие:
- * - applyMigrations: pure transform v1 → v2 (settings/machine) и v1 → v3 (context).
+ * - applyMigrations: settings has no step to v3 (renamed by the data migration), machine v1 → v2,
+ *   manifest v1 → v4.
  * - loadOrUpgradeSettings/MachineConfig: idempotent reload, future-version критичны.
  * - loadOrUpgradeManifests:
- *   - legacy → v3 для каждого имени файла (business/stream/product) с правилом root → meta.
+ *   - legacy → v4 для каждого имени файла (business/stream/product) с правилом root → meta;
+ *     name/icon/ticket_code уходят во frontmatter INDEX.md.
  *   - orphan resolution когда context.json и legacy сосуществуют.
- *   - self-heal на пустой root-папке.
- *   - future-version manifest помечен как per-context error, файл не трогается.
+ *   - self-heal на пустой root-папке: INDEX.md + context.json без name.
+ *   - future-version manifest помечен как per-workspace error, файл не трогается.
  *   - dot-folder skip + recursion through folders with git_repos.
- * - CONTEXT_SCHEMA v2 → v3: git_url → git_repos map.
+ * - MANIFEST_SCHEMA v2 → v3: git_url → git_repos map.
  * - atomicWriteJson: пишет через .tmp + rename.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -22,7 +24,7 @@ import { tmpdir } from 'os'
 import {
   applyMigrations,
   atomicWriteJson,
-  CONTEXT_SCHEMA,
+  MANIFEST_SCHEMA,
   loadOrUpgradeManifests,
   loadOrUpgradeMachineConfig,
   loadOrUpgradeSettings,
@@ -48,42 +50,47 @@ describe('core/schema-migrations', () => {
   // applyMigrations — pure
   // =============================================================================
   describe('applyMigrations', () => {
-    it('SETTINGS_SCHEMA: v1 → v2 renames business_folders, adds version, preserves other keys', () => {
-      const v1 = {
-        business_folders: ['@A', '@B'],
-        timestampTZ: { id: 'Z', value: 'UTC' },
-        custom: 42
-      }
-      const result = applyMigrations(SETTINGS_SCHEMA, v1)
-      expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.data).toEqual({
-          version: 2,
-          root_context_folders: ['@A', '@B'],
-          timestampTZ: { id: 'Z', value: 'UTC' },
-          custom: 42
-        })
-        expect(result.fromVersion).toBe(1)
-      }
-    })
-
-    it('SETTINGS_SCHEMA: v2 input is no-op', () => {
+    it('SETTINGS_SCHEMA: v2 has no step to v3 → not ok (the key is renamed by the data migration, not Host)', () => {
       const v2 = {
         version: 2,
         root_context_folders: ['@A'],
         timestampTZ: { id: 'Z', value: 'UTC' }
       }
       const result = applyMigrations(SETTINGS_SCHEMA, v2)
-      expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.data).toEqual(v2)
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.reason).toBe('no_migration')
         expect(result.fromVersion).toBe(2)
       }
     })
 
-    it('SETTINGS_SCHEMA: v3 future-version → not ok', () => {
-      const v3 = { version: 3, root_context_folders: [] }
+    it('SETTINGS_SCHEMA: v1 reaches v2 and stops there → not ok', () => {
+      const v1 = { business_folders: ['@A'], timestampTZ: { id: 'Z', value: 'UTC' } }
+      const result = applyMigrations(SETTINGS_SCHEMA, v1)
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.reason).toBe('no_migration')
+        expect(result.fromVersion).toBe(2)
+      }
+    })
+
+    it('SETTINGS_SCHEMA: v3 input is no-op', () => {
+      const v3 = {
+        version: 3,
+        root_workspace_folders: ['@A'],
+        timestampTZ: { id: 'Z', value: 'UTC' }
+      }
       const result = applyMigrations(SETTINGS_SCHEMA, v3)
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.data).toEqual(v3)
+        expect(result.fromVersion).toBe(3)
+      }
+    })
+
+    it('SETTINGS_SCHEMA: v4 future-version → not ok', () => {
+      const v4 = { version: 4, root_workspace_folders: [] }
+      const result = applyMigrations(SETTINGS_SCHEMA, v4)
       expect(result.ok).toBe(false)
       if (!result.ok) {
         expect(result.reason).toBe('future_version')
@@ -104,32 +111,32 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: business.json with root → context.json with meta (v1→v4 chain)', () => {
+    it('MANIFEST_SCHEMA: business.json with root → context.json with meta (v1→v4 chain)', () => {
       const v1 = { name: 'БАЗА', root: true, icon: '🏠' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v1, { sourceFilename: 'business.json' })
+      const result = applyMigrations(MANIFEST_SCHEMA, v1, { sourceFilename: 'business.json' })
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({ version: 4, name: 'БАЗА', icon: '🏠', meta: true })
       }
     })
 
-    it('CONTEXT_SCHEMA: business.json without root → no meta (v1→v4)', () => {
+    it('MANIFEST_SCHEMA: business.json without root → no meta (v1→v4)', () => {
       const v1 = { name: 'МетаЛаб' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v1, { sourceFilename: 'business.json' })
+      const result = applyMigrations(MANIFEST_SCHEMA, v1, { sourceFilename: 'business.json' })
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({ version: 4, name: 'МетаЛаб' })
       }
     })
 
-    it('CONTEXT_SCHEMA: stream.json → git_url collapsed into git_repos (v1→v4)', () => {
+    it('MANIFEST_SCHEMA: stream.json → git_url collapsed into git_repos (v1→v4)', () => {
       const v1 = {
         name: 'ТехноЛаб',
         git_url: 'git@github.com:foo/bar.git',
         reference_repos: { cookbook: 'https://github.com/anthropics/anthropic-cookbook.git' },
         description: 'Описание'
       }
-      const result = applyMigrations(CONTEXT_SCHEMA, v1, { sourceFilename: 'stream.json' })
+      const result = applyMigrations(MANIFEST_SCHEMA, v1, { sourceFilename: 'stream.json' })
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({
@@ -143,9 +150,9 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: product.json with git_url → git_repos {name: url}, no meta (v1→v4)', () => {
+    it('MANIFEST_SCHEMA: product.json with git_url → git_repos {name: url}, no meta (v1→v4)', () => {
       const v1 = { name: 'Duet', git_url: 'git@github.com:owner/repo.git', icon: '📦' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v1, { sourceFilename: 'product.json' })
+      const result = applyMigrations(MANIFEST_SCHEMA, v1, { sourceFilename: 'product.json' })
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({
@@ -157,17 +164,17 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: preserves unknown user-added fields (forward-compat)', () => {
+    it('MANIFEST_SCHEMA: preserves unknown user-added fields (forward-compat)', () => {
       const v1 = { name: 'X', myCustomField: 'survives' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v1, { sourceFilename: 'business.json' })
+      const result = applyMigrations(MANIFEST_SCHEMA, v1, { sourceFilename: 'business.json' })
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toMatchObject({ version: 4, name: 'X', myCustomField: 'survives' })
       }
     })
 
-    it('CONTEXT_SCHEMA: future-version → not ok', () => {
-      const result = applyMigrations(CONTEXT_SCHEMA, { version: 99, name: 'X' })
+    it('MANIFEST_SCHEMA: future-version → not ok', () => {
+      const result = applyMigrations(MANIFEST_SCHEMA, { version: 99, name: 'X' })
       expect(result.ok).toBe(false)
       if (!result.ok) {
         expect(result.reason).toBe('future_version')
@@ -177,9 +184,9 @@ describe('core/schema-migrations', () => {
 
     // === v2 → v4 specific (git_url collapse) ===
 
-    it('CONTEXT_SCHEMA: v2 → v4 converts git_url into git_repos map keyed by name', () => {
+    it('MANIFEST_SCHEMA: v2 → v4 converts git_url into git_repos map keyed by name', () => {
       const v2 = { version: 2, name: 'Duet', git_url: 'git@github.com:owner/repo.git', icon: '📦' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v2)
+      const result = applyMigrations(MANIFEST_SCHEMA, v2)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({
@@ -193,9 +200,9 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: v2 → v4 with no git_url just bumps version', () => {
+    it('MANIFEST_SCHEMA: v2 → v4 with no git_url just bumps version', () => {
       const v2 = { version: 2, name: 'МетаЛаб', icon: '🧪' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v2)
+      const result = applyMigrations(MANIFEST_SCHEMA, v2)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({ version: 4, name: 'МетаЛаб', icon: '🧪' })
@@ -205,14 +212,14 @@ describe('core/schema-migrations', () => {
 
     // === v3 → v4 specific (drop workspace_config) ===
 
-    it('CONTEXT_SCHEMA: v3 → v4 drops workspace_config, preserves the rest', () => {
+    it('MANIFEST_SCHEMA: v3 → v4 drops workspace_config, preserves the rest', () => {
       const v3 = {
         version: 3,
         name: 'DuetLab',
         git_repos: { Duet: 'git@github.com:owner/duet.git' },
         workspace_config: { primary_folder: 'context' }
       }
-      const result = applyMigrations(CONTEXT_SCHEMA, v3)
+      const result = applyMigrations(MANIFEST_SCHEMA, v3)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({
@@ -225,23 +232,27 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: v3 → v4 with no workspace_config just bumps version', () => {
+    it('MANIFEST_SCHEMA: v3 → v4 with no workspace_config just bumps version', () => {
       const v3 = { version: 3, name: 'Plain', git_repos: { A: 'https://a.git' } }
-      const result = applyMigrations(CONTEXT_SCHEMA, v3)
+      const result = applyMigrations(MANIFEST_SCHEMA, v3)
       expect(result.ok).toBe(true)
       if (result.ok) {
-        expect(result.data).toEqual({ version: 4, name: 'Plain', git_repos: { A: 'https://a.git' } })
+        expect(result.data).toEqual({
+          version: 4,
+          name: 'Plain',
+          git_repos: { A: 'https://a.git' }
+        })
       }
     })
 
-    it('CONTEXT_SCHEMA: v3 → v4 preserves skills and system_prompt', () => {
+    it('MANIFEST_SCHEMA: v3 → v4 preserves skills and system_prompt', () => {
       const v3 = {
         version: 3,
         name: 'DuetLab',
         skills: ['@anthropic-skills.git/skills/skill-creator'],
         system_prompt: '@DuetLab/styles/custom.md'
       }
-      const result = applyMigrations(CONTEXT_SCHEMA, v3)
+      const result = applyMigrations(MANIFEST_SCHEMA, v3)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({
@@ -253,7 +264,7 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: v4 input is no-op (idempotent)', () => {
+    it('MANIFEST_SCHEMA: v4 input is no-op (idempotent)', () => {
       const v4 = {
         version: 4,
         name: 'DuetLab',
@@ -262,7 +273,7 @@ describe('core/schema-migrations', () => {
           'Duet-Instructions': 'git@github.com:owner/instr.git'
         }
       }
-      const result = applyMigrations(CONTEXT_SCHEMA, v4)
+      const result = applyMigrations(MANIFEST_SCHEMA, v4)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual(v4)
@@ -270,9 +281,9 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: v2 with empty git_url string drops field, no git_repos created', () => {
+    it('MANIFEST_SCHEMA: v2 with empty git_url string drops field, no git_repos created', () => {
       const v2 = { version: 2, name: 'NoRepo', git_url: '' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v2)
+      const result = applyMigrations(MANIFEST_SCHEMA, v2)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({ version: 4, name: 'NoRepo' })
@@ -281,12 +292,24 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: v2 with git_url but missing name drops git_url, no git_repos', () => {
-      // Malformed v2 (name is required), but a hand-written file can hit this shape.
-      // We refuse to invent an alias from a missing name; git_url is still dropped so the
-      // resulting file is internally consistent.
+    it('MANIFEST_SCHEMA: v2 with git_url but missing name uses the folder name as the alias', () => {
+      // The name of a workspace lives in INDEX.md now; the folder name is what Host writes there.
       const v2 = { version: 2, git_url: 'git@github.com:foo/bar.git' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v2)
+      const result = applyMigrations(MANIFEST_SCHEMA, v2, { folderPath: '/drive/Duet' })
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.data).toEqual({
+          version: 4,
+          git_repos: { Duet: 'git@github.com:foo/bar.git' }
+        })
+      }
+    })
+
+    it('MANIFEST_SCHEMA: v2 with git_url, no name and no known folder drops git_url, no git_repos', () => {
+      // Without a name and a folder there is no alias to invent; git_url is still dropped so
+      // the resulting file is internally consistent.
+      const v2 = { version: 2, git_url: 'git@github.com:foo/bar.git' }
+      const result = applyMigrations(MANIFEST_SCHEMA, v2)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({ version: 4 })
@@ -295,10 +318,10 @@ describe('core/schema-migrations', () => {
       }
     })
 
-    it('CONTEXT_SCHEMA: v2 with git_url and empty name string drops git_url, no git_repos', () => {
+    it('MANIFEST_SCHEMA: v2 with git_url and empty name string drops git_url, no git_repos', () => {
       // Same as the missing-name case: empty string is treated as no alias.
       const v2 = { version: 2, name: '', git_url: 'git@github.com:foo/bar.git' }
-      const result = applyMigrations(CONTEXT_SCHEMA, v2)
+      const result = applyMigrations(MANIFEST_SCHEMA, v2)
       expect(result.ok).toBe(true)
       if (result.ok) {
         expect(result.data).toEqual({ version: 4, name: '' })
@@ -365,31 +388,48 @@ describe('core/schema-migrations', () => {
       expect(result.migrated).toBe(false)
     })
 
-    it('upgrades v1 settings to v2 in place', () => {
+    it('v2 settings → critical, file untouched (Host does not rename root_context_folders)', () => {
       const filePath = join(tr.tmpDir, 'settings.json')
-      writeFileSync(
-        filePath,
-        JSON.stringify({ business_folders: ['@A'], timestampTZ: { id: 'Z', value: 'UTC' } }),
-        'utf-8'
-      )
+      const raw = JSON.stringify({
+        version: 2,
+        user_name: 'Andrei',
+        root_context_folders: ['@БАЗА', '@МетаЛаб'],
+        timestampTZ: { id: 'Z', value: 'UTC' }
+      })
+      writeFileSync(filePath, raw, 'utf-8')
+
       const result = loadOrUpgradeSettings(tr.tmpDir)
-      expect(result.critical).toBeNull()
-      expect(result.migrated).toBe(true)
-      const updated = JSON.parse(readFileSync(filePath, 'utf-8'))
-      expect(updated.version).toBe(2)
-      expect(updated.root_context_folders).toEqual(['@A'])
-      expect(updated.business_folders).toBeUndefined()
-      expect(updated.timestampTZ).toEqual({ id: 'Z', value: 'UTC' })
+
+      expect(result.migrated).toBe(false)
+      expect(result.critical?.file).toBe('settings')
+      expect(result.critical?.reason_code).toBe('invalid_json')
+      expect(result.critical?.description).toContain('с версии 2')
+      expect(readFileSync(filePath, 'utf-8')).toBe(raw)
     })
 
-    it('idempotent on already-v2 settings (no rewrite, no migrated)', () => {
+    it('v1 settings → critical, file untouched', () => {
       const filePath = join(tr.tmpDir, 'settings.json')
-      const v2 = {
-        version: 2,
-        root_context_folders: ['@A'],
+      const raw = JSON.stringify({
+        business_folders: ['@A'],
+        timestampTZ: { id: 'Z', value: 'UTC' }
+      })
+      writeFileSync(filePath, raw, 'utf-8')
+
+      const result = loadOrUpgradeSettings(tr.tmpDir)
+
+      expect(result.critical?.file).toBe('settings')
+      expect(result.critical?.reason_code).toBe('invalid_json')
+      expect(readFileSync(filePath, 'utf-8')).toBe(raw)
+    })
+
+    it('idempotent on already-v3 settings (no rewrite, no migrated)', () => {
+      const filePath = join(tr.tmpDir, 'settings.json')
+      const v3 = {
+        version: 3,
+        root_workspace_folders: ['@A'],
         timestampTZ: { id: 'Z', value: 'UTC' }
       }
-      writeFileSync(filePath, JSON.stringify(v2, null, 2) + '\n', 'utf-8')
+      writeFileSync(filePath, JSON.stringify(v3, null, 2) + '\n', 'utf-8')
       const before = readFileSync(filePath, 'utf-8')
 
       const result = loadOrUpgradeSettings(tr.tmpDir)
@@ -399,7 +439,7 @@ describe('core/schema-migrations', () => {
 
     it('returns critical on future-version', () => {
       const filePath = join(tr.tmpDir, 'settings.json')
-      writeFileSync(filePath, JSON.stringify({ version: 99, root_context_folders: [] }), 'utf-8')
+      writeFileSync(filePath, JSON.stringify({ version: 99, root_workspace_folders: [] }), 'utf-8')
 
       const result = loadOrUpgradeSettings(tr.tmpDir)
       expect(result.critical).not.toBeNull()
@@ -457,32 +497,70 @@ describe('core/schema-migrations', () => {
       mkdirSync(folderPath, { recursive: true })
       writeFileSync(join(folderPath, name), JSON.stringify(data), 'utf-8')
     }
+    const readIndex = (folderPath: string): string =>
+      readFileSync(join(folderPath, 'INDEX.md'), 'utf-8')
 
-    it('migrates business.json with root: true → context.json v3 with meta: true (root folder)', () => {
+    it('migrates business.json with root: true → context.json v4 with meta: true (root folder)', () => {
       const root = join(tr.tmpDir, 'baza')
       writeManifest(root, 'business.json', { name: 'БАЗА', root: true })
 
-      const { contextErrors, migratedCount } = loadOrUpgradeManifests([root])
+      const { workspaceErrors, migratedCount } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
       expect(migratedCount).toBe(1)
       expect(existsSync(join(root, 'business.json'))).toBe(false)
       const ctx = JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))
-      expect(ctx).toEqual({ version: 4, name: 'БАЗА', meta: true })
+      expect(ctx).toEqual({ version: 4, meta: true })
+      expect(readIndex(root)).toBe('---\nfolder-type: workspace\nname: БАЗА\n---\n\n# БАЗА\n')
     })
 
-    it('migrates business.json without root → context.json v3 without meta', () => {
+    it('migrates business.json without root → context.json v4 without meta; name/icon → INDEX.md', () => {
       const root = join(tr.tmpDir, 'metalab')
-      writeManifest(root, 'business.json', { name: 'МетаЛаб', icon: '🧪' })
+      writeManifest(root, 'business.json', { name: 'МетаЛаб', icon: '🧪', ticket_code: 'MLB' })
 
       loadOrUpgradeManifests([root])
 
       const ctx = JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))
-      expect(ctx).toEqual({ version: 4, name: 'МетаЛаб', icon: '🧪' })
-      expect(ctx.meta).toBeUndefined()
+      expect(ctx).toEqual({ version: 4 })
+      expect(readIndex(root)).toBe(
+        '---\nfolder-type: workspace\nname: МетаЛаб\nicon: 🧪\nticket-code: MLB\n---\n\n# МетаЛаб\n'
+      )
     })
 
-    it('migrates stream.json (inside chain) → context.json v3 without meta', () => {
+    it('upgrading a manifest adds only missing fields to an existing INDEX.md, body untouched', () => {
+      const root = join(tr.tmpDir, 'metalab')
+      writeManifest(root, 'context.json', { version: 3, name: 'FromManifest', icon: '🧪' })
+      writeFileSync(
+        join(root, 'INDEX.md'),
+        '---\nname: FromIndex\ndescription: Lab\n---\n# Body\n',
+        'utf-8'
+      )
+
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
+
+      expect(workspaceErrors).toEqual([])
+      expect(JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))).toEqual({ version: 4 })
+      expect(readIndex(root)).toBe(
+        '---\nname: FromIndex\ndescription: Lab\nfolder-type: workspace\nicon: 🧪\n---\n# Body\n'
+      )
+    })
+
+    it('upgrading a manifest whose INDEX.md cannot be written leaves the manifest untouched', () => {
+      const root = join(tr.tmpDir, 'locked')
+      writeManifest(root, 'context.json', { version: 3, name: 'Locked' })
+      mkdirSync(join(root, 'INDEX.md')) // a directory where the file should be: read fails
+      const before = readFileSync(join(root, 'context.json'), 'utf-8')
+
+      const { workspaceErrors, migratedCount } = loadOrUpgradeManifests([root])
+
+      expect(workspaceErrors).toHaveLength(1)
+      expect(workspaceErrors[0].reason_code).toBe('migration_failed')
+      expect(workspaceErrors[0].description).toContain('INDEX.md')
+      expect(migratedCount).toBe(0)
+      expect(readFileSync(join(root, 'context.json'), 'utf-8')).toBe(before)
+    })
+
+    it('migrates stream.json (inside chain) → context.json v4 without meta', () => {
       const root = join(tr.tmpDir, 'metalab')
       writeManifest(root, 'business.json', { name: 'МетаЛаб' })
       const child = join(root, 'tehnolab')
@@ -491,10 +569,11 @@ describe('core/schema-migrations', () => {
       loadOrUpgradeManifests([root])
 
       const ctx = JSON.parse(readFileSync(join(child, 'context.json'), 'utf-8'))
-      expect(ctx).toEqual({ version: 4, name: 'ТехноЛаб' })
+      expect(ctx).toEqual({ version: 4 })
+      expect(readIndex(child)).toContain('name: ТехноЛаб\n')
     })
 
-    it('migrates business.json (inside chain, legacy mistake) → context.json v3 without meta', () => {
+    it('migrates business.json (inside chain, legacy mistake) → context.json v4 without meta', () => {
       const root = join(tr.tmpDir, 'metalab')
       writeManifest(root, 'business.json', { name: 'МетаЛаб' })
       const child = join(root, 'inner')
@@ -504,11 +583,12 @@ describe('core/schema-migrations', () => {
       loadOrUpgradeManifests([root])
 
       const ctx = JSON.parse(readFileSync(join(child, 'context.json'), 'utf-8'))
-      expect(ctx).toEqual({ version: 4, name: 'Inner' })
+      expect(ctx).toEqual({ version: 4 })
+      expect(readIndex(child)).toContain('name: Inner\n')
       expect(existsSync(join(child, 'business.json'))).toBe(false)
     })
 
-    it('migrates product.json with git_url → context.json v3 with git_repos and continues Drive recursion', () => {
+    it('migrates product.json with git_url → context.json v4 with git_repos and continues Drive recursion', () => {
       const root = join(tr.tmpDir, 'metalab')
       writeManifest(root, 'business.json', { name: 'МетаЛаб' })
       const product = join(root, 'duet')
@@ -516,23 +596,23 @@ describe('core/schema-migrations', () => {
         name: 'Duet',
         git_url: 'git@github.com:foo/bar.git'
       })
-      const childContext = join(product, 'OntoCoreStructs')
-      writeManifest(childContext, 'stream.json', { name: 'OntoCoreStructs' })
+      const childWorkspace = join(product, 'OntoCoreStructs')
+      writeManifest(childWorkspace, 'stream.json', { name: 'OntoCoreStructs' })
 
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
       const ctx = JSON.parse(readFileSync(join(product, 'context.json'), 'utf-8'))
       expect(ctx.version).toBe(4)
       expect(ctx.git_repos).toEqual({ Duet: 'git@github.com:foo/bar.git' })
       expect(ctx.git_url).toBeUndefined()
-      const child = JSON.parse(readFileSync(join(childContext, 'context.json'), 'utf-8'))
-      expect(child).toEqual({ version: 4, name: 'OntoCoreStructs' })
-      expect(existsSync(join(childContext, 'stream.json'))).toBe(false)
-      expect(contextErrors).toEqual([])
+      const child = JSON.parse(readFileSync(join(childWorkspace, 'context.json'), 'utf-8'))
+      expect(child).toEqual({ version: 4 })
+      expect(existsSync(join(childWorkspace, 'stream.json'))).toBe(false)
+      expect(workspaceErrors).toEqual([])
     })
 
-    it('continues recursion when v2 context.json with git_url is migrated to v3 with git_repos', () => {
-      // v2 manifest sitting on disk before sweep: after migration becomes v3 with git_repos,
+    it('continues recursion when v2 context.json with git_url is migrated to v4 with git_repos', () => {
+      // v2 manifest sitting on disk before sweep: after migration becomes v4 with git_repos,
       // and walk must still inspect nested Drive folders.
       const root = join(tr.tmpDir, 'wrapper')
       writeManifest(root, 'context.json', { version: 2, name: 'Wrapper' })
@@ -545,15 +625,16 @@ describe('core/schema-migrations', () => {
       const subFolder = join(child, 'Nested')
       writeManifest(subFolder, 'context.json', { version: 2, name: 'Nested' })
 
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
       const ctx = JSON.parse(readFileSync(join(child, 'context.json'), 'utf-8'))
       expect(ctx.version).toBe(4)
       expect(ctx.git_repos).toEqual({ Duet: 'git@github.com:foo/bar.git' })
       expect(ctx.git_url).toBeUndefined()
       const nested = JSON.parse(readFileSync(join(subFolder, 'context.json'), 'utf-8'))
-      expect(nested).toEqual({ version: 4, name: 'Nested' })
-      expect(contextErrors).toEqual([])
+      expect(nested).toEqual({ version: 4 })
+      expect(readIndex(subFolder)).toContain('name: Nested\n')
+      expect(workspaceErrors).toEqual([])
     })
 
     it('orphan resolution: context.json wins over coexisting legacy file, deletes legacy', () => {
@@ -564,21 +645,45 @@ describe('core/schema-migrations', () => {
       loadOrUpgradeManifests([root])
 
       const ctx = JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))
-      expect(ctx.name).toBe('Mixed') // context.json kept its data
       expect(ctx.version).toBe(4)
+      expect(readIndex(root)).toContain('name: Mixed\n') // context.json's name, not the legacy one
       expect(existsSync(join(root, 'business.json'))).toBe(false)
     })
 
-    it('self-heals empty root folder by creating context.json v3 without meta', () => {
+    it('self-heals empty root folder: INDEX.md with folder-type and name, context.json v4 without name/meta', () => {
       const root = join(tr.tmpDir, 'NewRoot')
       mkdirSync(root, { recursive: true })
 
-      const { migratedCount } = loadOrUpgradeManifests([root])
+      const { migratedCount, workspaceErrors } = loadOrUpgradeManifests([root])
 
+      expect(workspaceErrors).toEqual([])
       expect(migratedCount).toBe(1)
       const ctx = JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))
-      expect(ctx).toEqual({ version: 4, name: 'NewRoot' })
-      expect(ctx.meta).toBeUndefined()
+      expect(ctx).toEqual({ version: 4 })
+      expect(readIndex(root)).toBe('---\nfolder-type: workspace\nname: NewRoot\n---\n\n# NewRoot\n')
+    })
+
+    it('self-heal keeps an existing INDEX.md body and adds only missing frontmatter fields', () => {
+      const root = join(tr.tmpDir, 'Own')
+      mkdirSync(root, { recursive: true })
+      writeFileSync(join(root, 'INDEX.md'), '# Own\n\nText.\n', 'utf-8')
+
+      loadOrUpgradeManifests([root])
+
+      expect(readIndex(root)).toBe('---\nfolder-type: workspace\nname: Own\n---\n# Own\n\nText.\n')
+      expect(JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))).toEqual({ version: 4 })
+    })
+
+    it('self-heal reports a per-workspace error and writes no manifest when INDEX.md fails', () => {
+      const root = join(tr.tmpDir, 'Locked')
+      mkdirSync(join(root, 'INDEX.md'), { recursive: true }) // directory: cannot be read or replaced
+
+      const { workspaceErrors, migratedCount } = loadOrUpgradeManifests([root])
+
+      expect(workspaceErrors).toHaveLength(1)
+      expect(workspaceErrors[0].reason_code).toBe('migration_failed')
+      expect(migratedCount).toBe(0)
+      expect(existsSync(join(root, 'context.json'))).toBe(false)
     })
 
     it('does NOT self-heal non-root folders without manifest (just recurses)', () => {
@@ -594,30 +699,30 @@ describe('core/schema-migrations', () => {
       expect(existsSync(join(child, 'business.json'))).toBe(false)
     })
 
-    it('reports per-context error for future-version manifest, leaves file untouched', () => {
+    it('reports per-workspace error for future-version manifest, leaves file untouched', () => {
       const root = join(tr.tmpDir, 'baza')
       writeManifest(root, 'context.json', { version: 99, name: 'BazaFromFuture' })
 
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toHaveLength(1)
-      expect(contextErrors[0].path).toBe(root)
-      expect(contextErrors[0].root_context_path).toBe(root)
-      expect(contextErrors[0].reason_code).toBe('future_version')
+      expect(workspaceErrors).toHaveLength(1)
+      expect(workspaceErrors[0].path).toBe(root)
+      expect(workspaceErrors[0].root_workspace_path).toBe(root)
+      expect(workspaceErrors[0].reason_code).toBe('future_version')
       // File untouched
       const ctx = JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))
       expect(ctx.version).toBe(99)
     })
 
-    it('reports per-context error for invalid JSON in context.json', () => {
+    it('reports per-workspace error for invalid JSON in context.json', () => {
       const root = join(tr.tmpDir, 'broken')
       mkdirSync(root, { recursive: true })
       writeFileSync(join(root, 'context.json'), '{ broken', 'utf-8')
 
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toHaveLength(1)
-      expect(contextErrors[0].reason_code).toBe('invalid_json')
+      expect(workspaceErrors).toHaveLength(1)
+      expect(workspaceErrors[0].reason_code).toBe('invalid_json')
     })
 
     it('skips dot-prefixed directories (.git, .venv) during recursion', () => {
@@ -633,33 +738,36 @@ describe('core/schema-migrations', () => {
       expect(existsSync(join(dotGit, 'context.json'))).toBe(false)
     })
 
-    it('idempotent on second run (no re-write of already-v3 files)', () => {
+    it('idempotent on second run (no re-write of already-v4 files)', () => {
       const root = join(tr.tmpDir, 'metalab')
       writeManifest(root, 'business.json', { name: 'МетаЛаб' })
 
       loadOrUpgradeManifests([root])
       const after1 = readFileSync(join(root, 'context.json'), 'utf-8')
+      const index1 = readIndex(root)
 
       const second = loadOrUpgradeManifests([root])
       const after2 = readFileSync(join(root, 'context.json'), 'utf-8')
 
       expect(after1).toBe(after2)
+      expect(readIndex(root)).toBe(index1)
       expect(second.migratedCount).toBe(0)
     })
 
-    it('migrates pre-existing v2 context.json on disk up to v3 (full chain via sweep)', () => {
+    it('migrates pre-existing v2 context.json on disk up to v4 (full chain via sweep)', () => {
       const root = join(tr.tmpDir, 'metalab')
       writeManifest(root, 'context.json', { version: 2, name: 'МетаЛаб' })
 
-      const { migratedCount, contextErrors } = loadOrUpgradeManifests([root])
+      const { migratedCount, workspaceErrors } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
       expect(migratedCount).toBe(1)
       const ctx = JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))
-      expect(ctx).toEqual({ version: 4, name: 'МетаЛаб' })
+      expect(ctx).toEqual({ version: 4 })
+      expect(readIndex(root)).toContain('name: МетаЛаб\n')
     })
 
-    it('migrates pre-existing v2 context.json with git_url → v3 with git_repos', () => {
+    it('migrates pre-existing v2 context.json with git_url → v4 with git_repos', () => {
       const root = join(tr.tmpDir, 'metalab')
       writeManifest(root, 'context.json', {
         version: 2,
@@ -673,6 +781,22 @@ describe('core/schema-migrations', () => {
       expect(ctx.version).toBe(4)
       expect(ctx.git_repos).toEqual({ Duet: 'git@github.com:owner/duet.git' })
       expect(ctx.git_url).toBeUndefined()
+    })
+
+    it('leaves a v4 context.json alone, even one still carrying name (no INDEX.md written)', () => {
+      // Moving name/icon/ticket_code out of a v4 manifest is the one-off data migration's job.
+      const root = join(tr.tmpDir, 'oldformat')
+      mkdirSync(root, { recursive: true })
+      const raw =
+        JSON.stringify({ version: 4, name: 'Old', icon: '🧪', ticket_code: 'OLD' }, null, 2) + '\n'
+      writeFileSync(join(root, 'context.json'), raw, 'utf-8')
+
+      const { migratedCount, workspaceErrors } = loadOrUpgradeManifests([root])
+
+      expect(workspaceErrors).toEqual([])
+      expect(migratedCount).toBe(0)
+      expect(readFileSync(join(root, 'context.json'), 'utf-8')).toBe(raw)
+      expect(existsSync(join(root, 'INDEX.md'))).toBe(false)
     })
 
     it('idempotent on pre-existing v4 context.json (byte-identical on second read)', () => {
@@ -690,28 +814,28 @@ describe('core/schema-migrations', () => {
       writeFileSync(join(root, 'context.json'), JSON.stringify(v4, null, 2) + '\n', 'utf-8')
 
       const before = readFileSync(join(root, 'context.json'), 'utf-8')
-      const { migratedCount, contextErrors } = loadOrUpgradeManifests([root])
+      const { migratedCount, workspaceErrors } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
       expect(migratedCount).toBe(0)
       expect(readFileSync(join(root, 'context.json'), 'utf-8')).toBe(before)
     })
 
-    it('skips non-existing root context paths without crashing', () => {
+    it('skips non-existing root workspace paths without crashing', () => {
       const result = loadOrUpgradeManifests([join(tr.tmpDir, 'does-not-exist')])
-      expect(result.contextErrors).toEqual([])
+      expect(result.workspaceErrors).toEqual([])
       expect(result.migratedCount).toBe(0)
     })
 
-    it('handles multiple root contexts in one sweep', () => {
+    it('handles multiple root workspaces in one sweep', () => {
       const a = join(tr.tmpDir, 'A')
       const b = join(tr.tmpDir, 'B')
       writeManifest(a, 'business.json', { name: 'A', root: true })
       writeManifest(b, 'business.json', { name: 'B' })
 
-      const { contextErrors, migratedCount } = loadOrUpgradeManifests([a, b])
+      const { workspaceErrors, migratedCount } = loadOrUpgradeManifests([a, b])
 
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
       expect(migratedCount).toBe(2)
       expect(JSON.parse(readFileSync(join(a, 'context.json'), 'utf-8')).meta).toBe(true)
       expect(JSON.parse(readFileSync(join(b, 'context.json'), 'utf-8')).meta).toBeUndefined()
@@ -720,9 +844,9 @@ describe('core/schema-migrations', () => {
     it('reports a non-empty directory listing — sanity that walk executed', () => {
       const root = join(tr.tmpDir, 'metalab')
       writeManifest(root, 'business.json', { name: 'МетаЛаб', root: true })
-      // After migration, root should contain only context.json + (no children created).
+      // After migration, root should contain only the manifest and INDEX.md (no children created).
       loadOrUpgradeManifests([root])
-      expect(readdirSync(root).sort()).toEqual(['context.json'])
+      expect(readdirSync(root).sort()).toEqual(['INDEX.md', 'context.json'])
     })
 
     // === Review #2 — Issue 1: target context.json with missing/non-int version is malformed ===
@@ -735,10 +859,10 @@ describe('core/schema-migrations', () => {
       writeFileSync(filePath, JSON.stringify({ name: 'X' }), 'utf-8')
 
       const before = readFileSync(filePath, 'utf-8')
-      const { contextErrors, migratedCount } = loadOrUpgradeManifests([root])
+      const { workspaceErrors, migratedCount } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toHaveLength(1)
-      expect(contextErrors[0].reason_code).toBe('invalid_json')
+      expect(workspaceErrors).toHaveLength(1)
+      expect(workspaceErrors[0].reason_code).toBe('invalid_json')
       expect(migratedCount).toBe(0)
       expect(readFileSync(filePath, 'utf-8')).toBe(before) // byte-identical
     })
@@ -750,10 +874,10 @@ describe('core/schema-migrations', () => {
       writeFileSync(filePath, JSON.stringify({ version: '3', name: 'X' }), 'utf-8')
 
       const before = readFileSync(filePath, 'utf-8')
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toHaveLength(1)
-      expect(contextErrors[0].reason_code).toBe('invalid_json')
+      expect(workspaceErrors).toHaveLength(1)
+      expect(workspaceErrors[0].reason_code).toBe('invalid_json')
       expect(readFileSync(filePath, 'utf-8')).toBe(before)
     })
 
@@ -761,12 +885,13 @@ describe('core/schema-migrations', () => {
       const root = join(tr.tmpDir, 'legacynoversion')
       writeManifest(root, 'business.json', { name: 'OK' })
 
-      const { contextErrors, migratedCount } = loadOrUpgradeManifests([root])
+      const { workspaceErrors, migratedCount } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
       expect(migratedCount).toBe(1)
       const ctx = JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8'))
-      expect(ctx).toEqual({ version: 4, name: 'OK' })
+      expect(ctx).toEqual({ version: 4 })
+      expect(readIndex(root)).toContain('name: OK\n')
     })
 
     // === Orphan resolution: blind delete (per stabilize-taxonomy-migration decision) ===
@@ -784,9 +909,9 @@ describe('core/schema-migrations', () => {
         description: 'Hand-written description'
       })
 
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
       expect(existsSync(join(root, 'product.json'))).toBe(false)
       // No `.legacy-conflict.json` artefact left behind
       expect(existsSync(join(root, 'product.json.legacy-conflict.json'))).toBe(false)
@@ -797,9 +922,9 @@ describe('core/schema-migrations', () => {
       writeManifest(root, 'context.json', { version: 3, name: 'broken-legacy' })
       writeFileSync(join(root, 'business.json'), '{ corrupted', 'utf-8')
 
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
       expect(existsSync(join(root, 'business.json'))).toBe(false)
     })
 
@@ -813,16 +938,15 @@ describe('core/schema-migrations', () => {
         'utf-8'
       )
 
-      const { contextErrors } = loadOrUpgradeManifests([root])
+      const { workspaceErrors } = loadOrUpgradeManifests([root])
 
       // business.json wins (deterministic priority).
-      expect(JSON.parse(readFileSync(join(root, 'context.json'), 'utf-8')).name).toBe(
-        'multi-legacy'
-      )
+      expect(readIndex(root)).toContain('name: multi-legacy\n')
+      expect(readIndex(root)).not.toContain('icon')
       expect(existsSync(join(root, 'business.json'))).toBe(false)
       expect(existsSync(join(root, 'stream.json'))).toBe(false)
       expect(existsSync(join(root, 'stream.json.legacy-conflict.json'))).toBe(false)
-      expect(contextErrors).toEqual([])
+      expect(workspaceErrors).toEqual([])
     })
   })
 })

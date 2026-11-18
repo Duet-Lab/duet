@@ -1,37 +1,29 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as path from 'path';
 import { Paths } from '../../core/paths';
 import { normalizePath } from '../../core/pathUtils';
 import { ACTIVE_ORDER_LIMIT, MarkerStore, RESERVATION_MS, TicketLocation, WindowMarker, occupiedColors } from '../../core/intents/markers';
 import { ActiveIntent, LingerState, activeFromMarkers, applyLinger, listNewRows, orderActive } from '../../core/intents/active';
-import { businessKey, businessWindowOf, intentWindowOf, programFolderName } from '../../core/intents/window';
-import { TicketPlace, TicketReader, readBusinessManifest, withTimeout } from '../../core/intents/tickets';
+import { WindowIdentity, programFolderName, windowIdentityOf, workspaceKey } from '../../core/intents/window';
+import { TicketReader, readWorkspaceManifest, withTimeout } from '../../core/intents/tickets';
 import { mergeOrderBlock } from '../../core/intents/order';
 import { coalesce } from '../../core/intents/coalesce';
 
-/** What this window is opened on, when Duet opened it. */
-export interface OwnWindow {
-    subject: 'intent' | 'business';
-    /** Key among the markers: the ticket number, or `@name` for a business window. */
-    key: string;
-    /** Ticket folder name; empty for a business window. */
-    ticketFolder: string;
-    /** Business name as the path spells it — used until the manifest is read. */
-    businessDir: string;
-    /** Business folder — the first folder of the window. */
-    businessPath: string;
-    /** What opening again brings this window forward: its workspace file, or the folder of a business opened as a folder. */
-    workspaceFile: string;
-}
+/**
+ * What this window is opened on, when Duet opened it (`core/intents/window.ts:windowIdentityOf`):
+ * decided once, at start, by the workspace file. In a ticket window the owner of the ticket is
+ * the folder above the shelf of the ticket folder the file lists; labels, «Рабочая папка», the
+ * watch over branches and the chat find the ticket through it.
+ */
+export type OwnWindow = WindowIdentity;
 
 type MarkerFields = Omit<WindowMarker, 'pid' | 'writtenAt' | 'expiresAt'>;
 
 /** Events of the markers folder are gathered into one re-read. */
 const REFRESH_DEBOUNCE_MS = 100;
-/** Events of the business folder are gathered into one check of the window's own marker. */
+/** Events of the owner folder are gathered into one check of the window's own marker. */
 const REANNOUNCE_DEBOUNCE_MS = 500;
-/** Longest wait for the business folder before the marker is written without what it would tell. */
+/** Longest wait for the owner folder before the marker is written without what it would tell. */
 const ANNOUNCE_READ_MS = 1000;
 
 /**
@@ -46,7 +38,7 @@ export class IntentsRuntime implements vscode.Disposable {
     readonly tickets = new TicketReader();
 
     private ownWindow: OwnWindow | null;
-    /** The only folder of a window that has no workspace file: it may turn out to be a business folder. */
+    /** The only folder of a window that has no workspace file: it may turn out to be a workspace folder. */
     private readonly plainFolder: string | null;
     private ownMarker: WindowMarker | null = null;
     private live: WindowMarker[] = [];
@@ -68,28 +60,13 @@ export class IntentsRuntime implements vscode.Disposable {
 
         const file = vscode.workspace.workspaceFile;
         const filePath = file?.scheme === 'file' ? file.fsPath : undefined;
-        const first = vscode.workspace.workspaceFolders?.[0]?.uri;
-        const firstPath = first?.scheme === 'file' ? first.fsPath : undefined;
+        const folders = localFolders();
 
-        const intent = intentWindowOf(filePath, paths.workspacesPath);
-        const business = intent ? null : businessWindowOf(filePath, paths.workspacesPath);
-        if (intent && filePath && firstPath) {
-            this.ownWindow = {
-                subject: 'intent', key: intent.ticket, ticketFolder: intent.ticketFolder,
-                businessDir: intent.businessDir, businessPath: firstPath, workspaceFile: filePath
-            };
-        } else if (business && filePath && firstPath) {
-            this.ownWindow = {
-                subject: 'business', key: businessKey(business), ticketFolder: '',
-                businessDir: business, businessPath: firstPath, workspaceFile: filePath
-            };
-        } else {
-            this.ownWindow = null;
-        }
-        this.plainFolder = !file && firstPath ? firstPath : null;
+        this.ownWindow = windowIdentityOf(filePath, folders, paths.workspacesPath);
+        this.plainFolder = !file && folders[0] ? folders[0] : null;
     }
 
-    /** Null when Duet did not open this window: it is neither an intent window nor a business window. */
+    /** Null when Duet did not open this window: it is neither an intent window nor a workspace window. */
     get own(): OwnWindow | null {
         return this.ownWindow;
     }
@@ -102,12 +79,13 @@ export class IntentsRuntime implements vscode.Disposable {
     async announce(): Promise<void> {
         try {
             if (!this.ownWindow && this.plainFolder) {
-                // A business without repos is opened as a plain folder; its manifest tells it is one
-                const manifest = await withTimeout(readBusinessManifest(this.plainFolder), ANNOUNCE_READ_MS);
+                // A workspace folder opened as a plain folder; its manifest tells it is one
+                const manifest = await withTimeout(readWorkspaceManifest(this.plainFolder), ANNOUNCE_READ_MS);
                 if (manifest.name) {
                     this.ownWindow = {
-                        subject: 'business', key: businessKey(manifest.name), ticketFolder: '',
-                        businessDir: manifest.name, businessPath: this.plainFolder, workspaceFile: this.plainFolder
+                        subject: 'workspace', key: workspaceKey(manifest.name), ticketFolder: '', nameFromFile: manifest.name,
+                        workspacePath: this.plainFolder, ownerPath: this.plainFolder,
+                        workspaceFile: this.plainFolder
                     };
                 }
             }
@@ -157,7 +135,7 @@ export class IntentsRuntime implements vscode.Disposable {
         await this.refresh();
     }
 
-    /** Active windows of the program, businesses and intents in one list, in the remembered order. */
+    /** Active windows of the program, workspaces and intents in one list, in the remembered order. */
     getActive(): ActiveIntent[] {
         return this.active;
     }
@@ -173,7 +151,7 @@ export class IntentsRuntime implements vscode.Disposable {
 
     /**
      * True when a window of this program was opened by this workspace file. Asked
-     * before the file is written: a business may also be open as a plain folder,
+     * before the file is written: a workspace may also be open as a plain folder,
      * under the same key, and that window does not hold the file.
      */
     hasFileOpen(workspaceFile: string): boolean {
@@ -218,19 +196,27 @@ export class IntentsRuntime implements vscode.Disposable {
         await this.refresh();
     }
 
-    /** Folder of this window's ticket wherever it lies now; null when the ticket is gone or the window is not an intent window. */
+    /**
+     * Folder of this window's ticket wherever it lies now among the shelves of
+     * its owner, the archive included; null when the ticket is gone or the
+     * window is not an intent window.
+     */
     async ownTicketPlace(): Promise<{ path: string; folder: string } | null> {
         const own = this.ownWindow;
-        if (!own || own.subject !== 'intent') {
+        if (!own || own.subject !== 'intent' || !own.ownerPath) {
             return null;
         }
-        const places = await this.tickets.locate(own.businessPath, own.key);
-        const place = pickOwnPlace(places, own.ticketFolder);
-        if (place) {
-            return place;
-        }
-        const archived = await this.tickets.findInArchive(own.businessPath, own.key);
-        return archived ? { path: archived, folder: path.basename(archived) } : null;
+        const found = await this.tickets.findAnywhere(own.ownerPath, own.key, own.ticketFolder);
+        return found ? { path: found.path, folder: found.folder } : null;
+    }
+
+    /**
+     * The second folder of the window now points at the folder its ticket
+     * moved to (`vscode/intents/worktreeSync.ts`). The identity of the window
+     * does not change; the marker tells the other windows where the ticket lies.
+     */
+    followTicket(): void {
+        void this.reannounce();
     }
 
     /**
@@ -257,19 +243,19 @@ export class IntentsRuntime implements vscode.Disposable {
     }
 
     /**
-     * An intent window follows the shelves of its business: its ticket may be
-     * moved to the backlog or the archive, or given another emoji, by an agent
-     * or by hand. The marker is then checked and written again when it is no
-     * longer true, and the other windows learn of it from the marker. The
-     * business folder is the first folder of the window, which the program
-     * watches already; the watcher is the runtime's own, so it needs neither
-     * the backend nor the bin.
+     * An intent window follows the shelves of the workspace that owns its
+     * ticket: the ticket may be moved to the backlog or the archive, or given
+     * another emoji, by an agent or by hand. The marker is then checked and
+     * written again when it is no longer true, and the other windows learn of
+     * it from the marker. The watcher is the runtime's own, so it needs
+     * neither the backend nor the bin.
      */
     private watchOwnTicket(): void {
         const own = this.ownWindow;
-        if (!own || own.subject !== 'intent') {
+        if (!own || own.subject !== 'intent' || !own.ownerPath) {
             return;
         }
+        const ownerPath = own.ownerPath;
         const changed = () => {
             clearTimeout(this.reannounceTimer);
             this.reannounceTimer = setTimeout(() => void this.reannounce(), REANNOUNCE_DEBOUNCE_MS);
@@ -278,7 +264,7 @@ export class IntentsRuntime implements vscode.Disposable {
         try {
             for (const pattern of ['{work,backlog}/*', '{work,backlog}/*/INDEX.md']) {
                 const watcher = vscode.workspace.createFileSystemWatcher(
-                    new vscode.RelativePattern(vscode.Uri.file(own.businessPath), pattern)
+                    new vscode.RelativePattern(vscode.Uri.file(ownerPath), pattern)
                 );
                 this.disposables.push(
                     watcher,
@@ -288,7 +274,7 @@ export class IntentsRuntime implements vscode.Disposable {
                 );
             }
         } catch (error) {
-            console.error('[Duet] business folder not watched:', error);
+            console.error('[Duet] owner folder not watched:', error);
         }
     }
 
@@ -344,7 +330,7 @@ export class IntentsRuntime implements vscode.Disposable {
                 && current.color === fields.color
                 && current.icon === fields.icon
                 && current.ticketIcon === fields.ticketIcon
-                && current.business === fields.business
+                && current.workspace === fields.workspace
                 && await this.store.exists(current);
             if (!same) {
                 this.ownMarker = await this.store.write(fields);
@@ -356,29 +342,28 @@ export class IntentsRuntime implements vscode.Disposable {
 
     private async ownFields(): Promise<MarkerFields> {
         const own = this.ownWindow as OwnWindow;
-        let business = own.businessDir;
+        const ownerPath = own.ownerPath;
+        let workspace = own.nameFromFile;
         let icon = '';
         let ticketIcon = '';
         let location: TicketLocation = 'missing';
         try {
-            // The business folder is on a cloud drive and may hang; the marker does not wait for it
+            // The owner is on a cloud drive and may hang; the marker does not wait for it
             await withTimeout((async () => {
-                const manifest = await readBusinessManifest(own.businessPath);
-                business = manifest.name ?? business;
+                if (!ownerPath) {
+                    return; // a window broken by hand: the row names the owner as the file does
+                }
+                // The row names the workspace that owns the ticket, whatever workspace the window is built around
+                const manifest = await readWorkspaceManifest(ownerPath);
+                workspace = manifest.name ?? workspace;
                 icon = manifest.icon;
                 if (own.subject !== 'intent') {
                     return;
                 }
-                const place = pickOwnPlace(await this.tickets.locate(own.businessPath, own.key), own.ticketFolder);
-                if (place) {
-                    location = place.shelf;
-                    ticketIcon = await this.tickets.inheritedIcon(own.businessPath, place.path);
-                    return;
-                }
-                const archived = await this.tickets.findInArchive(own.businessPath, own.key);
-                if (archived) {
-                    location = 'archive';
-                    ticketIcon = await this.tickets.inheritedIcon(own.businessPath, archived);
+                const found = await this.tickets.findAnywhere(ownerPath, own.key, own.ticketFolder);
+                if (found) {
+                    location = found.location;
+                    ticketIcon = await this.tickets.inheritedIcon(ownerPath, found.path);
                 }
             })(), ANNOUNCE_READ_MS);
         } catch {
@@ -389,8 +374,8 @@ export class IntentsRuntime implements vscode.Disposable {
             subject: own.subject,
             ticket: own.key,
             ticketFolder: own.ticketFolder,
-            business,
-            businessPath: own.businessPath,
+            workspace,
+            workspacePath: ownerPath ?? '',
             icon,
             ticketIcon,
             workspaceFile: own.workspaceFile,
@@ -400,12 +385,11 @@ export class IntentsRuntime implements vscode.Disposable {
     }
 }
 
-/** The folder the window was opened for when it is still there, else the one in work, else any. */
-function pickOwnPlace(places: TicketPlace[], ticketFolder: string): TicketPlace | null {
-    return places.find(p => p.folder === ticketFolder)
-        ?? places.find(p => p.shelf === 'work')
-        ?? places[0]
-        ?? null;
+/** The local folders of the window in their order. */
+function localFolders(): string[] {
+    return (vscode.workspace.workspaceFolders ?? [])
+        .filter(folder => folder.uri.scheme === 'file')
+        .map(folder => folder.uri.fsPath);
 }
 
 /** Colour of the window's title bar in force now; null when the window has none. */

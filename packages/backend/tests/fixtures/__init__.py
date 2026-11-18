@@ -3,10 +3,14 @@
 This module provides reusable test infrastructure:
 - EntityFactory: Create Entity objects with sensible defaults
 - DuetDataBuilder: Build DuetData directory structure for tests
-- ManifestBuilder: Create `context.json` v2 manifest files
+- ManifestBuilder: Create workspaces (`context.json` and `INDEX.md` frontmatter)
+- write_index_body: Replace the body of a workspace's INDEX.md, keeping its frontmatter
 """
 
 from .entities import EntityFactory
-from .filesystem import DuetDataBuilder, ManifestBuilder, HierarchyBuilder
+from .filesystem import (
+    DuetDataBuilder, HierarchyBuilder, ManifestBuilder, workspace_index, write_index_body,
+)
 
-__all__ = ["EntityFactory", "DuetDataBuilder", "ManifestBuilder", "HierarchyBuilder"]
+__all__ = ["EntityFactory", "DuetDataBuilder", "ManifestBuilder", "HierarchyBuilder",
+           "workspace_index", "write_index_body"]

@@ -16,7 +16,7 @@ import { coalesce } from '../../core/intents/coalesce';
 import { BinNode } from '../../core/intents/binTree';
 import { programFolderName } from '../../core/intents/window';
 import { Paths } from '../../core/paths';
-import { normalizePath } from '../../core/pathUtils';
+import { normalizePath, samePath } from '../../core/pathUtils';
 import { WorkDisk } from '../../core/work/disk';
 import {
     LoadState, NOTHING_SHOWN, OwnPlace, ShownState, ShownTicket, chooseOwnPlace, locateTicket, nextShown, viewTitle,
@@ -99,7 +99,7 @@ export interface DropHandler {
 /**
  * «Рабочая папка» view — the files of one ticket, as Explorer shows the folder
  * of a project: the ticket of the window by default, or another ticket of
- * any business picked in the bin. The rows stand in the order a person gave
+ * any workspace picked in the bin. The rows stand in the order a person gave
  * them, what is expanded is remembered per ticket, files are hidden as
  * Explorer hides them.
  *
@@ -118,8 +118,8 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
     shown: ShownState = NOTHING_SHOWN;
     load: LoadState = { state: 'none' };
     window: WindowView = parseWindowView(null);
-    /** Business of the shown ticket. */
-    businessPath: string | null = null;
+    /** The workspace that owns the shown ticket. */
+    ownerPath: string | null = null;
     /** Both refresh buttons use the same linked return once the bin is registered. */
     refreshHome: (() => Promise<void>) | null = null;
 
@@ -251,14 +251,14 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
         const step = nextShown(this.shown, { kind: 'home', own });
         // When the folders did not answer, what is shown stays — and it may be a ticket of the bin
         const stays = step.state.ticket && !step.state.ticket.own;
-        await this.enter(step.state, stays ? this.businessPath : this.runtime.own?.businessPath ?? null, request);
+        await this.enter(step.state, stays ? this.ownerPath : this.runtime.own?.ownerPath ?? null, request);
     }
 
-    /** Selection of a business is not goHome: even a ticket window becomes empty. */
-    async clearForBusiness(): Promise<void> {
+    /** Selection of a workspace is not goHome: even a ticket window becomes empty. */
+    async clearForWorkspace(): Promise<void> {
         this.dragEnded();
         const request = ++this.request;
-        await this.enter(nextShown(this.shown, { kind: 'business' }).state, null, request);
+        await this.enter(nextShown(this.shown, { kind: 'workspace' }).state, null, request);
     }
 
     /** A ticket row of the bin was clicked or reached by a key. Rows of groups come here too and change nothing. */
@@ -268,20 +268,20 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
             return;
         }
         this.dragEnded();
-        const business = path.dirname(path.dirname(row.ticket.path));
+        const owner = path.dirname(path.dirname(row.ticket.path));
         const own = this.runtime.own;
         const step = nextShown(this.shown, {
             kind: 'select',
             number: row.ticket.number,
             path: row.ticket.path,
-            sameBusiness: !own || normalizePath(own.businessPath) === normalizePath(business),
+            sameOwner: !own || (!!own.ownerPath && samePath(own.ownerPath, owner)),
             ownNumber: own?.subject === 'intent' ? own.key : null
         });
         if (step.say) {
             say(step.say);
         }
         if (step.changed) {
-            await this.enter(step.state, business);
+            await this.enter(step.state, owner);
         }
     }
 
@@ -290,11 +290,15 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
         if (!own || own.subject !== 'intent') {
             return { state: 'none' };
         }
-        return chooseOwnPlace(own.key, own.ticketFolder, await locateTicket(this.fs, own.businessPath, own.key));
+        if (!own.ownerPath) {
+            // The registry does not know the owner yet: the view goes home again once it does (`registerWorkView`)
+            return { state: 'missing', number: own.key };
+        }
+        return chooseOwnPlace(own.key, own.ticketFolder, await locateTicket(this.fs, own.ownerPath, own.key));
     }
 
     /** Leave the ticket shown and show another state: the title at once, the rows when they are read. */
-    private async enter(state: ShownState, businessPath: string | null, request = ++this.request): Promise<void> {
+    private async enter(state: ShownState, ownerPath: string | null, request = ++this.request): Promise<void> {
         await this.flushView();
         if (request !== this.request) { return; }
         this.nameBox?.close();
@@ -304,7 +308,7 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
         const same = !!before && !!state.ticket && this.tree.snapshot !== null
             && before.number === state.ticket.number && before.path === state.ticket.path;
         this.shown = state;
-        this.businessPath = state.ticket ? businessPath : null;
+        this.ownerPath = state.ticket ? ownerPath : null;
         if (!same) {
             this.tree.reset();
             this.load = state.ticket ? { state: 'loading' } : { state: 'none' };
@@ -339,11 +343,11 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
             return;
         }
         if (request !== this.request) { return; }
-        const business = this.businessPath;
+        const owner = this.ownerPath;
         const [orderRead, viewText, places] = await Promise.all([
-            business ? readOrder(this.fs, workOrderPath(business, ticket.number)) : Promise.resolve<OrderRead>({ state: 'none' }),
-            this.readText(business ? this.paths.workTicketViewPath(business, ticket.number) : null),
-            business ? locateTicket(this.fs, business, ticket.number) : Promise.resolve(null)
+            owner ? readOrder(this.fs, workOrderPath(owner, ticket.number)) : Promise.resolve<OrderRead>({ state: 'none' }),
+            this.readText(owner ? this.paths.workTicketViewPath(owner, ticket.number) : null),
+            owner ? locateTicket(this.fs, owner, ticket.number) : Promise.resolve(null)
         ]);
         if (request !== this.request) {
             // Another ticket was chosen meanwhile: this reading is not shown
@@ -433,15 +437,15 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
         const files = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(ticket.path), '**/*'));
         const changed = (uri: vscode.Uri) => this.diskChanged(uri.fsPath);
         this.watchers.push(files, files.onDidCreate(changed), files.onDidChange(changed), files.onDidDelete(changed));
-        if (this.businessPath) {
-            const orderFile = workOrderPath(this.businessPath, ticket.number);
+        if (this.ownerPath) {
+            const orderFile = workOrderPath(this.ownerPath, ticket.number);
             const order = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(vscode.Uri.file(path.dirname(orderFile)), path.basename(orderFile)));
             const reload = () => void this.reloadOrder();
             this.watchers.push(order, order.onDidCreate(reload), order.onDidChange(reload), order.onDidDelete(reload));
         }
         // The ignore files above the ticket hide its rows too, and no event of the ticket's own folder tells of them
-        const top = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(ticket.path))?.uri.fsPath ?? this.businessPath;
+        const top = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(ticket.path))?.uri.fsPath ?? this.ownerPath;
         if (top && top !== ticket.path) {
             const ignore = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(top), '**/.gitignore'));
             const above = (uri: vscode.Uri) => {
@@ -541,11 +545,11 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
     /** The shown folder is gone: follow it by the ticket number, or say what happened. */
     private async folderGone(): Promise<void> {
         const gone = this.shown.ticket;
-        const business = this.businessPath;
-        if (!gone || !business) {
+        const owner = this.ownerPath;
+        if (!gone || !owner) {
             return;
         }
-        const places = await locateTicket(this.fs, business, gone.number);
+        const places = await locateTicket(this.fs, owner, gone.number);
         if (places.state === 'unknown') {
             this.load = { state: 'stale', reason: places.reason };
             this.refreshChrome();
@@ -555,7 +559,7 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
         if (step.say) {
             say(step.say);
         }
-        await this.enter(step.state, step.state.ticket?.own ? this.runtime.own?.businessPath ?? business : business);
+        await this.enter(step.state, step.state.ticket?.own ? this.runtime.own?.ownerPath ?? owner : owner);
     }
 
     private async readText(file: string | null): Promise<{ text: string | null; failed: boolean }> {
@@ -637,7 +641,7 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
 
     private orderFile(): string | null {
         const ticket = this.shown.ticket;
-        return ticket && this.businessPath ? workOrderPath(this.businessPath, ticket.number) : null;
+        return ticket && this.ownerPath ? workOrderPath(this.ownerPath, ticket.number) : null;
     }
 
     /**
@@ -680,10 +684,10 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
     private async reloadOrder(): Promise<void> {
         const ticket = this.shown.ticket;
         const request = this.request;
-        if (!ticket || !this.businessPath) {
+        if (!ticket || !this.ownerPath) {
             return;
         }
-        const read = await readOrder(this.fs, workOrderPath(this.businessPath, ticket.number));
+        const read = await readOrder(this.fs, workOrderPath(this.ownerPath, ticket.number));
         if (request !== this.request) {
             return;
         }
@@ -714,7 +718,7 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
     private async readFilter(ticket: ShownTicket): Promise<FilterInput> {
         const uri = vscode.Uri.file(ticket.path);
         // Explorer judges a path from the workspace folder it lies in, not from the shown folder
-        const root = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? this.businessPath ?? ticket.path;
+        const root = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? this.ownerPath ?? ticket.path;
         const prefix = path.relative(root, ticket.path).split(path.sep).join('/');
         const exclude = compileExclude(vscode.workspace.getConfiguration('files', uri).get('exclude'));
         let ignored: FilterInput['ignored'] = null;
@@ -967,11 +971,11 @@ export class WorkView implements vscode.TreeDataProvider<string>, vscode.TreeDra
 
     private viewFile(): { file: string; text: string } | null {
         const ticket = this.shown.ticket;
-        if (!ticket || !this.businessPath || !this.tree.dirty || !this.hasViewState || !this.viewWritable || this.twoFolders) {
+        if (!ticket || !this.ownerPath || !this.tree.dirty || !this.hasViewState || !this.viewWritable || this.twoFolders) {
             return null;
         }
         return {
-            file: this.paths.workTicketViewPath(this.businessPath, ticket.number),
+            file: this.paths.workTicketViewPath(this.ownerPath, ticket.number),
             text: serializeTicketView({
                 expanded: [...this.tree.expanded], oneFolder: this.tree.oneFolder, oneFolderFromLevel: this.tree.oneFolderLevel
             })

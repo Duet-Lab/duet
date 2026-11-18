@@ -2,11 +2,11 @@ import { insertNextTo, placeNextTo, sortByOrder } from './order';
 import { Shelf, TicketInfo } from './tickets';
 
 /**
- * The bin: all tickets of a business from `work/` and `backlog/`, laid out by
+ * The bin: all tickets of a workspace from `work/` and `backlog/`, laid out by
  * container.
  *
- * A container is a routine or a program (`TicketInfo.workType`: the number's
- * letter, else `work-type` of INDEX.md). Containers
+ * A container is a routine or a program (`TicketInfo.ticketType`: the number's
+ * letter, else `ticket-type` of INDEX.md). Containers
  * always stand flat, in the remembered order; those it does not hold come
  * after — routines first, then programs, by number. Under a
  * container go its tickets from `work/`, then a «Backlog» node with its tickets
@@ -50,7 +50,7 @@ export interface UnsortedNode {
 export type BinNode = TicketNode | BacklogNode | UnsortedNode;
 
 export function isContainer(ticket: TicketInfo): boolean {
-    return ticket.workType !== null && CONTAINER_TYPES.includes(ticket.workType);
+    return ticket.ticketType !== null && CONTAINER_TYPES.includes(ticket.ticketType);
 }
 
 interface Group {
@@ -59,7 +59,7 @@ interface Group {
 }
 
 /**
- * Build the bin from the tickets of a business and its remembered order.
+ * Build the bin from the tickets of a workspace and its remembered order.
  * Tickets inside a group follow the order; those it does not hold come after, by number.
  * Containers follow it among themselves the same way (`sortContainers`).
  */
@@ -132,7 +132,7 @@ export function ticketKey(ticket: Pick<TicketInfo, 'path'>): string {
 
 /**
  * The container of a ticket: the nearest routine or program up the `parent`
- * chain. A parent that is not in `work/` or `backlog/` of the business, or a
+ * chain. A parent that is not in `work/` or `backlog/` of the workspace, or a
  * chain that ends without a container, gives null — the ticket is «Unsorted».
  */
 function containerOf(ticket: TicketInfo, byNumber: Map<string, TicketInfo>): TicketInfo | null {
@@ -180,8 +180,8 @@ function sortContainers(containers: TicketInfo[], order: string[]): TicketInfo[]
 }
 
 function byTypeThenNumber(a: TicketInfo, b: TicketInfo): number {
-    if (a.workType !== b.workType) {
-        return a.workType === 'routine' ? -1 : 1;
+    if (a.ticketType !== b.ticketType) {
+        return a.ticketType === 'routine' ? -1 : 1;
     }
     if (a.number !== b.number) {
         return a.number < b.number ? -1 : 1;

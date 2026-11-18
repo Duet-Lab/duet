@@ -2,7 +2,7 @@
 
 VS Code extension — tree views, commands, and workspace management as a thin client over Backend HTTP API, plus the windows of intents (tickets), which it keeps on its own.
 
-> Domain model (contexts, manifests, invariants, root_context_folders order), pointer file, file ownership: see [/spec/PRODUCT.md](/spec/PRODUCT.md). UI layout and per-view contracts: see [UI.md](UI.md). This file documents what Extension itself owns.
+> Domain model (workspaces, manifests, invariants, root_workspace_folders order), pointer file, file ownership: see [/spec/PRODUCT.md](/spec/PRODUCT.md). UI layout and per-view contracts: see [UI.md](UI.md). This file documents what Extension itself owns.
 
 ## Purpose
 
@@ -11,29 +11,29 @@ Extension combines the following responsibilities.
 **A passive view over the entities that Backend exposes via HTTP.** Here it never writes config, never owns process lifecycle, never re-derives domain rules:
 
 1. Read pointer file → discover Backend port.
-2. Pull `/contexts` from Backend.
-3. Render two tree views («Все Бизнесы», КОНТЕКСТ) — see [UI.md](UI.md).
-4. Open contexts as multi-root VS Code workspaces (clone repos when needed).
+2. Pull `/workspaces` from Backend.
+3. Render two tree views («Все воркспейсы», ВОРКСПЕЙС) — see [UI.md](UI.md).
+4. Open workspaces as multi-root VS Code windows (clone repos when needed).
 5. Provide one editor command: Copy @-Path.
 
-**The keeper of intent windows.** An *intent* is a ticket of a business; it is *active* while a window of the program is open on it. Nothing in Backend or in the tickets records that — the Extension keeps it, with files of its own:
+**The keeper of intent windows.** An *intent* is a ticket of a workspace; it is *active* while a window of the program is open on it. Nothing in Backend or in the tickets records that — the Extension keeps it, with files of its own:
 
-6. Mark each window Duet opened — on an intent or on a business — in `DuetData/intents/` and show them («Активная Работа» view).
-7. Show the tickets of the window's business from `work/` and `backlog/` (Корзина view), open an intent from there, move a ticket between the two folders.
-8. Build the workspace file of an intent and give its window a colour and a pinned notepad; give the window of a business a colour by the same rules.
+6. Mark each window Duet opened — on an intent or on a workspace — in `DuetData/intents/` and show them («Активная Работа» view).
+7. Show the tickets of the window's home workspace from `work/` and `backlog/` (Корзина view), open an intent from there, move a ticket between the two folders.
+8. Build the workspace file of an intent around the ticket's workspace and give its window a colour and a pinned notepad; give the window of a workspace a colour by the same rules.
 
 The intent views use stock side-bar features. Contracts: [Intents](#intents).
 
 **A file tree of one ticket.** The «Рабочая папка» view (DUE018) shows the folder of the window's ticket the way Explorer shows the folder of a project, with what Explorer lacks — an order of rows set by hand — and it acts on the user's files:
 
-9. Show the files of a ticket, keep the order of its rows in the business folder and what is expanded in `DuetData/views/work/`.
+9. Show the files of a ticket, keep the order of its rows in the folder of the workspace that owns it and what is expanded in `DuetData/views/work/`.
 10. Create, rename, duplicate, move and trash files and folders inside that ticket, by the ordinary operations of the editor's file service.
 
 Contracts: [Work view](#work-view).
 
 **A local chat launcher.** The new-chat chooser opens provider-owned conversations in the current window, using bounded local history reads and a Codex preparation process with the full-access policy explicitly chosen by the user. It does not become a model chat client or own Backend lifecycle. Contracts: [Local chat chooser](#local-chat-chooser-due051).
 
-What the Extension still never does: write `settings.json`, `{machine}.json` or a manifest, edit a ticket's `INDEX.md` (it only reads `parent`, `work-type`, `routine-type` and `icon` from it; the user may rename or trash it through «Рабочая папка» like any file), delete user files for good — a deletion goes to the system trash or does not happen. Root-context editing, schema migrations, AI client configuration live in Host. Extension's correct response to «I want to add a root context» is to direct the user to the Host wizard.
+What the Extension still never does: write `settings.json`, `{machine}.json`, a manifest or the `INDEX.md` of a workspace, edit a ticket's `INDEX.md` (it only reads `parent`, `ticket-type`, `routine-type`, `icon`, `git-branch-name` and `default-workspace` from it; the user may rename or trash it through «Рабочая папка» like any file), delete user files for good — a deletion goes to the system trash or does not happen. Root-workspace editing, schema migrations, AI client configuration live in Host. Extension's correct response to «I want to add a root workspace» is to direct the user to the Host wizard.
 
 ## Architecture
 
@@ -60,13 +60,14 @@ What the Extension still never does: write `settings.json`, `{machine}.json` or 
 | Decision | Rationale |
 |----------|-----------|
 | Pointer-based config | `pointer.ts` reads `~/.org.ve68.duet` for paths, `{machine}.json` for port |
-| Backend HTTP API as data source | `DuetApiClient` — all entity data via `/contexts`, `/scan` |
-| `ContextEntity[]` sync pattern | Load once on activation, pass to providers, update on refresh. No per-node HTTP calls |
+| Backend HTTP API as data source | `DuetApiClient` — all entity data via `/workspaces`, `/scan` |
+| `WorkspaceEntity[]` sync pattern | Load once on activation, pass to providers, update on refresh. No per-node HTTP calls. The same list feeds the three rules of resolution (`core/workspaces.ts`), so no rule asks the server |
+| The first folder of a window is its workspace (DUE063) | A session takes its prompt, skills and working directory from the first folder, so every choice of «the window's workspace» — the highlight in «Все воркспейсы», the ВОРКСПЕЙС panel, the chat's cwd, the deploy of instructions — is the first folder. The old rule «a meta workspace among the folders wins» is gone: it dates from windows where the meta workspace could stand anywhere. The first folder counts only when it **is** the folder of a registered workspace — its absolute path equal to one in the registry (`core/workspaces.ts:windowWorkspace`, `workspaceByPath`), never the nearest workspace up the tree. A window whose first folder is a ticket folder, a subfolder of a workspace or a repo has no Duet workspace: nothing is highlighted, not even a root, the ВОРКСПЕЙС panel shows its info node, the bin has no home, the new-ticket button has no target and says so, the chat refuses. Ticket windows take their identity and their owner from their workspace file (Window markers) |
 | FileSystem interface (`fs.ts`) | DI for testing without mocks |
 | git clone via spawn | System git handles auth (ssh-agent, credential helper) |
 | Workspace files | Multi-root workspace for repo + Drive folder |
 | Window markers, not ticket fields | Whether an intent is active is a fact about windows of one program on one machine; it lives in `DuetData/intents/<program>/`, never in the ticket on Drive |
-| A board of tickets per window, fed by the file events of the business folder | Agents and people change the business folder past the extension, so the folder itself is the source every window shares and its file events are the signal; no message between windows could be. The board (`intents/board.ts`) owns what was read and alone decides when to read; the bin view only shows it. Ticket folders lie on a cloud drive, so nothing is read while the rows are hidden and an event about the shelves costs three `stat` calls |
+| A board of tickets per window, fed by the file events of the workspace folder | Agents and people change the workspace folder past the extension, so the folder itself is the source every window shares and its file events are the signal; no message between windows could be. The board (`intents/board.ts`) owns what was read and alone decides when to read; the bin view only shows it. Ticket folders lie on a cloud drive, so nothing is read while the rows are hidden and an event about the shelves costs three `stat` calls |
 
 ### Data Sources
 
@@ -77,19 +78,20 @@ Extension does NOT read `settings.json`. Of the configuration it reads only poin
 | `~/.org.ve68.duet` | `pointer.ts:readPointer()` | `duetDataPath`, `duetConfigPath`, `machine` |
 | `DuetConfig/{machine}.json` | `pointer.ts:readMachineConfig()` | `port` (for backend API) |
 
-It also reads the business folder straight from disk, without Backend:
+It also reads the workspace folder straight from disk, without Backend:
 
 | What | Reader | What Extension uses |
 |------|--------|---------------------|
-| `<business>/context.json` | `pathUtils.ts:formatBusinessReference`, `intents/tickets.ts:readBusinessManifest` | `name` (Copy @-Path, window marker), `icon` (intent rows, notepad tab label), `ticket_code` (the number of a new ticket). Read from disk for two reasons: an intent window marks itself before Backend answers, and Backend puts a default icon (`📁`/`📦`) where the manifest has none, while the intent rule is «no icon — no emoji» |
-| `<business>/work/`, `<business>/backlog/` | `intents/tickets.ts:TicketReader` | folders right inside them whose name fits the ticket-number rule (`pathUtils.ts:parseTicketFolderName`, the grammar Copy @-Path uses); `archive/` only to find one ticket by number and to collect the numbers a new ticket must stay clear of (`TicketReader.allNumbers`) |
-| Ticket `INDEX.md` | `TicketReader` | frontmatter `parent`, `work-type`, `routine-type` and `icon` (the ticket's emoji); a number with a letter types the ticket whatever `work-type` says (`workTypeOfNumber`, the Backend's rule), from the first 2 KB, remembered by the file's mtime and size, with a timeout per file |
-| `<business>/.vscode/duet-intents.json` | `intents/binOrder.ts` | order of the bin |
+| `<workspace>/context.json` | `intents/tickets.ts:readWorkspaceManifest`, `pathUtils.ts:formatWorkspaceReference` | only that the folder is a workspace: a JSON object with a numeric `version`. `name`, `icon` and `ticket_code` are no longer there (DUE063) and are not read from it |
+| `<workspace>/INDEX.md`, frontmatter | `intents/tickets.ts:readWorkspaceManifest` (first 8 KB, top-level keys only), `pathUtils.ts:formatWorkspaceReference` (`name` only) | `name` (Copy @-Path, window marker, chat name), `icon` (intent rows, notepad tab label), `ticket-code` — three capital letters, `inherit`, or none (the chat's ticket check). Read from disk for two reasons: an intent window marks itself before Backend answers, and Backend puts a default icon (`📁`/`📦`) where the workspace has none, while the intent rule is «no icon — no emoji». The code of a new ticket is the server's to read, at the moment of creation |
+| `<workspace>/work/`, `<workspace>/backlog/` | `intents/tickets.ts:TicketReader` | folders right inside them whose name fits the ticket-number rule (`pathUtils.ts:parseTicketFolderName`, the grammar Copy @-Path uses); `archive/` (up to three grouping folders) only to find one ticket by number |
+| Ticket `INDEX.md` | `TicketReader` | frontmatter `parent`, `ticket-type`, `routine-type`, `icon` (the ticket's emoji), `git-branch-name` and `default-workspace` (`"@DuetDev"`, read without the `@`); a number with a letter types the ticket whatever `ticket-type` says (`ticketTypeOfNumber`, the Backend's rule), from the first 2 KB, remembered by the file's mtime and size, with a timeout per file |
+| `<workspace>/.vscode/duet-intents.json` | `intents/binOrder.ts` | order of the bin |
 | `DuetData/intents/<program>/` | `intents/markers.ts:MarkerStore` | window markers, order of active intents |
 | The window's `workbench.colorCustomizations` | `vscode/intents/IntentsRuntime.ts` | the colour in force, written into the window marker |
 | The folder of the shown ticket, whole | `folderView/snapshot.ts:readSnapshot` | names and kinds of everything in it, read into memory; file content is never read |
-| `<business>/.vscode/duet-work-order/<number>.json` | `folderView/order.ts` | the pinned rows of a ticket: per folder, a list of pinned folders and a list of pinned files |
-| `DuetData/views/work/tickets/<business folder>/<number>.json` | `work/viewFiles.ts` | what is expanded in a ticket, with the «одна папка за раз» rule and its level |
+| `<owner>/.vscode/duet-work-order/<number>.json` | `folderView/order.ts` | the pinned rows of a ticket: per folder, a list of pinned folders and a list of pinned files |
+| `DuetData/views/work/tickets/<owner folder>/<number>.json` | `work/viewFiles.ts` | what is expanded in a ticket, with the «одна папка за раз» rule and its level |
 | `DuetData/views/work/windows/<program>/<window key>.json` | `work/viewFiles.ts` | the eye, «показывать открытый файл», the depth of the plus button — of one window |
 | `files.exclude`, `explorer.excludeGitIgnore` (with the scope of the ticket's workspace folder) and the `.gitignore` files from that folder down to the ticket and inside it | `vscode/work/WorkView.ts:readFilter` | what Explorer hides, to hide the same |
 
@@ -97,44 +99,58 @@ All entity data flows from Backend:
 
 | Source | Method | Data |
 |--------|--------|------|
-| `GET /contexts` | `apiClient.contexts()` | All `context` entities with `absolute_path`, `parent_id`, `meta`, `description`, optional `git_repos` map |
+| `GET /workspaces` | `apiClient.workspaces()` | `{ "workspaces": [WorkspaceEntity] }`: every workspace with `absolute_path`, `parent_id`, `meta`, `description`, optional `git_repos` map and `ticket_code` — `ticket-code` of its `INDEX.md` as written (`"DUE"`, `"inherit"`) or `null` |
 | `POST /scan` | `apiClient.scan()` | Triggers backend rescan |
-| `POST /deploy-instructions` | `apiClient.deployInstructions(paths)` | Asks backend to deploy the `skills`/`system_prompt` of the window's business into its Drive folder. Fire-and-forget |
+| `POST /deploy-instructions` | `apiClient.deployInstructions(paths)` | Asks backend to deploy the `skills`/`system_prompt` of the workspace of the first path into its Drive folder; the other paths take no part. Fire-and-forget |
+| `POST /tickets/{action}` | `apiClient.ticketAction(action, args)` | `new_ticket` (`name`, `workspace` — the name of the window's workspace; the server takes the code and `default-workspace` from it), `move_ticket`, `tickets` (the worktrees of a ticket); see [New ticket](#new-ticket) |
 
-`ContextEntity[]` (from `/contexts`) is kept in memory and feeds both views, «Все Бизнесы» and КОНТЕКСТ. Both rebuild on workspace folder change (no HTTP) and reload on `duet.refresh`.
+`WorkspaceEntity[]` (from `/workspaces`) is kept in memory and feeds the views — «Все воркспейсы», ВОРКСПЕЙС, Корзина — the chat chooser and, through `vscode/registry.ts`, the commands registered apart from them (opening a workspace or a ticket). All rebuild on workspace folder change (no HTTP) and reload on `duet.refresh`.
 
-**Root context configuration is Host-only.** Extension intentionally has no add/remove/reorder commands and no write path to `settings.json` or `{machine}.json` (see /spec/PRODUCT.md → File Ownership). All edits go through the Host wizard.
+**Root workspace configuration is Host-only.** Extension intentionally has no add/remove/reorder commands and no write path to `settings.json` or `{machine}.json` (see /spec/PRODUCT.md → File Ownership). All edits go through the Host wizard.
 
 ### Data Flow
 
 ```
-activation → apiClient.contexts() → ContextEntity[] → ContextTreeProvider («Все Бизнесы» view)
-                                                    → ContextProvider     (КОНТЕКСТ view)
+activation → apiClient.workspaces() → WorkspaceEntity[] → WorkspaceTreeProvider  («Все воркспейсы» view)
+                                                        → WorkspacePanelProvider (ВОРКСПЕЙС view)
+                                                        → BinProvider, ChatChooser, vscode/registry.ts
 
 refresh    → apiClient.scan()
-           → apiClient.contexts() → updateContexts() on both providers
+           → apiClient.workspaces() → updateWorkspaces() on every holder
 ```
 
 Both providers are synchronous wrappers around a snapshot:
 
-- **«Все Бизнесы» view** (`ContextTreeProvider`) works over `ContextEntity[]` — the full list of contexts loaded once on activation. Each entity carries `meta`, `git_repos` (`Record<alias,url> | null`), and `parent_id`; role differences (meta / root / has git products / regular) are derived from these fields rather than from a `type` enum. A context has git products iff `git_repos` has one or more aliases; it may still have nested Drive child contexts.
-- **КОНТЕКСТ view** (`ContextProvider`) works over the same `ContextEntity[]` and the window's folders; the tree is built by the pure function `core/tree/contextPanel.ts:buildContextPanel`. Which business is current and what the panel shows: [UI.md → КОНТЕКСТ](UI.md).
+- **«Все воркспейсы» view** (`WorkspaceTreeProvider`) works over `WorkspaceEntity[]` — the full list of workspaces loaded once on activation. Each entity carries `meta`, `git_repos` (`Record<alias,url> | null`), and `parent_id`; role differences (meta / root / has git products / regular) are derived from these fields rather than from a `type` enum. A workspace has git products iff `git_repos` has one or more aliases; it may still have nested Drive child workspaces. The workspace of the window — its first folder, and only it — is highlighted.
+- **ВОРКСПЕЙС view** (`WorkspacePanelProvider`, view ID `duet.context`) works over the same `WorkspaceEntity[]` and the window's first folder; the tree is built by the pure function `core/tree/workspacePanel.ts:buildWorkspacePanel`. What the panel shows: [UI.md](UI.md).
 
-**Tree order:** owned by Backend's `/contexts` response (see /spec/PRODUCT.md → Invariants). `core/tree/contextTree.ts` is a passive view that preserves API order and never re-sorts.
+**Tree order:** owned by Backend's `/workspaces` response (see /spec/PRODUCT.md → Invariants). `core/tree/workspaceTree.ts` is a passive view that preserves API order and never re-sorts.
+
+**View IDs do not change with the vocabulary.** `duet.contexts` («Все воркспейсы»), `duet.context` (ВОРКСПЕЙС) and the commands `duet.contextSettings`, `duet.contexts.select` keep their IDs: VS Code remembers where a view lies by its ID, and «Все воркспейсы» has been moved to the second side bar.
+
+#### Rules of resolution (DUE063)
+
+The server and the extension count the same three rules (`core/workspaces.ts`); the extension counts them from the registry and from paths, never asking the server, because a window labels itself before the server answers.
+
+| Rule | Function | What it says |
+|------|----------|--------------|
+| Tickets workspace of W — a *desk* is a workspace with `ticket-code: inherit` | `ticketsWorkspaceOf` | W itself when its `ticket_code` is a code of its own; for `inherit` (a desk), the nearest ancestor by `parent_id` with a code of its own — never a workspace without a code or another desk between them, which neither are its tickets workspace nor come into its window; no ancestor with a code — an error that names W; no `ticket_code` — W has no tickets. `inherit` is never a code (`ownTicketCode`). That the tickets workspace is an ancestor follows from today's limits of the system, so it is called tickets workspace, not parent |
+| Owner of a ticket | `ownerOfTicketPath` (for a ticket window, of the ticket folder its file lists: `IntentsRuntime.own.ownerPath`) | the folder above the nearest shelf up the path of the ticket folder: `work/` or `backlog/` right above it, or `archive/` up to three grouping folders above it (`archive/202611/DUE062_…`). Path shape only — a folder that moved or is gone still has its owner |
+| Workspace of a ticket | `ticketWorkspace`, `worksOnTicketsOf` | the workspace its `default-workspace` names, when that is the owner or one of its desks — a workspace whose tickets workspace is the owner; otherwise the owner, and the window says why: the name is unknown, or names a foreign workspace. Satellite work — a ticket worked on in a workspace that does not see it through `ticket-code` — is not allowed, so the owner of a ticket is always the workspace of its window or that workspace's tickets workspace |
 
 ## Local chat chooser (DUE051)
 
 `duet.chats.open` contributes a stock `editor/title` add button and a Command Palette entry, with no user-settings or keybinding changes. It reveals at most one unfinished chat-chooser webview (Russian label `Новый чат`) per window. The chooser shows only available `anthropic.claude-code` / `openai.chatgpt` extensions; neither available produces an explanatory empty state. Claude's opening actions are explicitly not connected in v1; its local history is still shown. User-facing labels, progress and Duet-generated errors follow the approved Russian mockup; provider diagnostics and saved conversation names are preserved as supplied. VS Code's public extension registry does not distinguish missing from disabled providers, so the empty state asks the user to install or enable them instead of claiming which condition applies.
 
-The window context comes from `IntentsRuntime.own`, not the selected sidebar row. `ChatScopeReader` reuses `readBusinessManifest` for the business name and `ticket_code`, and the existing backend context snapshot for other manifests. No backend route is added. Remote/virtual workspaces are unsupported. Session membership requires exact normalized cwd in the window's roots and an exact, case-insensitive whole ticket ID in the first human request (including program/routine forms). Without a current ticket, known ticket prefixes exclude ticketed chats; incomplete provenance/registry/metadata is not silently treated as an unticketed chat.
+The window context comes from `IntentsRuntime.own`, not the selected sidebar row. The first folder of the window must be `own.workspacePath`; the chat is named after that workspace (`name` of its `INDEX.md`). In a ticket window the ticket's number is checked against the `ticket-code` of the workspace that owns it (`own.ownerPath`), not of the first folder; a window whose folders list no ticket folder is refused in one line — in a ticket window built around a workspace with `ticket-code: inherit`, whose first folder has no code of its own, the chat is made. The known codes are collected as before, from the `INDEX.md` of every registered workspace; the code of the first folder is counted by the rule of the tickets workspace, so the window of such a workspace knows the code it inherits. `ChatScopeReader` reuses `readWorkspaceManifest` and caches by the stamp of `INDEX.md`. No backend route is added. Remote/virtual workspaces are unsupported. Session membership requires exact normalized cwd in the window's roots and an exact, case-insensitive whole ticket ID in the first human request (including program/routine forms). Without a current ticket, known ticket prefixes exclude ticketed chats; incomplete provenance/registry/metadata is not silently treated as an unticketed chat.
 
-`core/chats/sessions.ts` reads bounded local JSONL prefixes via FileSystem DI, caches summaries by mtime/size, formats known Claude command envelopes as readable slash-command titles without changing membership input, excludes subagents and unfinished Duet preparations, and never sends transcripts to a model. Codex's paginated `thread/list` supplies names/current metadata with explicit top-level source kinds and cwd filters; SQLite is not read. Display pagination does not limit the count. Both provider lists are ordered by session creation time descending, not file modification or last activity; unknown creation times sort last. The row timestamp shows creation time too. The number is count + 1 for this provider and scope only. Initial input is the exact ticket ID or the user-specified Russian text `Новый Чат`; the saved name is `<ticket or business name> (N)`.
+`core/chats/sessions.ts` reads bounded local JSONL prefixes via FileSystem DI, caches summaries by mtime/size, formats known Claude command envelopes as readable slash-command titles without changing membership input, excludes subagents and unfinished Duet preparations, and never sends transcripts to a model. Codex's paginated `thread/list` supplies names/current metadata with explicit top-level source kinds and cwd filters; SQLite is not read. Display pagination does not limit the count. Both provider lists are ordered by session creation time descending, not file modification or last activity; unknown creation times sort last. The row timestamp shows creation time too. The number is count + 1 for this provider and scope only. Initial input is the exact ticket ID or the user-specified Russian text `Новый Чат`; the saved name is `<ticket or workspace name> (N)`.
 
-New Codex conversations use the selected `chatgpt.cliExecutable`, otherwise the installed extension's bundled platform executable, never PATH fallback. Its experimental schema is checked before creation. A separate stdio `codex app-server` receives experimental API opt-in and explicit business cwd, all runtime workspace roots, danger-full-access sandbox and approval policy never (the app-server equivalent of --dangerously-bypass-approvals-and-sandbox). The thread/start response verifies runtimeWorkspaceRoots at the top level, falling back to optional thread environments only if the primary field is absent. The first turn completes and `thread/name/set` persists the name before the process releases its writer and the shell opens `openai-codex://route/local/<id>` with `chatgpt.conversationEditor`. No client configuration is edited and editor continuation uses Codex's own settings. The full-access choice applies to preparation, including MCP calls, and the chooser states explicitly that the first message can change files without approval prompts. Interactive requests that still require user input are not answered on the user's behalf.
+New Codex conversations use the selected `chatgpt.cliExecutable`, otherwise the installed extension's bundled platform executable, never PATH fallback. Its experimental schema is checked before creation. A separate stdio `codex app-server` receives experimental API opt-in and explicit workspace cwd (the first folder), all runtime workspace roots, danger-full-access sandbox and approval policy never (the app-server equivalent of --dangerously-bypass-approvals-and-sandbox). The thread/start response verifies runtimeWorkspaceRoots at the top level, falling back to optional thread environments only if the primary field is absent. The first turn completes and `thread/name/set` persists the name before the process releases its writer and the shell opens `openai-codex://route/local/<id>` with `chatgpt.conversationEditor`. No client configuration is edited and editor continuation uses Codex's own settings. The full-access choice applies to preparation, including MCP calls, and the chooser states explicitly that the first message can change files without approval prompts. Interactive requests that still require user input are not answered on the user's behalf.
 
 The stock cancellable notification is visible immediately on the new-tab action, uses a neutral title with preparation/opening messages as changing stages, and shows no invented percentages. A disabled creation action has an adjacent explanation, tooltip and aria-describedby reference. Session creation times use relative Russian labels with the full local date/time in a tooltip. Unrelated extension registry changes do not cancel a running operation; loss of Codex availability or a workspace-root change does. Double clicks cannot create a second operation. Exact TabInputCustom URI/viewType establishes handoff; new names are checked with a bounded wait and the native title truncation rule. A title mismatch after handoff closes the chooser with a warning, not another creation or archive. Old native tabs may say "Codex" because the third-party title loader only queries its 50 newest interactive threads; saved names in the chooser remain available. Internal Codex renderer errors are not duplicated or inspected through a private DOM.
 
-A local journal under `ExtensionContext.globalStorageUri/chat-preparations/` stores only preparation IDs, scope hashes, names and phases. Cross-window number reservations use per-operation atomic local files with a non-waiting bakery protocol; dead processes and previous boots do not retain a reservation. Cancellation interrupts the owned turn, closes its transport and reversibly archives only its own unhanded preparation. Failed opening retains the same ID for explicit recovery or discard. A corrupt journal fails closed without deleting unknown data; the chooser names the exact record and directory, offers to reveal that directory, and explains that the record must be repaired or restored before refreshing. JSON-RPC error.message is shown as bounded plain text; stderr and raw error payloads are not displayed. Handoff is marked before disposing the chooser, so disposal never cancels/archives the native editor's writer. No transcript, settings or ticket content is written into the business folder.
+A local journal under `ExtensionContext.globalStorageUri/chat-preparations/` stores only preparation IDs, scope hashes, names and phases. Cross-window number reservations use per-operation atomic local files with a non-waiting bakery protocol; dead processes and previous boots do not retain a reservation. Cancellation interrupts the owned turn, closes its transport and reversibly archives only its own unhanded preparation. Failed opening retains the same ID for explicit recovery or discard. A corrupt journal fails closed without deleting unknown data; the chooser names the exact record and directory, offers to reveal that directory, and explains that the record must be repaired or restored before refreshing. JSON-RPC error.message is shown as bounded plain text; stderr and raw error payloads are not displayed. Handoff is marked before disposing the chooser, so disposal never cancels/archives the native editor's writer. No transcript, settings or ticket content is written into the workspace folder.
 
 Logic and orchestration live in `core/chats/`; `vscode/chats/` supplies extension discovery, current window roots, progress, webview and native tab effects. CSP permits only nonce-tagged local inline code/styles; session text is inserted using textContent and incoming actions are checked against fresh context/catalog or the owned recovery journal. This feature owns only its child Codex process, never Backend or unrelated sessions.
 
@@ -144,31 +160,33 @@ Logic and orchestration live in `core/chats/`; `vscode/chats/` supplies extensio
 
 | View ID | Provider | Data source | Renders |
 |---------|----------|-------------|---------|
-| `duet.intents` (Активная Работа) | `IntentsProvider` | window markers of the program (`MarkerStore`) | Flat list: business windows and active intents of every business, in one order set by dragging; each row in the colour of its window |
-| `duet.bin` (Корзина) | `BinProvider` | ticket folders of the shown business + markers | Tickets from `work/` and `backlog/` by container; a ticket with an open window is in the colour of that window |
+| `duet.intents` (Активная Работа) | `IntentsProvider` | window markers of the program (`MarkerStore`) | Flat list: workspace windows and active intents of every workspace, in one order set by dragging; each row in the colour of its window |
+| `duet.bin` (Корзина) | `BinProvider` | ticket folders of the shown workspace + markers | Tickets from `work/` and `backlog/` by container; a ticket with an open window is in the colour of that window. Home: the owner in a ticket window, the tickets workspace of the first folder in any other ([Bin](#bin-the-board-of-tickets)) |
 | `duet.work` (Рабочая папка) | `work/WorkView` | the folder of one ticket on disk, its order file, the two view files | The files and folders of the shown ticket, without a row for the ticket itself |
-| `duet.contexts` (Все Бизнесы) | `ContextTreeProvider` | `apiClient.contexts()` (`ContextEntity[]`) | Full forest of root contexts and descendants. A context is highlighted when its own folder is among the window's folders |
-| `duet.context` (КОНТЕКСТ) | `ContextProvider` | the same `ContextEntity[]` | Venture → current business → businesses directly under it. No business folder in the window → single info node |
+| `duet.contexts` (Все воркспейсы) | `WorkspaceTreeProvider` | `apiClient.workspaces()` (`WorkspaceEntity[]`) | Full forest of root workspaces and descendants. A workspace is highlighted when its folder is the first folder of the window; a first folder that is not a registered workspace folder highlights nothing, not even the root it lies under |
+| `duet.context` (ВОРКСПЕЙС) | `WorkspacePanelProvider` | the same `WorkspaceEntity[]` | Root workspace → the workspace of the window → workspaces directly under it. First folder not a workspace → single info node |
 
 Per-view rendering rules (icons, decorations, accordion behavior) live in [UI.md](UI.md).
 
 ### Commands
 
-#### `duet.openFolder` — open a context
+#### `duet.openFolder` — open a workspace
 
-Both business open buttons first call `TicketReader.findRoutine(path, BUSINESS_CURATION)`: the one immediate `work/` or `backlog/` ticket with `work-type: routine` and `routine-type: business-curation`. A business has one routine of each class: two are an error that names both, never a silent choice. `pickRoutine` is pure; strict search shares the bin's header cache but rejects unreadable shelves, unreadable INDEX or an unfinished header in the first 2 KB; a missing shelf or missing INDEX is absence. It never falls back to a business on failure. The criterion is checked again on the resolved folder before launching.
+Both workspace open buttons first call `TicketReader.findRoutine(path, WORKSPACE_CURATION)`: the one immediate `work/` or `backlog/` ticket of the workspace's own shelves with `ticket-type: routine` and `routine-type: workspace-curation`. The search never goes through `inherit`: the button of DuetDev (`ticket-code: inherit`) would otherwise open the curation of its tickets workspace DuetLab (`DUEA01`) instead of the desk's window. A workspace has one routine of each class: two are an error that names both, never a silent choice. `pickRoutine` is pure; strict search shares the bin's header cache but rejects unreadable shelves, unreadable INDEX or an unfinished header in the first 2 KB; a missing shelf or missing INDEX is absence. It never falls back to a workspace on failure. The criterion is checked again on the resolved folder before launching.
 
-A found Curator goes through `vscode/commands/openTicket.ts:TicketOpener`, the same service used by bin rows and new tickets, with an explicit target business and current/new-window mode. Existing-window focus, backlog → work, workspace and colour rules are unchanged. Repository preparation lives in `businessRepos.ts`, shared without circular command imports. With no Curator, the following business-workspace path applies:
+A found Curator goes through `vscode/commands/openTicket.ts:TicketOpener`, the same service used by bin rows and new tickets, with an explicit owner and current/new-window mode; its window is built by the rule of a ticket window. Existing-window focus, backlog → work, workspace and colour rules are unchanged. Repository preparation lives in `workspaceRepos.ts`, shared without circular command imports. With no Curator, the following workspace-window path applies:
 
 | Step | Action |
 |------|--------|
-| 1 | Clone every `git_repos` alias that is missing into `paths.reposPath/<alias>.git` (nothing to do for a context without repos) |
-| 2 | Write `DuetData/workspaces/<context>.code-workspace`: the Drive folder, then one folder per alias — a context without `git_repos` gets a file of one folder — then, for a meta business, its additional folders; plus the `settings` block with the window colour |
+| 1 | Clone every `git_repos` alias that is missing into `paths.reposPath/<alias>.git` (nothing to do for a workspace without repos) |
+| 2 | Write `DuetData/workspaces/<workspace>.code-workspace` (`core/workspace.ts:workspaceWindowFolders`): the workspace W, then its tickets workspace when that is not W (when W is a desk, `ticket-code: inherit`), then one folder per alias, then, for a meta workspace, its additional folders; a folder already placed is not repeated. Plus the `settings` block with the window colour. The same write gives Kimi Code every folder after the first |
 | 3 | Open the file |
 
-Until 0.0.48 a context without `git_repos` was opened as a plain folder and only a context with repos got a file. That was a defect, not a design: a window opened as a folder has no file of Duet's, so it could not carry a colour, and the same business behaved differently only because of whether it declared repos. The one case left where the folder is opened directly is a context whose name cannot be a file name (`isSafeRepoName`).
+The window of DuetDev (`ticket-code: inherit`) is thus «DuetDev, DuetLab, the repos of DuetDev», built from what is declared, so opening it again by button never loses its tickets workspace.
 
-For any context whose manifest declares `reference_repos`, missing clones are fetched into `paths.reposPath/<name>.git` before the folder/workspace is opened. Clone failure or user cancel aborts the open — an unreachable repo must be removed from the manifest before the context can be opened. Alias names are validated against path traversal (`isSafeRepoName`).
+Until 0.0.48 a workspace without `git_repos` was opened as a plain folder and only one with repos got a file. That was a defect, not a design: a window opened as a folder has no file of Duet's, so it could not carry a colour, and the same workspace behaved differently only because of whether it declared repos. The one case left where the folder is opened directly is a workspace whose name cannot be a file name (`isSafeRepoName`).
+
+For any workspace whose manifest declares `reference_repos`, missing clones are fetched into `paths.reposPath/<name>.git` before the folder/workspace is opened. Clone failure or user cancel aborts the open — an unreachable repo must be removed from the manifest before the workspace can be opened. Alias names are validated against path traversal (`isSafeRepoName`).
 
 **Git clone UX:**
 - `withProgress` notification (cancellable).
@@ -187,12 +205,12 @@ All hidden from the Command Palette (`commandPalette: when: false`): they act on
 | `duet.intents.refresh` | «Активная Работа» title | Re-read the window markers |
 | `duet.intents.switch` | click on an «Активная Работа» row — and nowhere else | Bring the window of the row forward (see [Switching](#switching-to-a-window)). The bin never switches: it is for managing the backlog and the order |
 | `duet.intents.switchByNumber` | Cmd+1 … Cmd+9 (macOS), `when: duet.hasPointer`; hidden from the Command Palette | The same switch for the row that shows this number in «Активная Работа» now (`intents/active.ts:rowByNumber`); the digit comes as the `args` of the keybinding. An extension's keybinding outranks the editor's own for the same keys, so these replace «focus editor group N»; the user's own keybindings still outrank them |
-| `duet.intents.newTicket` | «Активная Работа» title, `when: duet.ready` | Ask for a name, create the next ticket of the window's business in `work/` and open its window (see [New ticket](#new-ticket)) |
-| `duet.bin.refresh` | Корзина title | Restore Корзина to the window’s business and Work to its window binding, then re-read |
-| `duet.bin.openHere`, `duet.bin.openNew` | inline on a bin ticket without an open window | Open the intent in the current / a new window — the same two buttons, icons and window behaviour as `duet.openInCurrentWindow` / `duet.openInNewWindow` for a business |
+| `duet.intents.newTicket` | «Активная Работа» title, `when: duet.ready` | Ask for a name, create the next ticket in the home workspace of the bin in `work/` and open its window (see [New ticket](#new-ticket)) |
+| `duet.bin.refresh` | Корзина title | Restore Корзина to the window’s home workspace and Work to its window binding, then re-read |
+| `duet.bin.openHere`, `duet.bin.openNew` | inline on a bin ticket without an open window | Open the intent in the current / a new window — the same two buttons, icons and window behaviour as `duet.openInCurrentWindow` / `duet.openInNewWindow` for a workspace |
 | `duet.bin.toBacklog` | inline on a bin ticket from `work/` without an open window | Move the ticket folder to `backlog/` |
 
-`duet.intents.*` are registered as soon as the pointer is read; `duet.bin.*` after Backend has answered, with the rest of the backend-dependent commands — and `duet.intents.newTicket` with them: its button is in the «Активная Работа» title, but the business it needs comes from Backend, so the button is hidden until `duet.ready`. Bin commands run one at a time, and a command of a row first finds its ticket on disk by number (`intents/tickets.ts:resolveTicketNow`): a row is what the board read last, and no action runs on a stale path. Implementation: `vscode/commands/intents.ts`. Commands capture the row's business before entering the queue; a started operation never writes into a different preview. Drops carry provider identity and board generation, and recheck the generation after asynchronous reads. Order calculation retains the original tree and order across any later preview change.
+`duet.intents.*` are registered as soon as the pointer is read; `duet.bin.*` after Backend has answered, with the rest of the backend-dependent commands — and `duet.intents.newTicket` with them: its button is in the «Активная Работа» title, but the workspace it needs comes from Backend, so the button is hidden until `duet.ready`. Bin commands run one at a time, and a command of a row first finds its ticket on disk by number (`intents/tickets.ts:resolveTicketNow`): a row is what the board read last, and no action runs on a stale path. Implementation: `vscode/commands/intents.ts`. Commands capture the row's workspace before entering the queue; a started operation never writes into a different preview. Drops carry provider identity and board generation, and recheck the generation after asynchronous reads. Order calculation retains the original tree and order across any later preview change.
 
 #### Work view commands
 
@@ -211,21 +229,21 @@ What is available is told to the menus by context keys `duet.work.*`, all comput
 
 #### `duet.copyAtPath` — copy `@`-reference
 
-User-facing command in the Explorer right-click menu (group `6_copypath`). Copies the resource as an alpha path in the first form that applies: inside a ticket folder — the short ticket form `` `@<ticket>/<relative-to-ticket>` ``; inside a business — `` `@<business name>/<relative>` `` through the nearest `context.json`; otherwise (repos under DuetData) — `` `@<rootFolder>/<relative>` ``.
+User-facing command in the Explorer right-click menu (group `6_copypath`). Copies the resource as an alpha path in the first form that applies: inside a ticket folder — the short ticket form `` `@<ticket>/<relative-to-ticket>` ``; inside a workspace — `` `@<workspace name>/<relative>` `` through the nearest workspace folder (a `context.json` beside an `INDEX.md` with `name`); otherwise (repos under DuetData) — `` `@<rootFolder>/<relative>` ``.
 
 Examples: `packages/host/spec/COMPONENT.md` inside the `Duet.git` workspace folder copies as `` `@Duet.git/packages/host/spec/COMPONENT.md` ``; `DuetLab/work/DUE009_AlphaPaths/Решения.md` copies as `` `@DUE009/Решения.md` ``; `!СЕМЬЯ/ЗОЖ/план.md` copies as `` `@СЕМЬЯ/ЗОЖ/план.md` ``.
 
 **Why it exists:**
 1. **Multi-root disambiguation.** Native VS Code Copy Relative Path strips the workspace root, so `packages/host` could come from any open folder. Including the root folder name removes that ambiguity.
-2. **Matches Duet's `@`-style.** Throughout Duet, paths relative to a context folder are written with a leading `@` and the context name as the first segment. Reusing this syntax keeps a single visual convention across hand-written notes, AI prompts, and Explorer-copied references.
+2. **Matches Duet's `@`-style.** Throughout Duet, paths relative to a workspace folder are written with a leading `@` and the workspace name as the first segment. Reusing this syntax keeps a single visual convention across hand-written notes, AI prompts, and Explorer-copied references.
 
 **Decisions:**
 
 | Decision | Rationale |
 |----------|-----------|
-| Business head = `name` from the nearest `context.json` (walking up from the resource itself) | Alpha paths use the business name as Duet registers it, not the folder name (DUE009, decision В3): the folder `!СЕМЬЯ` is the business `СЕМЬЯ`, and `@!СЕМЬЯ/…` would not resolve. The nearest business wins, so a file of `Duet` inside `DuetLab` copies as `@Duet/…`. Read straight from disk, no Backend call; a manifest without a non-empty `name` is skipped |
-| Fallback head = `path.basename(workspaceFolder.uri.fsPath)` | For resources outside any business — repos under `DuetData/repos` (`@Duet.git/…`), whose dir name is their alpha-path head. Falls back to `folder.name` for filesystem roots where basename is empty |
-| Inside a ticket → `` `@DUE009/<rest>` `` | The short form stays valid when the ticket moves between `work/`, `backlog/` and `archive/`; the long `@DuetLab/work/DUE009_…/` breaks. The ticket is the outermost folder matching `^[A-Z]{3}(\d{3}\|[A-Z]\d{2})(_\|$)` below a `work`/`backlog`/`archive` folder (any grouping depth, e.g. `archive/2026/09/`), the same grammar Backend's `resolve_paths` resolves. Pure path logic, no Backend call; whether the business has declared its `ticket_code` yet is `resolve_paths`' concern (it tells the agent which line to add) |
+| Workspace head = `name` from the frontmatter of the `INDEX.md` of the nearest workspace folder — one with a `context.json` (walking up from the resource itself) | Alpha paths use the workspace name as Duet registers it, not the folder name (DUE009, decision В3): the folder `!СЕМЬЯ` is the workspace `СЕМЬЯ`, and `@!СЕМЬЯ/…` would not resolve. The nearest workspace wins, so a file of `Duet` inside `DuetLab` copies as `@Duet/…`. Read straight from disk, no Backend call; a workspace without a non-empty `name` is skipped, and a `name` left in `context.json` is not read |
+| Fallback head = `path.basename(workspaceFolder.uri.fsPath)` | For resources outside any workspace — repos under `DuetData/repos` (`@Duet.git/…`), whose dir name is their alpha-path head. Falls back to `folder.name` for filesystem roots where basename is empty |
+| Inside a ticket → `` `@DUE009/<rest>` `` | The short form stays valid when the ticket moves between `work/`, `backlog/` and `archive/`; the long `@DuetLab/work/DUE009_…/` breaks. The ticket is the outermost folder matching `^[A-Z]{3}(\d{3}\|[A-Z]\d{2})(_\|$)` below a `work`/`backlog`/`archive` folder, at most three grouping folders deep (e.g. `archive/2026/09/`), the same grammar and depth Backend's `resolve_paths` resolves. Pure path logic, no Backend call; whether the workspace has declared its `ticket-code` yet is `resolve_paths`' concern (it tells the agent which line to add) |
 | Forward slashes always | The `@`-reference is platform-agnostic; `formatAtReference` normalizes `\` → `/` |
 | Empty relative → `` `@<root>` `` | When the resource IS the workspace root, trailing `/` dropped |
 | No success notification | Native Copy Path is silent; multi-select would otherwise spam toasts |
@@ -236,40 +254,48 @@ Examples: `packages/host/spec/COMPONENT.md` inside the `Duet.git` workspace fold
 | Keybinding `Cmd+Shift+C` (mac) / `Alt+Shift+C` (win/linux) | Active in either Explorer tree or editor. Resolves target via `activeTextEditor`. Folders out of reach for keybinding — use right-click menu |
 | Registered before pointer guard | Works even when Duet Host is not configured |
 
-**Known limitation:** for resources outside any business (the basename fallback), two workspace folders with the same basename give the same `@<name>/...`. No detection — user expected to keep root basenames unique.
+**Known limitation:** for resources outside any workspace (the basename fallback), two workspace folders with the same basename give the same `@<name>/...`. No detection — user expected to keep root basenames unique.
 
-Pure logic: `core/pathUtils.ts:formatTicketReference(absolutePath)` (ticket form or `null`), then `formatBusinessReference(absolutePath, readText)` (business form or `null`; file reading injected), then `formatAtReference(rootName, relativePath)`. Shell: `vscode/commands/copyAtPath.ts`.
+Pure logic: `core/pathUtils.ts:formatTicketReference(absolutePath)` (ticket form or `null`), then `formatWorkspaceReference(absolutePath, readText)` (workspace form or `null`; file reading injected), then `formatAtReference(rootName, relativePath)`. Shell: `vscode/commands/copyAtPath.ts`.
 
 ### Workspace Files
+
+Two rules build every window (DUE063). The first folder is always the workspace whose prompt, skills and working directory a session gets.
+
+- **The window of a workspace W:** W, then its tickets workspace when that is not W (W is a desk), then the repos of W, then the other roots and DuetData when W is a meta workspace (`core/workspace.ts:workspaceWindowFolders`).
+- **The window of a ticket T:** its workspace D (`default-workspace` when it names the owner or one of its desks, else the owner) first, the ticket folder second, then the window of D without its first folder, in the same order: the tickets workspace of D when D is a desk, the repos of D with the worktrees of T's branch among them, the additional folders of a meta workspace (`core/intents/workspaceFile.ts:ticketWindowFolders`). The owner is D or D's tickets workspace, so it is in the window and is there once; it has no place of its own. Examples: a ticket of DuetLab without the field — «DuetLab, T, repos of DuetLab»; a `DUE` ticket with `@DuetDev` — «DuetDev, T, DuetLab, repos of DuetDev».
+
+In both, a folder that is already in the list is not repeated (`uniqueFolders`, by normalized absolute path; the relative repo paths are never compared).
 
 Generated artifacts:
 
 | Workspace | Location | When Generated | Folders |
 |-----------|----------|----------------|---------|
-| `{Context}.code-workspace` | `DuetData/workspaces/` | On open of any context | Drive folder of the context first, then one folder per `git_repos` alias (relative `../repos/<alias>.git`, declared order preserved); a context without repos — the Drive folder alone. Assembly is hardcoded **context-first** — the Drive folder is always the primary/first folder. **Meta business** (`meta: true`): after its own folder and repos come the folders of all the other ventures, in tree order, then `DuetData` as a named folder (`core/workspace.ts:metaExtraFolders`, absolute paths). The condition is the flag, not a name; the file keeps its usual address and everything else about the business is unchanged. The ventures are taken from the loaded tree, so opening needs no backend call |
-| `<context>/.kimi-code/local.toml` | context Drive folder | Same write as `{Context}.code-workspace` | Kimi Code multi-root workaround: Kimi's VS Code extension sees only the primary folder, so the cloned repos are written as `[workspace] additional_dir` (absolute paths, declared order), followed by the additional folders of a meta business. Duet-managed, rewritten wholesale; machine-specific — not for VCS. **Known limitation:** the file lives in the Drive-synced context folder, so on a multi-machine setup (e.g. Mac + Windows) the synced absolute paths are wrong on the other machine — no workaround; the real fix is multi-root support in Kimi's VS Code extension ([MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code), `apps/vscode`, MIT) |
-| `{Ticket folder}.code-workspace` | `DuetData/workspaces/{Business}/` | On open of an intent by button | The same folders as the business window: the business folder (absolute), then one per `git_repos` alias (relative `../../repos/<alias>.git`), then the additional folders of a meta business. Carries a `settings` block. A separate builder — `core/intents/workspaceFile.ts`; see [Intent workspace file](#intent-workspace-file). Does not write `.kimi-code/local.toml` |
+| `{Workspace}.code-workspace` | `DuetData/workspaces/` | On open of any workspace | The window of a workspace, above: absolute Drive paths, repos relative (`../repos/<alias>.git`, declared order). Assembly is hardcoded **workspace-first**. **Meta workspace** (`meta: true`): after its own folder and repos come the folders of all the other roots, in tree order, then `DuetData` as a named folder (`core/workspace.ts:metaExtraFolders`, absolute paths). The condition is the flag, not a name. The roots and the registry are taken from the loaded tree, so opening needs no backend call |
+| `<workspace>/.kimi-code/local.toml` | workspace Drive folder | Same write as `{Workspace}.code-workspace` | Kimi Code multi-root workaround: Kimi's VS Code extension sees only the primary folder, so every folder of the window after the first — the tickets workspace, the cloned repos, the additional folders of a meta workspace — is written as `[workspace] additional_dir` (absolute paths, in the window's order). Duet-managed, rewritten wholesale; machine-specific — not for VCS. **Known limitation:** the file lives in the Drive-synced workspace folder, so on a multi-machine setup (e.g. Mac + Windows) the synced absolute paths are wrong on the other machine — no workaround; the real fix is multi-root support in Kimi's VS Code extension ([MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code), `apps/vscode`, MIT). The file is one per workspace, not per window, so the ticket folder and the owner of a ticket window never reach it: Kimi Code does not learn the ticket of a window |
+| `{Ticket folder}.code-workspace` | `DuetData/workspaces/{Owner}/` | On open of an intent by button | The window of a ticket, above: Drive folders absolute, repos relative (`../../repos/<alias>.git`). The file lies under the **owner** whatever workspace the window is built around, so a change of `default-workspace` keeps its path, its colour and its tabs. Carries a `settings` block. A separate builder — `core/intents/workspaceFile.ts`; see [Intent workspace file](#intent-workspace-file). Does not write `.kimi-code/local.toml` |
 
 ```json
 {
   "folders": [
+    { "path": "/absolute/path/to/Drive/DuetLab/DuetDev" },
     { "path": "/absolute/path/to/Drive/DuetLab" },
     { "path": "../repos/Duet.git" },
-    { "path": "../repos/Duet-Instructions.git" }
+    { "path": "../repos/duet-work.git" }
   ]
 }
 ```
 
 | Aspect | Value |
 |--------|-------|
-| Context workspace location | `DuetData/workspaces/{Context}.code-workspace` |
+| Workspace window file | `DuetData/workspaces/{Workspace}.code-workspace` |
 | Repo paths | Relative from `workspaces/` (one per `git_repos` alias) |
-| Drive path | Absolute (not portable) |
-| Context-workspace builder | `core/workspace.ts:writeContextWithReposWorkspace(name, aliases, drivePath)` |
+| Drive paths | Absolute (not portable) |
+| Workspace-window builder | `core/workspace.ts:WorkspaceManager.writeWorkspaceFile(name, spec, settings)` over `workspaceWindowFolders(spec)` |
 
-Folder order is hardcoded **context-first**: the Drive folder is always emitted first, then the cloned repos in `git_repos` declared order. The builder takes no ordering argument. The first folder in a VS Code multi-root workspace is the default cwd for terminals and the anchor for file pickers — keeping the Drive folder first makes it the terminal default. Single entry point — no separate single-repo variant and no folder-only variant. A context without `git_repos` produces a 1-folder workspace; one alias — two folders; two aliases — three; etc.
+Folder order is hardcoded **workspace-first**: the workspace folder is always emitted first. The first folder in a VS Code multi-root workspace is the default cwd for terminals and agents and the anchor for file pickers — keeping the workspace first makes it the terminal default and the folder whose instructions a session gets. Single entry point — no separate single-repo variant and no folder-only variant. A workspace without `git_repos` and without a parent of tickets produces a 1-folder file.
 
-**Alias safety:** aliases originate from user-authored manifest JSON. Before opening a context with `git_repos`, `openFolder.ts:findUnsafeAliases` checks every alias in both `git_repos` and `reference_repos`; if any name fails `isSafeRepoName` (path separators, dots-only, control characters, leading dot), the open is **aborted** with a user-visible error — no clone, no workspace file.
+**Alias safety:** aliases originate from user-authored manifest JSON. Before opening a workspace with `git_repos`, `openFolder.ts:findUnsafeAliases` checks every alias in both `git_repos` and `reference_repos`; if any name fails `isSafeRepoName` (path separators, dots-only, control characters, leading dot), the open is **aborted** with a user-visible error — no clone, no workspace file.
 
 ## Behaviors
 
@@ -282,7 +308,7 @@ Host owns the full backend lifecycle (start, stop, health). Extension is a pure 
 | 1. Read pointer | `readPointer()` → `duetDataPath`, set `duet.hasPointer` |
 | 2. Read port | `readPort()` → port (default 19680), create `DuetApiClient` |
 | 3. Set initializing | `duet.initializing=true`, `duet.ready=false` → spinner |
-| 4. Load contexts | `apiClient.contexts()` |
+| 4. Load workspaces | `apiClient.workspaces()` |
 | 5. Register providers | Create and register all tree providers |
 | 6. Set ready | `duet.ready=true`, `duet.initializing=false` → main views appear |
 
@@ -300,10 +326,10 @@ The intents runtime starts before this sequence, right after the pointer is read
 
 ### Deploy Instructions Trigger
 
-Extension asks Backend to deploy the instruction components of the window's business (skills / system_prompt) into its Drive folder via `apiClient.deployInstructions(workspacePaths)`. The call is **debounced** (500ms) and **fire-and-forget** — the response's `warnings` and `errors` (the symlinks the deploy refused to follow) and a failed call are logged to the "Duet Backend" output channel, never surfaced as blocking UI. Backend is idempotent and runs deploys one at a time.
+Extension asks Backend to deploy the instruction components (skills / system_prompt) of the window's workspace — its first folder; the other paths take no part — into its Drive folder via `apiClient.deployInstructions(workspacePaths)`. The call is **debounced** (500ms) and **fire-and-forget** — the response's `warnings` and `errors` (the symlinks the deploy refused to follow) and a failed call are logged to the "Duet Backend" output channel, never surfaced as blocking UI. Backend is idempotent and runs deploys one at a time.
 
 Fires on:
-- **Activation** — after the contexts load, with the current workspace folder paths.
+- **Activation** — after the workspaces load, with the current workspace folder paths.
 - **`onDidChangeWorkspaceFolders`** — with the new folder paths.
 - **`duet.refresh`** — after the rescan.
 
@@ -311,23 +337,33 @@ Implementation: `vscode/extension.ts` (`triggerDeployInstructions`).
 
 ### Intents
 
-An intent is a ticket of a business: a folder right inside `work/` or `backlog/` whose name fits the ticket-number rule. It is active while a window of this program is open on it; close the window and the intent is paused. Tickets carry no field for that. Pure logic: `core/intents/`; wiring: `vscode/intents/`, `vscode/providers/IntentsProvider.ts`, `vscode/providers/BinProvider.ts`, `vscode/commands/intents.ts`. What the user sees: [UI.md](UI.md).
+An intent is a ticket of a workspace: a folder right inside `work/` or `backlog/` whose name fits the ticket-number rule. It is active while a window of this program is open on it; close the window and the intent is paused. Tickets carry no field for that. Pure logic: `core/intents/`; wiring: `vscode/intents/`, `vscode/providers/IntentsProvider.ts`, `vscode/providers/BinProvider.ts`, `vscode/commands/intents.ts`. What the user sees: [UI.md](UI.md).
 
 #### Window markers
 
-An intent window is a window opened by a workspace file Duet built for a ticket — `DuetData/workspaces/<business>/<ticket folder>.code-workspace` (`intents/window.ts:intentWindowOf`). The ticket is known by its number; where its folder lies now is a field of the marker, not part of the definition.
+An intent window is a window opened by a workspace file Duet built for a ticket — `DuetData/workspaces/<owner>/<ticket folder>.code-workspace` (`intents/window.ts:intentWindowOf`). The ticket is known by its number; where its folder lies now is a field of the marker, not part of the definition.
 
-A business window writes a marker too, so «Активная Работа» lists it. It is recognised in two ways: by a workspace file lying right in `DuetData/workspaces/` (`intents/window.ts:businessWindowOf`) — how a business with repos is opened — or, in a window without a workspace file, by a `context.json` with `version` and `name` in its first folder — a business folder opened directly: by Duet before 0.0.48, or by hand. Such a window is listed and can be switched to, but has no colour until the business is opened by button. The key of a business among the markers is `@<name>` (`businessKey`); a ticket number never starts with `@`. A business opened both ways shares one key and one row.
+A workspace window writes a marker too, so «Активная Работа» lists it. It is recognised in two ways: by a workspace file lying right in `DuetData/workspaces/` (`intents/window.ts:workspaceWindowOf`) — how a workspace is opened by button — or, in a window without a workspace file, by a `context.json` with `version` and an `INDEX.md` with `name` in its first folder — a workspace folder opened directly: by Duet before 0.0.48, or by hand. Such a window is listed and can be switched to, but has no colour until the workspace is opened by button. The key of a workspace among the markers is `@<name>` (`workspaceKey`); a ticket number never starts with `@`. A workspace opened both ways shares one key and one row.
+
+**Identity of a window** (`intents/window.ts:windowIdentityOf`, held as `IntentsRuntime.own`): what the window is opened on is decided by the workspace file it was opened by, and only by it — once, at the start of the window. A file in `DuetData/workspaces/<owner>/<ticket folder>.code-workspace` makes the window of that ticket: its number comes from the file name. A file right in `DuetData/workspaces/` makes the window of a workspace. The drive is not read for it, and it is never computed again.
+
+| Field | Meaning |
+|-------|---------|
+| `workspacePath` | the first folder: the workspace whose prompt and skills a session gets, and the chat's cwd |
+| `ownerPath` | in a ticket window, the workspace that owns the ticket: the folder above the shelf — `work/`, `backlog/`, or `archive/` with its grouping — of the ticket folder the file lists — the folder whose name carries the ticket's number, the number of the file's name; `core/workspaces.ts:ownerOfTicketPath`, paths only, so a listed path the ticket has since left still names the owner. No registry is asked. A window whose folders were broken by hand, so that the file lists no ticket folder, has none — and gets no help. In a workspace window, the first folder |
+| `nameFromFile` | the name the path of the workspace file spells — the owner for a ticket window — used until the manifest is read |
+
+The marker, its label and emoji, «Рабочая папка», the chat's ticket check, the watch over branches and the second-folder follow find the ticket through `ownerPath` and the number — never through the window's folders. 
 
 | Rule | Why |
 |------|-----|
-| File per process: `DuetData/intents/<program>/windows/<key>-<pid>.json`, `<key>` = ticket number or `@<business>`, `<pid>` = extension host of the window | One ticket may be open twice (a window from «Recent», a conflict copy); with a file per ticket the first window to close would erase the other's marker |
+| File per process: `DuetData/intents/<program>/windows/<key>-<pid>.json`, `<key>` = ticket number or `@<workspace>`, `<pid>` = extension host of the window | One ticket may be open twice (a window from «Recent», a conflict copy); with a file per ticket the first window to close would erase the other's marker |
 | `<program>` = `vscode.env.uriScheme` (`vscode`, `vscodium`, `cursor`, …); a window reads and writes only the folder of its own program | Each program has its own windows, colours and order. Between programs the rule is «whoever acts is right»: no window checks another program before acting |
 | Written first in `activate`, before anything waits on Backend; removed in `deactivate` with a synchronous unlink | A window started while Backend is down must not look closed, or its workspace file would be rebuilt under it. The extension host is shut down right after `deactivate`, an async unlink may not finish |
-| Content: `subject` (`intent` or `business`), the key (field `ticket`), ticket folder name, business name, path and emoji, the ticket's emoji (`ticketIcon`: its own `icon`, else the nearest one up its `parent` chain — `tickets.ts:TicketReader.inheritedIcon`), what opening again brings the window forward (workspace file, or the folder of a business opened as a folder), where the ticket lies (`work`/`backlog`/`archive`/`missing`), colour in force, pid, time of the write | Everything the «Активная Работа» view shows — icon, name, colour — comes from markers alone, so it needs no Backend. A marker without `subject` and `ticketIcon` (written by 0.0.44) reads as an intent without an own emoji |
+| Content: `subject` (`intent` or `workspace`), the key (field `ticket`), ticket folder name, the name, folder and emoji of the workspace — the owner of the ticket in an intent window, the window's own workspace otherwise — the ticket's emoji (`ticketIcon`: its own `icon`, else the nearest one up its `parent` chain — `tickets.ts:TicketReader.inheritedIcon`), what opening again brings the window forward (workspace file, or the folder of a workspace opened as a folder), where the ticket lies (`work`/`backlog`/`archive`/`missing`), colour in force, pid, time of the write | Everything the «Активная Работа» view shows — icon, name, colour — comes from markers alone, so it needs no Backend. The file is the marker as it is (`markers.ts:serializeMarker`, `parseMarker`); markers of builds before DUE063 are not read as workspace windows, and windows are reopened after the upgrade |
 | Dead marker: its process is gone, or it was written before the last system boot. Any reader removes it | A crashed window cannot clean up; after a reboot a pid may belong to another process |
-| On window focus, on a change of `workbench.colorCustomizations` and on a file event of the business folder the window checks its marker and writes it again when it is gone or no longer true | Restores a marker removed from outside; keeps the colour honest; a ticket moved to the backlog or the archive shows its new place in every window without waiting for its own window to be focused |
-| Reservation `<key>-<pid>.reserve.json`, written by the window where «open» was clicked (an intent in Корзина, a business with repos in «Все Бизнесы»), with the chosen colour; counts for 30 s or until the real marker of the ticket appears; its pid is not checked | Between the click and the start of the new window the intent would look closed and its colour free. «Open in the current window» ends the process that wrote it |
+| On window focus, on a change of `workbench.colorCustomizations` and on a file event of the shelves of the owner the window checks its marker and writes it again when it is gone or no longer true | Restores a marker removed from outside; keeps the colour honest; a ticket moved to the backlog or the archive shows its new place in every window without waiting for its own window to be focused |
+| Reservation `<key>-<pid>.reserve.json`, written by the window where «open» was clicked (an intent in Корзина, a workspace in «Все воркспейсы»), with the chosen colour; counts for 30 s or until the real marker of the ticket appears; its pid is not checked | Between the click and the start of the new window the intent would look closed and its colour free. «Open in the current window» ends the process that wrote it |
 | One watcher on `intents/<program>/` with `**/*.json`; the folder is created before the watcher; every event leads to one re-read of the whole folder, debounced 100 ms | Markers lie in the `windows/` subfolder, which a plain `*.json` does not see. The same watcher carries `active.json`, so an order changed in one window changes in the others at once. `active.json` is written by a drag and by a re-read that finds a window the order does not hold: its key is put at the end (`intents/active.ts:listNewRows`); every window does the same and comes to the same list |
 | A row stays 1.5 s after its marker is gone (`intents/active.ts:applyLinger`) | A window reload removes the marker and writes a new one; without the delay the row would blink |
 
@@ -335,26 +371,26 @@ A business window writes a marker too, so «Активная Работа» list
 
 #### Switching to a window
 
-The API has no call that brings another window forward. Switching is opening the intent's workspace file again with `vscode.openFolder` — the call a business is opened with: the program brings forward the window that already has the file. Checked on VS Code 1.140: no second window opens with either value of `forceNewWindow`. The command passes `forceNewWindow: true`, so that if no window has the file after all, a new one opens instead of the current window being replaced.
+The API has no call that brings another window forward. Switching is opening the intent's workspace file again with `vscode.openFolder` — the call a workspace is opened with: the program brings forward the window that already has the file. Checked on VS Code 1.140: no second window opens with either value of `forceNewWindow`. The command passes `forceNewWindow: true`, so that if no window has the file after all, a new one opens instead of the current window being replaced.
 
 #### Intent workspace file
 
-`DuetData/workspaces/<business>/<ticket folder>.code-workspace`. The path does not change when the ticket moves between `work/`, `backlog/` and the archive, so the window, its colour and its tabs survive every move; nothing is left in the ticket or on Drive. Renaming the ticket folder gives a new file (and loses the remembered colours) — not handled.
+`DuetData/workspaces/<owner>/<ticket folder>.code-workspace`. The path does not change when the ticket moves between `work/`, `backlog/` and the archive, nor when its `default-workspace` changes, so the window, its colour and its tabs survive every move; nothing is left in the ticket or on Drive. Renaming the ticket folder gives a new file (and loses the remembered colours) — not handled.
 
 | Rule | Why |
 |------|-----|
 | Duet owns the whole file: rebuilt on every open of the intent by button, and after the rebuild it holds nothing but what Duet writes now. Only the remembered colours survive | One canon for all intents; a hand edit is not a setting |
 | Never written while a window has it open: a ticket with a live marker is switched to, not rebuilt | Rewriting the settings of a living window would recolour it under the user |
 | Deterministic text, written only when the bytes differ, through a temporary file and a rename | No needless write; DuetData is a local disk |
-| Folders: the business folder (absolute path of this machine), then `../../repos/<alias>.git` per `git_repos` alias. A business without repos gives a file of one folder. Missing repos are cloned first, exactly as for a business (`openFolder.ts:prepareBusinessRepos`) | The window shows the same folders as the business window |
-| A ticket with a branch also gets its worktrees, in addition to the main clones and never instead of them: the worktree of a repo right after its main clone, the worktree of a repo the business doesn't declare (a repo of a business inside it) after the last repo, before the additional folders of a meta business. Each has a `name`, `<alias> (<branch>)`, and an absolute path (`worktrees.ts:repoFolders`). See [Worktrees of a ticket window](#worktrees-of-a-ticket-window) | The person sees the ticket's branch in the explorer and in the git panel of the window they work in; the main clones keep the window right even without the worktrees |
+| Folders: the window of a ticket ([Workspace Files](#workspace-files)): D — the owner, or the desk of the owner that `default-workspace` names — then the ticket folder, then the rest of D's window, Drive folders by absolute paths of this machine and repos as `../../repos/<alias>.git` per `git_repos` alias of D. A name in `default-workspace` that is not registered, or names a workspace that does not work on the owner's tickets (satellite work, not allowed), opens the window at the owner, and one line says why. The repos of D are cloned first, exactly as for a workspace (`workspaceRepos.ts:prepareWorkspaceRepos`). A change of `default-workspace` does not rebuild a window that is open: the button only brings it forward; the new workspace comes when the window is closed and opened again | The first folder gives a session the prompt and the skills of the workspace where the ticket is worked on; the second tells the window and the agent what is being worked on; the owner — D or its tickets workspace — holds the rules and the neighbouring tickets |
+| A ticket with a branch also gets its worktrees, in addition to the main clones and never instead of them: the worktree of a repo right after its main clone, the worktree of a repo D doesn't declare (a repo another desk of the owner declares) after the last repo and before the additional folders of a meta workspace; the tickets workspace of D stands before all repos and worktrees. Each has a `name`, `<alias> (<branch>)`, and an absolute path (`worktrees.ts:repoFolders`). See [Worktrees of a ticket window](#worktrees-of-a-ticket-window) | The person sees the ticket's branch in the explorer and in the git panel of the window they work in; the main clones keep the window right even without the worktrees |
 | File absent → first open. File present but unreadable → opened as it is, with one line of notice | A rebuild would roll the intent's main colour again |
 | Read as JSON with comments (`core/jsonc.ts`) | That is the dialect of `.code-workspace` |
-| `duet.intent.canon` — version of what Duet writes (now `5`: since `2` the colour block also sets the selection of lists, since `3` the backdrop of highlighted text, since `4` the tab label carries the intent's emoji, not always the business's, since `5` the file may carry worktrees with a `name`). A file with a newer version is opened as it is | Several programs carry their own installed Duet; two versions must not rewrite the file after each other |
+| `duet.intent.canon` — version of what Duet writes (now `6`: since `2` the colour block also sets the selection of lists, since `3` the backdrop of highlighted text, since `4` the tab label carries the intent's emoji, not always the workspace's, since `5` the file may carry worktrees with a `name`, since `6` the window is built around the ticket's workspace with the ticket folder second). A file with a newer version is opened as it is; a file of an older one is rebuilt at the next open by button | Several programs carry their own installed Duet; two versions must not rewrite the file after each other |
 | `duet.intent.colors` — the colours the intent remembers, main first. Absent key and a palette colour in the file → that colour is the main one | Files of older builds keep their colour |
 | Both keys are declared in `contributes.configuration` | Otherwise VS Code marks them as unknown settings |
 
-`settings` of the file, for ticket `DUE017_IntentSwitcher` of a business with icon 🚀:
+`settings` of the file, for ticket `DUE017_IntentSwitcher` of a workspace with icon 🚀:
 
 ```json
 "settings": {
@@ -371,11 +407,13 @@ The API has no call that brings another window forward. Switching is opening the
     "list.filterMatchBackground": "#1f6f4333"
   },
   "duet.intent.colors": ["#1f6f43"],
-  "duet.intent.canon": 5
+  "duet.intent.canon": 6
 }
 ```
 
-#### Worktrees of a ticket window
+#### The ticket folder and the worktrees of a ticket window
+
+The second folder of a ticket window is the ticket's own, and it follows the ticket. This changes the folder, never the identity of the window. When the ticket moves between the shelves of its owner — `work/`, `backlog/`, the archive with its grouping folders — the old path points at nothing; so every check of the window (below) first finds where the ticket lies now, by the owner and the number (`work/shown.ts:locateTicket` and `chooseOwnPlace`: the folder named as the window knows it, or the only one), and replaces the second folder when it is a folder of this ticket and lies elsewhere (`worktrees.ts:reconcileFolders`, `isTicketFolderOf`). This needs no branch — most tickets have none — and works when the old path is already gone, for a window VS Code restored after the move: the number comes from the window's file and the owner from the ticket folder the file lists. A ticket that is gone, found twice, or whose folders did not answer leaves the second folder alone; a second folder that is not this ticket's is never replaced; the first folder is never touched. After a replacement the marker is checked again (`IntentsRuntime.followTicket`), so «Активная Работа» shows the new place in every window.
 
 A ticket gets a branch only when the person asks; the server then makes a worktree of each repo the ticket touches, `DuetData/repos/<alias>.wt-<number>`, and records the branch in the fields `git-branch-name` and `git-branch-repos` of its `INDEX.md` (`packages/backend/spec/COMPONENT.md`, "Ticket branches"). The window is the person's workplace, so it shows them; an agent doesn't need the window, because it gets the paths from the ticket tools and `orientation`.
 
@@ -384,13 +422,14 @@ A ticket gets a branch only when the person asks; the server then makes a worktr
 | Whether a ticket has worktrees, the extension learns from `git-branch-name`, read with the rest of the head of `INDEX.md` (`TicketReader.ticketBranch`). Without the field the server isn't asked and the window is built as before | Most tickets have no branch; their windows cost nothing more |
 | The paths come from the server: the `worktrees` of the ticket's record in `POST /tickets/tickets` (`ServerTicketService.worktrees`). Only worktrees whose folders exist go into the window; a missing one is named in one line | The rule of worktree paths lives in the server in one place, as the rule of ticket names does |
 | When the server doesn't answer or `INDEX.md` can't be read, the window opens with the main clones only, and one line says the worktrees weren't added and why | The window without its worktrees is incomplete, not wrong: the main clones are always there, and refusing to open would only take the workplace away |
-| An open ticket window checks its folders on every event about its own ticket folder or its `INDEX.md` (the ticket number from the path), by watchers on the business folder (`vscode/intents/worktreeSync.ts`), and once at every start (`core/intents/worktreeSync.ts:WorktreeSync`) | The server writes `INDEX.md` after it creates a worktree and after it removes one, so the event comes when the folder is already there or already gone. There is no channel from the server to the extension, and none is needed |
+| An open ticket window checks its folders on every event about its own ticket folder or its `INDEX.md` (the ticket number from the path), by watchers on the shelves of the owner — `{work,backlog,archive}/**/<number>*`, so the archive with its grouping folders too (`vscode/intents/worktreeSync.ts`) — and once at every start (`core/intents/worktreeSync.ts:WorktreeSync`). The branch is read from the ticket folder where it lies now | The server writes `INDEX.md` after it creates a worktree and after it removes one, so the event comes when the folder is already there or already gone. There is no channel from the server to the extension, and none is needed |
 | The check adds the worktrees the server names and that exist, at the places of the composition rule, and removes a worktree folder of its own ticket (`repos/<alias>.wt-<number>`) only when that folder is gone; an existing folder is never removed. When the server doesn't answer, it only removes the gone ones and says that the worktrees will be updated on the next change of the ticket or when the window is reopened (`worktrees.ts:reconcileFolders`). When `INDEX.md` can't be read, the branch is unknown, not absent: nothing is added, gone folders still leave, and the window says why | Closing or shelving a ticket removes its worktrees; the window follows |
-| The new list is built from the window's current list, so folders the person added by hand stay. It is built from the folders as they are right before the edit, after the server and the disk were asked, and a list that changes during the disk checks is read again: the person may change the folders while the check waits. The first folder, the business, is never touched. One `updateWorkspaceFolders` call replaces only the slice between the common start and the common end of the two lists (`worktrees.ts:folderEdit`), and the next check waits for `onDidChangeWorkspaceFolders` | The VS Code documentation: changing the first folder restarts the window's extensions, and no new call may come before the change is reported |
-| The start check runs after the activation's first request to the server (`apiClient.contexts()`): with the server's answer when it succeeded, by the "server didn't answer" rule when it failed. That outcome binds the start check only; every later check asks the server afresh. Events that come earlier only mark that a check is due. All checks go through one `coalesce`: an event during a check leads to one more pass | A worktree made between the building of the file and the start of watching, and a window VS Code restored from an old file, are covered without an event; a window that starts before the server doesn't ask it blindly |
-| A ticket without the field and without worktree folders of its own in the window doesn't ask the server, at start or on events | Windows of tickets without branches do nothing more |
+| The new list is built from the window's current list, so folders the person added by hand stay. It is built from the folders as they are right before the edit, after the server and the disk were asked, and a list that changes during the disk checks is read again: the person may change the folders while the check waits. The first folder, the workspace, is never touched. One `updateWorkspaceFolders` call — the second folder and the worktrees together — replaces only the slice between the common start and the common end of the two lists (`worktrees.ts:folderEdit`), and the next check waits for `onDidChangeWorkspaceFolders` | The VS Code documentation: changing the first folder restarts the window's extensions, and no new call may come before the change is reported |
+| The start check runs after the activation's first request to the server (`apiClient.workspaces()`): with the server's answer when it succeeded, by the "server didn't answer" rule when it failed. That outcome binds the start check only; every later check asks the server afresh. Events that come earlier only mark that a check is due. All checks go through one `coalesce`: an event during a check leads to one more pass | A worktree made between the building of the file and the start of watching, and a window VS Code restored from an old file, are covered without an event; a window that starts before the server doesn't ask it blindly |
+| A ticket without the field and without worktree folders of its own in the window doesn't ask the server, at start or on events; it only follows with its second folder | Windows of tickets without branches do nothing more |
 | A window whose file is opened as it is (unreadable, or written by a newer Duet) never checks its folders | Its folders don't belong to this extension |
 | `TicketOpener.open` still never writes the file of an open window. The check changes the folders through VS Code, which writes only the `folders` key of the file (`setFolders`, VS Code 1.146.0); colours and canon stay. The next open by button rebuilds the file with the same composition | The rule "Duet doesn't write into the file of an open window" holds: nobody rebuilds it from outside |
+| `add_worktree` while a desk ticket window is open — «DuetDev, ticket, DuetLab» — adds the worktrees to that window: the owner and the number find the ticket, the worktrees go after their main clones among the repos of DuetDev. The window of the workspace DuetDev gets no worktrees: they belong to the ticket | The branch is the ticket's, whatever window it is worked in |
 | Calls of `move_ticket` from the bin are unchanged. The bin moves tickets only between `work` and `backlog` and doesn't shelve a ticket with an open window; the server's refusal of a ticket whose branch isn't ready comes back as «Не удалось перенести …» with its reason | Closing a ticket is the agent's act, through the server's readiness check |
 
 VS Code's own worktree detection in the git panel (`git.detectWorktrees`) is off by default in VS Code 1.146 and in the user settings of VS Code, Cursor and VSCodium, so a worktree that is a folder of the window is shown once. Duet doesn't change the setting: client settings aren't Duet's.
@@ -405,9 +444,9 @@ The colour block (`workspaceFile.ts:windowColorBlock`) is everything in the wind
 
 The light version is the colour with transparency, not a fixed light colour: over a light side bar it gives a light tint, over a dark one a dark tint, and over the selection in the same colour it vanishes, so the text on it is readable in every case. The shades are held by tests (`intentWorkspaceFile.test.ts`, «readability of the window colours»): contrast of text against what lies behind it, for all eight colours on the side-bar backgrounds of the stock light and dark themes — at least 4.5 everywhere, 3.5 for the one case of this window's own row on a light theme, where the text and its backdrop are two shades of one colour. The activity bar is not coloured.
 
-**Business workspace file.** `DuetData/workspaces/<business>.code-workspace` keeps its folders (`../repos/<alias>.git`) and its `.kimi-code/local.toml` exactly as before, and gains a `settings` block of three keys: the colour block above, `duet.intent.colors` and `duet.intent.canon` (`workspaceFile.ts:planBusinessColor`). The colour is chosen on every open of the business by button, by the same rules as for an intent, and held by a reservation. When a window already has the file open, the file is written back with the colour block it has — folders are refreshed, a living window is never recoloured. A business without repos has the same file with one folder, and so the same colour rules. Without the intents runtime the file is written without a `settings` block, folders only. A program still on 0.0.44 that opens the business strips the block; the next open by a newer version rolls the main colour again.
+**Workspace window file.** `DuetData/workspaces/<workspace>.code-workspace` carries the folders of a workspace window ([Workspace Files](#workspace-files)) and its `.kimi-code/local.toml`, and a `settings` block of three keys: the colour block above, `duet.intent.colors` and `duet.intent.canon` (`workspaceFile.ts:planWorkspaceColor`). The colour is chosen on every open of the workspace by button, by the same rules as for an intent, and held by a reservation. When a window already has the file open, the file is written back with the colour block it has — folders are refreshed, a living window is never recoloured. A workspace without repos has the same file, and so the same colour rules. Without the intents runtime the file is written without a `settings` block, folders only. A program still on 0.0.44 that opens the workspace strips the block; the next open by a newer version rolls the main colour again.
 
-**Intent name** (`intents/naming.ts`, one function for the view rows, the tab label and the notepad heading): the ticket folder name without the number; underscores become spaces, a space goes where PascalCase starts a word, by Unicode case — `IntentSwitcher` → «Intent Switcher», `UIResearch` → «UI Research», `DuetWork2` → «Duet Work2», `DuetWork_Full` → «Duet Work Full». The emoji of an intent is one wherever the intent is shown — its row in «Активная Работа» and the tab label of its notepad (`naming.ts:intentIcon`): the ticket's own `icon`; else the one of its nearest parent ticket that has one; else `icon` of the business's `context.json`; none of the three — no emoji. The tab label is written into the workspace file, so it takes the emoji the ticket has when the intent is opened by button.
+**Intent name** (`intents/naming.ts`, one function for the view rows, the tab label and the notepad heading): the ticket folder name without the number; underscores become spaces, a space goes where PascalCase starts a word, by Unicode case — `IntentSwitcher` → «Intent Switcher», `UIResearch` → «UI Research», `DuetWork2` → «Duet Work2», `DuetWork_Full` → «Duet Work Full». The emoji of an intent is one wherever the intent is shown — its row in «Активная Работа» and the tab label of its notepad (`naming.ts:intentIcon`): the ticket's own `icon`; else the one of its nearest parent ticket that has one; else `icon` of the workspace that owns the ticket (its `INDEX.md`); none of the three — no emoji. The tab label is written into the workspace file, so it takes the emoji the ticket has when the intent is opened by button.
 
 **Window colour** (`intents/colors.ts`), eight colours that carry white text: `#1f6f43`, `#1f4f8f`, `#6b3fa0`, `#1f7a7a`, `#5a6a1f`, `#8f4a1f`, `#8f1f3f`, `#8f1f7a`. «Taken» means held by an open window of this program (markers and reservations).
 
@@ -419,42 +458,44 @@ The light version is the colour with transparency, not a fixed light colour: ove
 
 #### Bin: the board of tickets
 
-`BinProvider` keeps the window business separately from a temporary preview. Real selection in «Все Бизнесы» and the internal `duet.contexts.select` row command use `BusinessViews.select`; the row command also handles a repeated click after a return. Selecting a business empties Work, while `duet.bin.select` accepts a current ticket row and shows its real business's files. Separator/placeholder rows do nothing. Workspace-folder changes clear preview; a context rescan preserves a still-existing preview and otherwise returns to the window business.
+**The home of the bin** (`core/workspaces.ts:binHome`): in a ticket window, the tickets of its owner; in any other window, the tickets workspace of the first folder — when the first folder is the folder of a registered workspace; otherwise the bin has no home — in the window of a desk, the workspace whose tickets the desk works on. The title names it: «Корзина DuetLab». A first folder without `ticket-code` has no bin. A first folder with `inherit` and no ancestor with a code of its own is a mistake of configuration: the bin shows its message instead of rows, and the new-ticket button refuses with the same words.
 
-`BusinessViews.home` is the single return used by both refresh buttons, without calling commands recursively: clear preview, restore Корзина's window business, call `WorkView.goHome` (empty in a business window, own ticket in a ticket window). Work has a separate `clearForBusiness`, never a substitute call to `goHome`. Pending startup, selection and home reads are invalidated before waiting for disk or saved expansion. Every source switch increments the board generation, so even A → B → A discards the first A's late results. Hidden preview changes read nothing. `RelativePattern` watchers follow the displayed source outside the workspace; the runtime's own-marker watcher stays on the window business.
+`BinProvider` keeps the window's home separately from a temporary preview. Real selection in «Все воркспейсы» and the internal `duet.contexts.select` row command use `WorkspaceViews.select`; the row command also handles a repeated click after a return. Selecting a workspace empties Work, while `duet.bin.select` accepts a current ticket row and shows its real owner's files. Separator/placeholder rows do nothing. Workspace-folder changes clear preview; a rescan preserves a still-existing preview and otherwise returns to the home.
 
-The tickets of the business, the order and the rows built from them are held by one object per window — the board, `core/intents/board.ts:TicketBoard`. Корзина shows the board and reads no disk itself; the bin commands act through it. Shared state of windows is built the same way in both views — a folder on disk, a watcher on it, one joined reading (`intents/coalesce.ts`), a word to the view — and kept in two places on purpose: what is open is a fact about a machine and a program and lies in DuetData; where tickets lie is a fact about the business and lies in its folder.
+`WorkspaceViews.home` is the single return used by both refresh buttons, without calling commands recursively: clear preview, restore Корзина's home, call `WorkView.goHome` (empty in a workspace window, own ticket in a ticket window). Work has a separate `clearForWorkspace`, never a substitute call to `goHome`. Pending startup, selection and home reads are invalidated before waiting for disk or saved expansion. Every source switch increments the board generation, so even A → B → A discards the first A's late results. Hidden preview changes read nothing. `RelativePattern` watchers follow the displayed source outside the window; the runtime's own-marker watcher stays on the owner of the window's ticket.
+
+The tickets of the shown workspace, the order and the rows built from them are held by one object per window — the board, `core/intents/board.ts:TicketBoard`. Корзина shows the board and reads no disk itself; the bin commands act through it. Shared state of windows is built the same way in both views — a folder on disk, a watcher on it, one joined reading (`intents/coalesce.ts`), a word to the view — and kept in two places on purpose: what is open is a fact about a machine and a program and lies in DuetData; where tickets lie is a fact about the workspace and lies in its folder.
 
 | Rule | Why |
 |------|-----|
-| The signal that the tickets changed is a file event of the business folder (`vscode/intents/boardWatch.ts`): `{work,backlog}/*`, `.vscode/duet-intents.json`, `{work,backlog}/*/INDEX.md` | A ticket is archived, created, renamed or given another `parent` by an agent or by hand, past the extension; another window or program writes the order. A reading asked for by the commands of one window would never reach the others |
+| The signal that the tickets changed is a file event of the workspace folder (`vscode/intents/boardWatch.ts`): `{work,backlog}/*`, `.vscode/duet-intents.json`, `{work,backlog}/*/INDEX.md` | A ticket is archived, created, renamed or given another `parent` by an agent or by hand, past the extension; another window or program writes the order. A reading asked for by the commands of one window would never reach the others |
 | The kind of an event is not looked at, only where it happened | A file written again may come as a create or a rename (checked on Google Drive for desktop, macOS) |
 | Events within 300 ms give one answer. For the shelves and the order file the answer is three `stat` calls — `work/`, `backlog/`, the order file — and a reading only when they differ from the last one; for an `INDEX.md` it is a reading | A folder's modification time changes when a ticket comes or goes, not when a file inside a ticket changes. The stamps are how a move made by this window, which the command has already read, is not read a second time when its event comes |
-| While the rows are hidden an event costs nothing; showing them reads the folders | Every window of the business gets every event; only the ones that show the bin read |
+| While the rows are hidden an event costs nothing; showing them reads the folders | Every window that shows the workspace gets every event; only the ones that show the bin read |
 | A reading is two folder listings and a `stat` per ticket; file content is read only for an `INDEX.md` that changed (`TicketReader`) | The folders are on a cloud drive |
 | Listeners are told only when what was read differs from what they have | No redraw, and no blink, for an event that changed nothing shown |
 | The file events are the only signal: the board is not asked to look again when the window gets the focus | Decided by Andrei, 2026-10-05: such a check would hide an event that never came. Whether events arrive for changes brought by cloud sync from another machine is not verified; the refresh button of the view is there for that case |
-| An intent window checks its own marker on the same kind of events, by a watcher of its own on the business folder of the window (`IntentsRuntime.watchOwnTicket`, gathered over 500 ms): the manifest, two folder listings and the emoji chain are read, and the marker is written only when it is no longer true | Where the ticket lies and its emoji are fields of the marker; they follow the folder, not the next focus of the window. The watcher belongs to the runtime, not to the board: the marker must be true without the backend and whatever business the bin shows |
-| A command that changed the business folder has the board read at once | Its own window shows the result without waiting for the event |
+| An intent window checks its own marker on the same kind of events, by a watcher of its own on the shelves of the owner of its ticket (`IntentsRuntime.watchOwnTicket`, gathered over 500 ms): the manifest, two folder listings, the archive when needed and the emoji chain are read, and the marker is written only when it is no longer true | Where the ticket lies and its emoji are fields of the marker; they follow the folder, not the next focus of the window. The watcher belongs to the runtime, not to the board: the marker must be true without the backend and whatever workspace the bin shows |
+| A command that changed the workspace folder has the board read at once | Its own window shows the result without waiting for the event |
 
 The rows are redrawn through one gate: tree refreshes that come within 25 ms are sent as one, because two refreshes a few milliseconds apart make VS Code ask for the children of rows the second one has already replaced («No tree item with id …» in the extension host log). A window opening or closing only redraws the rows.
 
-The order of the bin is `<business>/.vscode/duet-intents.json` — one flat list of ticket numbers per business, so it is the same for every program and machine. The order inside any group is the relative order of its numbers in the list; a list per parent would break when a ticket changes its parent. The containers — processes and programs — take their order among themselves from the same list. Written only by dragging: the first drag in a group lists all its visible rows as shown (`intents/order.ts:mergeOrderBlock`); opening and closing a window never write it. Read together with the folders; only this exact file name is read, so conflict copies are harmless; an unreadable file leaves the last order read well, and that order is then not written back — a drag is refused in one line before anything is moved, or an older order would replace the newer one in the file. Numbers found in the archive are dropped from the list on write. The file lies on Drive: written in place by a single write.
+The order of the bin is `<workspace>/.vscode/duet-intents.json` — one flat list of ticket numbers per workspace, so it is the same for every program and machine. The order inside any group is the relative order of its numbers in the list; a list per parent would break when a ticket changes its parent. The containers — processes and programs — take their order among themselves from the same list. Written only by dragging: the first drag in a group lists all its visible rows as shown (`intents/order.ts:mergeOrderBlock`); opening and closing a window never write it. Read together with the folders; only this exact file name is read, so conflict copies are harmless; an unreadable file leaves the last order read well, and that order is then not written back — a drag is refused in one line before anything is moved, or an older order would replace the newer one in the file. Numbers found in the archive are dropped from the list on write. The file lies on Drive: written in place by a single write.
 
 #### New ticket
 
-`duet.intents.newTicket` (`vscode/commands/intents.ts:BinActions.create`). The ticket is made by the Backend, not by the extension: `core/intents/ticketService.ts` calls `POST /tickets/new_ticket`, the same code the agents' `new_ticket` tool runs, so the number, the folder name and the frontmatter are decided in one place (rules: [backend COMPONENT.md → Ticket tools](../../backend/spec/COMPONENT.md#ticket-tools)). The extension asks the name, shows the result and opens the window. The business is the one of the window, as in Корзина; a window without a business refuses in one line.
+`duet.intents.newTicket` (`vscode/commands/intents.ts:BinActions.create`). The ticket is made by the Backend, not by the extension: `core/intents/ticketService.ts` calls `POST /tickets/new_ticket`, the same code the agents' `new_ticket` tool runs, so the number, the folder name and the frontmatter are decided in one place (rules: [backend COMPONENT.md → Ticket tools](../../backend/spec/COMPONENT.md#ticket-tools)). The extension asks the name, shows the result and opens the window. The ticket is made in the home of the bin — the tickets workspace of the first folder, the owner in a ticket window; a window without one refuses in one line, and a first folder with `inherit` and no ancestor with a code says so. The request names the window's workspace — the first folder's, `windowWorkspace` — and nothing else: the server's `new_ticket(workspace=…)` makes the ticket in its tickets workspace under that workspace's code and, for a desk, writes `default-workspace: "@DuetDev"`, so the ticket opens in the window it was made from. The home of the bin comes from the registry the extension loaded (see [Data Sources](#data-sources)): after a `ticket-code` is edited by hand, the window follows it once the registry is reloaded — `duet.refresh` or a window reload.
 
 | Behavior | Why it matters |
 |----------|----------------|
 | The only question is the name, in an input box. Escape cancels; Enter on an empty box goes on with no name | One gesture. The number is Duet's to give, never the user's to type |
 | The name goes to the Backend as typed; the Backend makes the folder name (PascalCase, only letters and digits: `ui research`, `UI research` → `UiResearch`; `синхронизация корзины` → `СинхронизацияКорзины`). The input box only counts the letters and digits (`ticketNameLength`) and refuses more than 100; the Backend's word rule (four or more words are rejected) is not checked in the box: it comes back as the Backend's refusal after Enter, and the next box opens with the refused name in it (`BinActions.refusedName`), so a refusal does not cost the typing | One strict rule, kept in one place, gives one name however the text was typed and whoever made the ticket — a person or an agent. A slash or a dot cannot make a nested or hidden folder. The folder name also names the workspace file of the window |
-| Number: the extension passes the code from `ticket_code` of the business's `context.json`; the Backend takes one above the highest project number among all tickets of `work/`, `backlog/` and `archive/`. No `ticket_code` — refusal in one line that names the field. A folder that cannot be read — a cloud drive may fail so — is the Backend's refusal and nothing is created | The archive holds numbers too; counting the shelves alone would hand out a taken one, and so would counting a shelf that failed to read as empty |
+| Number: the extension passes no code — only the name of the window's workspace; the Backend reads its `ticket-code` at that moment, takes the code of its tickets workspace and one above the highest project number among all tickets of `work/`, `backlog/` and `archive/`. No code, or `inherit` with no ancestor that has one — the Backend's refusal, shown as it came. A folder that cannot be read — a cloud drive may fail so — is the Backend's refusal and nothing is created | The archive holds numbers too; counting the shelves alone would hand out a taken one, and so would counting a shelf that failed to read as empty |
 | The folder is `work/<number>_<Name>`, or `work/<number>` without a name | A new ticket never lands inside an existing one |
 | The Backend holds a lock while it counts and creates, so two of its callers cannot take one number. After creating, the number is still looked up again: when another folder carries it too — made by hand in the same moment — one line names both folders and no window is opened | A clash is rare and can be fixed by hand, but only when it is seen; opening by number would otherwise bring the other ticket's window forward |
-| `INDEX.md` is written by the Backend: `folder-type: work`, `work-type: project`, `opened:` the local day, empty `business-area`, `parent: null`, and a heading. When the write fails, the Backend removes the folder and the number stays free | Without it the ticket has no type in Корзина, and an agent cannot tell a fresh ticket from one that lost its map |
+| `INDEX.md` is written by the Backend: `folder-type: ticket`, `ticket-type: project`, `opened:` the local day, `parent: null`, `default-workspace` when it was asked for, and a heading. When the write fails, the Backend removes the folder and the number stays free | Without it the ticket has no type in Корзина, and an agent cannot tell a fresh ticket from one that lost its map |
 | Then the ticket is opened in a new window by the same path as «open in a new window» of a bin row; the board reads the folders before that, and also when creating failed. The notepad is made by that window at its start. When the window could not be opened, one line says that the ticket exists and where | One way to open an intent; the notepad belongs to the window. A ticket made without a window must not go unnoticed |
-| Runs in the queue of the bin commands; the name is asked before it takes its turn. A business whose name cannot be a file name is refused before the question; when the business of the window changed while the name was being typed, one line says so and nothing is created | No interleaving with a move or a drop, and an open input box holds up nothing |
+| Runs in the queue of the bin commands; the name is asked before it takes its turn. A workspace whose name cannot be a file name is refused before the question; when the home of the window changed while the name was being typed, one line says so and nothing is created | No interleaving with a move or a drop, and an open input box holds up nothing |
 | The Backend's refusal is shown as it came, in English; when the Backend does not answer, one line says that tickets are created and moved by it | The extension keeps no copy of the rules to fall back on: a second copy is how a button and an agent come to disagree |
 
 #### Notepad
@@ -475,11 +516,11 @@ In an intent window, and only there, at start (`vscode/intents/notepad.ts`, deci
 
 «Рабочая папка» (DUE018). What the user sees: [UI.md → Рабочая папка](UI.md). The behaviour is set by the accepted model of the ticket; Explorer is the ceiling of caution — no protection stricter or more complex than Explorer's is built unless the user named the case.
 
-Pure logic: `core/folderView/` — a tree of one folder with an order of its own, a filter and an expansion memory, knowing nothing of tickets, because the same parts are meant for views to come — and `core/work/`. Wiring: `vscode/work/`.
+Pure logic: `core/folderView/` — a tree of one folder with an order of its own, a filter and an expansion memory, knowing nothing of tickets, because the same parts are meant for views to come — and `core/work/`. Wiring: `vscode/work/`. The ticket of the window is found through its owner (`IntentsRuntime.own.ownerPath`), so a ticket window built around another workspace shows its ticket.
 
 #### Which ticket
 
-`work/shown.ts:nextShown` — a pure function over «what is shown» and an event: the start and the refresh button, a business selection (empty), a ticket row of the bin from any business, the shown folder gone. The shown ticket is a number *and* a folder path: the bin shows two folders of one number as two rows. The folder is found by `locateTicket`, which, unlike the bin's reader, tells «no such ticket» from «the folders did not answer». Every choice takes a request number; a reading that ends under an older one is dropped, and a file operation holds the paths of the ticket it began in (`WorkView.exclusive`).
+`work/shown.ts:nextShown` — a pure function over «what is shown» and an event: the start and the refresh button, a workspace selection (empty), a ticket row of the bin from any workspace, the shown folder gone. The shown ticket is a number *and* a folder path: the bin shows two folders of one number as two rows. The folder is found by `locateTicket`, which, unlike the bin's reader, tells «no such ticket» from «the folders did not answer». Every choice takes a request number; a reading that ends under an older one is dropped, and a file operation holds the paths of the ticket it began in (`WorkView.exclusive`).
 
 #### The tree
 
@@ -498,7 +539,7 @@ Pure logic: `core/folderView/` — a tree of one folder with an order of its own
 
 #### Order and pins
 
-The order of a folder is computed, never stored: folders by the alphabet, then files by the alphabet (`names.ts:compareDefault`), with the pinned rows of each kind first (`order.ts:mergeOrder`). Only the pins are kept: `<business>/.vscode/duet-work-order/<number>.json` — next to the order of the bin, one file per ticket: `{ "version": 2, "folders": { ".": { "dirs": [names…], "files": [names…] }, "sub/folder": { … } } }`, names in NFC. The file name is the one of the earlier model.
+The order of a folder is computed, never stored: folders by the alphabet, then files by the alphabet (`names.ts:compareDefault`), with the pinned rows of each kind first (`order.ts:mergeOrder`). Only the pins are kept: `<owner>/.vscode/duet-work-order/<number>.json` — next to the order of the bin, one file per ticket: `{ "version": 2, "folders": { ".": { "dirs": [names…], "files": [names…] }, "sub/folder": { … } } }`, names in NFC. The file name is the one of the earlier model.
 
 | Rule | Why |
 |------|-----|
@@ -552,14 +593,14 @@ No row for the ticket; no folded folder chains; no nesting of related files; no 
 
 | URI Scheme | Format | Decoration |
 |------------|--------|------------|
-| `duet-tree` | `duet-tree:/separator/<index>` | `disabledForeground` colour — separator rows of «Все Бизнесы» read as gaps |
+| `duet-tree` | `duet-tree:/separator/<index>` | `disabledForeground` colour — separator rows of «Все воркспейсы» read as gaps |
 | `duet-tree` | `duet-tree:/intent-color/<colour id>/<key>` | the colour of a window — rows of windows in «Активная Работа», rows of tickets with an open window in Корзина |
 
 A decoration can name a colour only by a theme colour id, never by its hex value, so the eight colours of the palette are declared in `contributes.colors` as `duet.intent.color1` … `duet.intent.color8` (`intents/colors.ts:intentColorId`): in light themes the palette colour itself, in dark themes a lighter shade of it. The colour is a function of the address alone: a window that changes its colour gives its rows a new address, so no change event is needed. A row with a `resourceUri` must carry an icon of its own, or the tree draws a file icon from the icon theme; the intent views give every row an icon picture (`vscode/providers/rowLook.ts`, `intents/rowIcon.ts`) — the emoji drawn as a 16-pixel SVG, or an empty one. The user setting `explorer.decorations.colors` switches these colours off, as it does everywhere.
 
-«Все Бизнесы» does not use the colour decoration — its node labels carry their own emoji-based status (see UI.md).
+«Все воркспейсы» does not use the colour decoration — its node labels carry their own emoji-based status (see UI.md).
 
-`NotepadDecorationProvider.ts` is a second `FileDecorationProvider`, for one real file: in an intent window the name of its own `notepad.md` — on the tab, and wherever else the editor lists the file — takes the colour of the window, from the same declared colours and by the same rule «the colour in force now»; a change of the window colour is told to the editor through `onDidChangeFileDecorations`. Only the notepad of the ticket the window is opened on, never its folder (`propagate: false`), and nothing in a business window. The editor gives a single file only the colour of its name; a tab's background can be set only per state of the tab, the same for every file of the window.
+`NotepadDecorationProvider.ts` is a second `FileDecorationProvider`, for one real file: in an intent window the name of its own `notepad.md` — on the tab, and wherever else the editor lists the file — takes the colour of the window, from the same declared colours and by the same rule «the colour in force now»; a change of the window colour is told to the editor through `onDidChangeFileDecorations`. Only the notepad of the ticket the window is opened on, never its folder (`propagate: false`), and nothing in a workspace window. The editor gives a single file only the colour of its name; a tab's background can be set only per state of the tab, the same for every file of the window.
 
 ## Engineering
 
@@ -584,7 +625,7 @@ Extension is a thin UI client — no backend bundling. Host handles backend depl
 
 | Layer | Tool | Approach |
 |-------|------|----------|
-| `core/` | vitest | Unit tests with mock `ContextEntity[]` and `DuetApiClient` |
+| `core/` | vitest | Unit tests with mock `WorkspaceEntity[]` and `DuetApiClient`; the cases of DUE063 — the three rules, the windows of the design's examples, the identity of a window from its file, the second folder that follows, the bin and the new-ticket button of a desk — in `deskWorkspace.test.ts` |
 | `vscode/` providers and commands of the intent views and of the work view | vitest | Run against a stand-in for the `vscode` module: the intent views declare theirs in the test file; the work view uses `test/unit/helpers/fakeVscode.ts` — a tree view a test can play the person on — and `helpers/memDisk.ts`, a disk in memory. `workManifest.test.ts` reads `package.json`: a menu is all declaration |
 | `vscode/` in a real window | @vscode/test-electron | Integration tests (planned). What only a real window shows — a click, a drag, the keys, the trash, the cloud drive — is checked by hand |
 
@@ -596,31 +637,33 @@ Extension is a thin UI client — no backend bundling. Host handles backend depl
 | DuetData paths | `core/paths.ts` |
 | Backend API client | `core/api-client.ts` (incl. `deployInstructions`) |
 | Deploy-instructions trigger | `vscode/extension.ts` (`triggerDeployInstructions`) |
-| Context tree logic («Все Бизнесы» view) | `core/tree/contextTree.ts` |
-| КОНТЕКСТ view | `vscode/providers/ContextProvider.ts` |
-| КОНТЕКСТ tree shape, current business | `core/tree/contextPanel.ts` (`buildContextPanel`, `findCurrentBusiness`) |
+| Rules of resolution: tickets workspace, owner of a ticket, workspace of a ticket, who works on whose tickets, workspace of a window, home of the bin | `core/workspaces.ts` (`ticketsWorkspaceOf`, `ownerOfTicketPath`, `ticketWorkspace`, `worksOnTicketsOf`, `windowWorkspace`, `binHome`) |
+| The registry for commands registered apart from the views | `vscode/registry.ts` (`getWorkspaces`, `getRootFolders`) |
+| Workspace tree logic («Все воркспейсы» view) | `core/tree/workspaceTree.ts`, `vscode/providers/WorkspaceTreeProvider.ts` |
+| ВОРКСПЕЙС view | `vscode/providers/WorkspacePanelProvider.ts` |
+| ВОРКСПЕЙС tree shape | `core/tree/workspacePanel.ts` (`buildWorkspacePanel`) |
 | Sidebar state (context keys) | `core/sidebar-state.ts` |
-| Workspace generation | `core/workspace.ts` (`writeContextWithReposWorkspace`) |
-| Copy @-path command | `vscode/commands/copyAtPath.ts`, `core/pathUtils.ts` (`formatTicketReference`, `formatBusinessReference`, `formatAtReference`) |
+| Workspace window generation | `core/workspace.ts` (`workspaceWindowFolders`, `WorkspaceManager.writeWorkspaceFile`) |
+| Copy @-path command | `vscode/commands/copyAtPath.ts`, `core/pathUtils.ts` (`formatTicketReference`, `formatWorkspaceReference`, `formatAtReference`) |
 | Intent name, row text, notepad heading | `core/intents/naming.ts` (`rowText`) |
-| Intent and business window by workspace-file path, business key, program folder name | `core/intents/window.ts` |
+| Intent and workspace window by workspace-file path, identity of a window, workspace key, program folder name | `core/intents/window.ts` (`windowIdentityOf`) |
 | Row icon picture, row colour address | `core/intents/rowIcon.ts`, `vscode/providers/rowLook.ts` |
 | The runtime for commands registered apart from it | `vscode/intents/current.ts` |
-| Window markers, reservations, order of active intents | `core/intents/markers.ts` (`MarkerStore`, `splitMarkers`) |
+| Window markers, reservations, order of active intents | `core/intents/markers.ts` (`MarkerStore`, `splitMarkers`, `serializeMarker`) |
 | Active windows from markers, their order, row text, linger | `core/intents/active.ts` (`orderActive`, `reorderActive`, `activeRowText`) |
 | Window colour, theme colour ids | `core/intents/colors.ts` (`chooseIntentColor`, `intentColorId`) |
-| Intent workspace file, colour block, colour of a business window | `core/intents/workspaceFile.ts` (`planIntentWorkspace`, `windowColorBlock`, `planBusinessColor`), `core/jsonc.ts` |
-| Ticket folders, frontmatter, move between shelves, `context.json` icon | `core/intents/tickets.ts` (`TicketReader`, `resolveTicketNow`, `readBusinessManifest`) — reading only; creating a ticket and moving it between shelves is the Backend's, through `core/intents/ticketService.ts` (`ServerTicketService` → `POST /tickets/{action}`) |
+| Intent workspace file and its folders, colour block, colour of a workspace window | `core/intents/workspaceFile.ts` (`ticketWindowFolders`, `planIntentWorkspace`, `windowColorBlock`, `planWorkspaceColor`), `core/jsonc.ts` |
+| Ticket folders, frontmatter, move between shelves, the name, icon and code of a workspace | `core/intents/tickets.ts` (`TicketReader`, `resolveTicketNow`, `readWorkspaceManifest`) — reading only; creating a ticket and moving it between shelves is the Backend's, through `core/intents/ticketService.ts` (`ServerTicketService` → `POST /tickets/{action}`) |
 | Bin layout and drop decision | `core/intents/binTree.ts` (`buildBinTree`, `decideBinDrop`) |
 | Remembered order (both views) | `core/intents/order.ts`, `core/intents/binOrder.ts` |
 | Notepad heading decision | `core/intents/notepad.ts` (`planNotepadFix`) |
 | Intents state of a window (own marker, watcher) | `vscode/intents/IntentsRuntime.ts` |
-| Worktrees of a ticket window: composition, check of an open window | `core/intents/worktrees.ts` (`repoFolders`, `reconcileFolders`, `folderEdit`), `core/intents/worktreeSync.ts` (`WorktreeSync`), `vscode/intents/worktreeSync.ts` (`watchWorktrees`) |
+| The ticket folder and the worktrees of a ticket window: composition, check of an open window | `core/intents/worktrees.ts` (`repoFolders`, `reconcileFolders`, `isTicketFolderOf`, `folderEdit`), `core/intents/worktreeSync.ts` (`WorktreeSync`), `vscode/intents/worktreeSync.ts` (`watchWorktrees`) |
 | «Активная Работа» / Корзина views | `vscode/providers/IntentsProvider.ts`, `vscode/providers/BinProvider.ts` |
 | Board of tickets, its watcher, joined readings | `core/intents/board.ts`, `vscode/intents/boardWatch.ts`, `core/intents/coalesce.ts` |
 | Intent commands | `vscode/commands/intents.ts` (`BinActions`, `switchToIntent`); `vscode/commands/openTicket.ts` (`TicketOpener`) |
-| Linked business preview / return | `vscode/intents/businessViews.ts` (`BusinessViews`) |
-| Business repo preparation | `vscode/commands/businessRepos.ts` |
+| Linked workspace preview / return | `vscode/intents/workspaceViews.ts` (`WorkspaceViews`) |
+| Workspace repo preparation | `vscode/commands/workspaceRepos.ts` |
 | Notepad at window start | `vscode/intents/notepad.ts` |
 | Tree decorations (separators, window colours) | `vscode/providers/TreeDecorationProvider.ts` |
 | Colour of the notepad's name on its tab | `vscode/providers/NotepadDecorationProvider.ts` |
@@ -640,4 +683,4 @@ Extension is a thin UI client — no backend bundling. Host handles backend depl
 | Work view: commands on files, drop, import | `vscode/work/workCommands.ts` (`WorkActions`), `vscode/work/workDisk.ts` |
 | Work view: registration and the table of commands | `vscode/work/registerWorkView.ts` |
 | One-line notices | `vscode/notify.ts` (`say`, `inform`) |
-| Entity types in Extension | `core/api-client.ts` → `ContextEntity` type |
+| Entity types in Extension | `core/api-client.ts` → `WorkspaceEntity` type |

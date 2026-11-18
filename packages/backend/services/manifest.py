@@ -1,15 +1,19 @@
-"""Strict v4 context-manifest reader.
+"""Strict reader of a workspace's declarations: `context.json` (v4) and `INDEX.md`.
 
-Backend is a strict reader of `context.json` (schema v4). All migration —
-including upgrades from legacy v1 (`business.json` / `stream.json` /
-`product.json`), v2→v3 (`git_url` → `git_repos`) and v3→v4 (drop
-`workspace_config`) — is owned by Host on startup. Backend never writes manifests.
+A workspace is a folder with `context.json`. Its declarations live in two files:
 
-v3 introduced multi-repo terminal contexts via the `git_repos` map
-(alias → URL). v4 drops `workspace_config` (workspace assembly is now always
-context-first) and adds per-context deployment declarations: `skills` (a list
-of @-paths), `system_prompt` (a single @-path), and `ticket_code` — the
-business's three-letter ticket code.
+- `context.json`, schema v4: `meta`, `git_repos`, `reference_repos`,
+  `description`, and the deployment declarations `skills` (a list of
+  @-paths) and `system_prompt` (a single @-path). All migration of this file
+  (legacy v1 `business.json` / `stream.json` / `product.json`, v2→v3
+  `git_url` → `git_repos`, v3→v4 drop of `workspace_config`) is owned by Host.
+- the YAML frontmatter of the workspace's `INDEX.md`: `name` (required),
+  `icon`, and `ticket-code` — a three-letter code of the workspace's own
+  tickets (`DUE`), `inherit` (the workspace works on the tickets of its
+  nearest ancestor that has a code of its own), or absent (no tickets).
+
+`name`, `icon` and `ticket_code` are no longer read from `context.json`.
+Backend never writes either file.
 """
 
 from __future__ import annotations
@@ -19,12 +23,18 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from description import read_frontmatter
+
 
 MANIFEST_FILENAME = "context.json"
+INDEX_FILENAME = "INDEX.md"
 TARGET_VERSION = 4
 
-# A business's ticket code: exactly three uppercase Latin letters (`DUE`).
+# A workspace's own ticket code: exactly three uppercase Latin letters (`DUE`).
 TICKET_CODE_RE = re.compile(r"[A-Z]{3}")
+# `ticket-code: inherit`: the workspace's tickets are those of its nearest
+# ancestor with a code of its own.
+INHERIT = "inherit"
 
 
 @dataclass
@@ -38,25 +48,45 @@ class Manifest:
     description: str | None = None
     skills: list[str] | None = None
     system_prompt: str | None = None
+    # `ticket-code` as written: a code (`DUE`), `inherit`, or None.
     ticket_code: str | None = None
+
+    @property
+    def own_ticket_code(self) -> str | None:
+        """The workspace's own ticket code; None for `inherit` or no code."""
+        return self.ticket_code if self.ticket_code and self.ticket_code != INHERIT else None
+
+    @property
+    def inherits_tickets(self) -> bool:
+        return self.ticket_code == INHERIT
 
 
 def read_manifest(
     folder: Path | str | None,
     errors: list[dict] | None = None,
 ) -> Manifest | None:
-    """Read and parse `context.json` at `folder`.
+    """Read a workspace's declarations: `context.json` and the frontmatter of `INDEX.md`.
 
     Returns:
-        Manifest on successful v4 parse.
-        None when file is absent (not an error), invalid JSON, or version != 4.
+        Manifest when `context.json` is a valid v4 manifest and `INDEX.md`
+        names the workspace.
+        None when `context.json` is absent (not an error: the folder is not a
+        workspace), invalid, of another version, or when `INDEX.md` gives no
+        `name`.
 
     Errors (when `errors` list provided):
-        - `invalid_manifest`: file present but not parseable as JSON / wrong shape.
-        - `unrecognized_manifest_version`: file present but `version` is not 4.
-        - `invalid_ticket_code`: `ticket_code` is not three uppercase Latin
-          letters. Only the field is dropped; the manifest stays valid, because
-          a typo in the code must not unregister the whole business.
+        - `invalid_manifest`: `context.json` present but not parseable as JSON
+          or of the wrong shape.
+        - `unrecognized_manifest_version`: `version` is not 4.
+        - `missing_workspace_name`: the folder has `context.json`, but its
+          `INDEX.md` is missing, has no frontmatter, or its frontmatter has
+          no `name`.
+        - `invalid_workspace_index`: the frontmatter of `INDEX.md` can't be
+          read, or `name` / `icon` has the wrong type. A bad `icon` is
+          dropped and the workspace stays registered.
+        - `invalid_ticket_code`: `ticket-code` is neither three uppercase
+          Latin letters nor `inherit`. Only the field is dropped, because a
+          typo in the code must not unregister the whole workspace.
 
     Backend never writes manifests; upgrades happen in Host.
     """
@@ -103,25 +133,6 @@ def read_manifest(
                     f"backend only reads version={TARGET_VERSION}"
                 ),
             })
-        return None
-
-    # Strict shape validation. Strict reader: silent coercion of malformed
-    # shape (e.g. missing `name`) would let the scanner fall back to the
-    # folder name and silently register a context the user never declared.
-    name = data.get("name")
-    if not isinstance(name, str) or not name.strip():
-        _record_invalid(
-            errors, manifest_path, folder,
-            f"`name` must be a non-empty string, got {name!r}",
-        )
-        return None
-
-    icon = data.get("icon")
-    if icon is not None and not isinstance(icon, str):
-        _record_invalid(
-            errors, manifest_path, folder,
-            f"`icon` must be a string when present, got {type(icon).__name__}",
-        )
         return None
 
     meta_raw = data.get("meta", False)
@@ -218,7 +229,10 @@ def read_manifest(
     if not ok:
         return None
 
-    ticket_code = _read_ticket_code(data, errors, manifest_path, folder)
+    fields = _read_index_fields(Path(folder), errors)
+    if fields is None:
+        return None
+    name, icon, ticket_code = fields
 
     return Manifest(
         version=version,
@@ -303,36 +317,70 @@ def _read_at_path_string(
     return None, False
 
 
-def _read_ticket_code(
-    data: dict,
+def _read_index_fields(
+    folder: Path,
     errors: list[dict] | None,
-    manifest_path: Path,
-    folder: Path | str,
-) -> str | None:
-    """Parse the optional `ticket_code` field (`"DUE"`).
+) -> tuple[str, str | None, str | None] | None:
+    """(name, icon, ticket-code) from the frontmatter of the workspace's `INDEX.md`.
 
-    Field-level: an invalid value is reported as `invalid_ticket_code` and
-    dropped, the rest of the manifest is kept.
+    None when there is no usable `name`: a strict reader must not fall back
+    to the folder name and register a workspace nobody named.
     """
-    raw = data.get("ticket_code")
-    if raw is None:
+    index_path = folder / INDEX_FILENAME
+
+    def report(reason_code: str, detail: str) -> None:
+        if errors is not None:
+            errors.append({
+                "path": str(index_path),
+                "reason_code": reason_code,
+                "description": f"INDEX.md of the workspace at {folder}: {detail}",
+            })
+
+    try:
+        fields = read_frontmatter(index_path)
+    except FileNotFoundError:
+        report("missing_workspace_name",
+               "the file is missing; a folder with context.json needs an INDEX.md "
+               "whose frontmatter gives the workspace's `name`")
         return None
-    if isinstance(raw, str) and TICKET_CODE_RE.fullmatch(raw):
-        return raw
-    if errors is not None:
-        errors.append({
-            "path": str(manifest_path),
-            "reason_code": "invalid_ticket_code",
-            "description": (
-                f"context.json at {folder}: `ticket_code` must be three uppercase "
-                f"Latin letters, got {raw!r}; field ignored"
-            ),
-        })
-    return None
+    except (OSError, UnicodeError, ValueError) as e:
+        report("invalid_workspace_index", f"the frontmatter can't be read: {e}")
+        return None
+    if fields is None:
+        report("missing_workspace_name",
+               "no frontmatter; it must give the workspace's `name`")
+        return None
+
+    name = fields.get("name")
+    if name is None:
+        report("missing_workspace_name", "the frontmatter has no `name`")
+        return None
+    if not isinstance(name, str) or not name.strip():
+        report("invalid_workspace_index",
+               f"`name` must be a non-empty string, got {name!r}")
+        return None
+
+    icon = fields.get("icon")
+    if icon is not None and not isinstance(icon, str):
+        report("invalid_workspace_index",
+               f"`icon` must be a string when present, got {icon!r}; field ignored")
+        icon = None
+
+    ticket_code = fields.get("ticket-code")
+    if ticket_code is not None and not (
+        isinstance(ticket_code, str)
+        and (TICKET_CODE_RE.fullmatch(ticket_code) or ticket_code == INHERIT)
+    ):
+        report("invalid_ticket_code",
+               f"`ticket-code` must be three uppercase Latin letters or `{INHERIT}`, "
+               f"got {ticket_code!r}; field ignored")
+        ticket_code = None
+
+    return name, icon or None, ticket_code
 
 
 def read_reference_repos(folder: Path | str | None) -> dict[str, str] | None:
-    """Return `{name: url}` from the context's manifest, or None if absent."""
+    """Return `{name: url}` from the workspace's manifest, or None if absent."""
     manifest = read_manifest(folder)
     if not manifest or not manifest.reference_repos:
         return None
@@ -340,7 +388,7 @@ def read_reference_repos(folder: Path | str | None) -> dict[str, str] | None:
 
 
 def read_git_repos(folder: Path | str | None) -> dict[str, str] | None:
-    """Return `{alias: url}` from the context's manifest, or None if absent."""
+    """Return `{alias: url}` from the workspace's manifest, or None if absent."""
     manifest = read_manifest(folder)
     if not manifest or not manifest.git_repos:
         return None

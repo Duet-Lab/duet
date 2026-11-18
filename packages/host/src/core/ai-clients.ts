@@ -21,7 +21,7 @@ export type { AgentStatus, AgentCheckedFile, AgentIssue, AgentInfo } from '../sh
 
 /** Description of the shared platform output style. */
 const OUTPUT_STYLE_DESCRIPTION =
-  'Duet platform instructions: workspace orientation, business context, tools, and knowledge persistence.'
+  'Duet platform instructions: workspace orientation, workspaces and tickets, tools, and knowledge persistence.'
 
 /**
  * Wrap a string for safe use as a YAML frontmatter scalar.

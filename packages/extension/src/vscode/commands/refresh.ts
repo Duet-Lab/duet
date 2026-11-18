@@ -1,30 +1,30 @@
 import * as vscode from 'vscode';
-import { DuetApiClient, ContextEntity } from '../../core/api-client';
+import { DuetApiClient, WorkspaceEntity } from '../../core/api-client';
 
 /**
- * Trigger backend scan and load fresh contexts.
+ * Trigger backend scan and load fresh workspaces.
  *
- * Flow: apiClient.scan() → apiClient.contexts().
- * Returns fresh contexts for updating providers.
+ * Flow: apiClient.scan() → apiClient.workspaces().
+ * Returns fresh workspaces for updating providers.
  */
-export async function refreshFromBackend(apiClient: DuetApiClient): Promise<ContextEntity[]> {
+export async function refreshFromBackend(apiClient: DuetApiClient): Promise<WorkspaceEntity[]> {
     // 1. Trigger backend scan
     await apiClient.scan();
 
-    // 2. Load fresh contexts
-    const { contexts } = await apiClient.contexts();
+    // 2. Load fresh workspaces
+    const { workspaces } = await apiClient.workspaces();
 
-    return contexts;
+    return workspaces;
 }
 
 /**
- * Dump contexts data to Output channel (debug command).
+ * Dump workspaces data to Output channel (debug command).
  */
 export async function dumpIndex(apiClient: DuetApiClient): Promise<void> {
     try {
-        const { contexts } = await apiClient.contexts();
+        const { workspaces } = await apiClient.workspaces();
         const output = vscode.window.createOutputChannel('Duet Index');
-        output.appendLine(JSON.stringify(contexts, null, 2));
+        output.appendLine(JSON.stringify(workspaces, null, 2));
         output.show();
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to dump index: ${error}`);

@@ -28,24 +28,25 @@ import {
 } from '../core/deploy'
 import { appendBackendLog, getBackendStatus, startBackend, stopBackend } from '../core/backend'
 import { fixAgentIssue } from '../core/ai-clients'
+import { listBackendSources } from '../core/backend-sources'
 import type { HostSync } from '../core/host-sync'
 import {
-  addRootContextFolder,
-  getResolvedRootContextFolders,
-  saveRootContextFolders,
+  addRootWorkspaceFolder,
+  getResolvedRootWorkspaceFolders,
+  saveRootWorkspaceFolders,
   triggerScan,
   readCachedScan,
-  readCachedContexts
-} from '../core/root-contexts'
+  readCachedWorkspaces
+} from '../core/root-workspaces'
 import type {
   AgentInfo,
   AppState,
-  RootContextEntry,
+  RootWorkspaceEntry,
   DeployStatus,
   BackendStatus,
   PythonStatus,
   ScanResult,
-  ContextsCache,
+  WorkspacesCache,
   MigrationResult
 } from '../shared/types'
 import type { ChildProcess } from 'child_process'
@@ -257,6 +258,25 @@ export const setupIpcHandlers = (context: IpcHandlersContext): void => {
   // Переключить deploy channel (dev / prod)
   ipcMain.handle('config:set-deploy-channel', (_event, channel: 'dev' | 'prod') => {
     setMachineConfigKey('deployChannel', channel)
+    context.updateAppState()
+    return context.getAppState()
+  })
+
+  // DEV backend sources: the main clone and the worktrees of ticket branches beside it
+  ipcMain.handle('config:get-backend-sources', () => {
+    const current = readMachineConfig()?.devBackendPath
+    const path = typeof current === 'string' ? current : undefined
+    return { current: path ?? null, sources: listBackendSources(path) }
+  })
+
+  // Choose the DEV backend source; only a listed one is accepted
+  ipcMain.handle('config:set-dev-backend-path', (_event, path: string) => {
+    const current = readMachineConfig()?.devBackendPath
+    const sources = listBackendSources(typeof current === 'string' ? current : undefined)
+    if (!sources.some((s) => s.path === path)) {
+      throw new Error('Этот источник бэкенда не найден рядом с текущим')
+    }
+    setMachineConfigKey('devBackendPath', path)
     context.updateAppState()
     return context.getAppState()
   })
@@ -477,27 +497,29 @@ export const setupIpcHandlers = (context: IpcHandlersContext): void => {
     return fixed
   })
 
-  // === Root Contexts ===
+  // === Root Workspaces ===
 
-  ipcMain.handle('root-contexts:get', (): RootContextEntry[] => {
-    return getResolvedRootContextFolders()
+  ipcMain.handle('root-workspaces:get', (): RootWorkspaceEntry[] => {
+    return getResolvedRootWorkspaceFolders()
   })
 
-  ipcMain.handle('root-contexts:save', async (_event, folders: string[]): Promise<void> => {
-    saveRootContextFolders(folders)
+  ipcMain.handle('root-workspaces:save', async (_event, folders: string[]): Promise<void> => {
+    saveRootWorkspaceFolders(folders)
     // Removing/reordering may clear unresolved-alias warnings; re-sweep so the renderer
-    // and tray see the fresh state. Idempotent on already-current files (settings/machine v2,
-    // context.json v3) — review issue 6.
+    // and tray see the fresh state. Idempotent on already-current files (settings v3,
+    // machine v2, context.json v4) — review issue 6.
     await context.runMigrations()
     context.updateAppState()
   })
 
   ipcMain.handle(
-    'root-contexts:add',
-    async (_event, absolutePath: string): Promise<RootContextEntry[]> => {
-      const result = addRootContextFolder(absolutePath)
-      // Sweep picks up legacy/future manifests inside the new folder and self-heals an
-      // empty root. Cheap on existing v3 context.json roots. updateAppState pushes the new
+    'root-workspaces:add',
+    async (_event, absolutePath: string): Promise<RootWorkspaceEntry[]> => {
+      // Throws (root not added) when the new workspace's INDEX.md / context.json can't be
+      // written; the renderer shows the error.
+      const result = addRootWorkspaceFolder(absolutePath)
+      // Sweep picks up legacy/future manifests inside the new folder. Cheap on existing
+      // v4 context.json roots. updateAppState pushes the new
       // tray severity (review issue 6: previously skipped, leaving stale warning state).
       await context.runMigrations()
       context.updateAppState()
@@ -505,21 +527,21 @@ export const setupIpcHandlers = (context: IpcHandlersContext): void => {
     }
   )
 
-  ipcMain.handle('root-contexts:scan', async (): Promise<ScanResult> => {
+  ipcMain.handle('root-workspaces:scan', async (): Promise<ScanResult> => {
     const port = readPort()
     return triggerScan(port)
   })
 
-  ipcMain.handle('root-contexts:get-cached-scan', (): ScanResult | null => {
+  ipcMain.handle('root-workspaces:get-cached-scan', (): ScanResult | null => {
     const state = context.getAppState()
     if (!state.duetDataPath) return null
     return readCachedScan(state.duetDataPath)
   })
 
-  ipcMain.handle('root-contexts:get-cached-contexts', (): ContextsCache | null => {
+  ipcMain.handle('root-workspaces:get-cached-workspaces', (): WorkspacesCache | null => {
     const state = context.getAppState()
     if (!state.duetDataPath) return null
-    return readCachedContexts(state.duetDataPath)
+    return readCachedWorkspaces(state.duetDataPath)
   })
 
   // === Schema migrations ===

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/naming-convention */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ContextEntity } from '../../core/api-client';
+import { WorkspaceEntity } from '../../core/api-client';
 import { ActiveIntent } from '../../core/intents/active';
 import { BinNode } from '../../core/intents/binTree';
 import { TicketBoard } from '../../core/intents/board';
@@ -68,7 +68,7 @@ function active(ticket: string, name: string, overrides: Partial<ActiveIntent> =
         folder: `${ticket}_${name.replace(/ /g, '')}`,
         name,
         icon: '🚀',
-        business: 'TestLab',
+        workspace: 'TestLab',
         workspaceFile: `/data/workspaces/TestLab/${ticket}.code-workspace`,
         color: '#1f6f43',
         own: false,
@@ -77,18 +77,18 @@ function active(ticket: string, name: string, overrides: Partial<ActiveIntent> =
     };
 }
 
-function businessRow(name: string, overrides: Partial<ActiveIntent> = {}): ActiveIntent {
+function workspaceRow(name: string, overrides: Partial<ActiveIntent> = {}): ActiveIntent {
     return active(`@${name}`, name, {
-        subject: 'business', folder: '', workspaceFile: `/data/workspaces/${name}.code-workspace`, ...overrides
+        subject: 'workspace', folder: '', workspaceFile: `/data/workspaces/${name}.code-workspace`, ...overrides
     });
 }
 
 function ticket(
-    folder: string, shelf: 'work' | 'backlog', workType: string, parent: string | null, icon = ''
+    folder: string, shelf: 'work' | 'backlog', ticketType: string, parent: string | null, icon = ''
 ): TicketInfo {
     const number = folder.split('_')[0];
     return {
-        number, folder, name: folder.slice(number.length + 1), path: `${B}/${shelf}/${folder}`, shelf, workType, routineType: null, parent, icon
+        number, folder, name: folder.slice(number.length + 1), path: `${B}/${shelf}/${folder}`, shelf, ticketType, routineType: null, parent, icon
     };
 }
 
@@ -130,7 +130,7 @@ function iconOf(item: vscode.TreeItem): string {
 
 describe('IntentsProvider', () => {
     const rows = [
-        businessRow('TestLab', { color: '#8f1f3f' }),
+        workspaceRow('TestLab', { color: '#8f1f3f' }),
         active('DUE017', 'Intent Switcher', { own: true, icon: '🧰' }),
         active('DUE008', 'Core Protocols', { color: '#1f4f8f' })
     ];
@@ -141,7 +141,7 @@ describe('IntentsProvider', () => {
         expect(provider().getChildren(rows[0])).toEqual([]);
     });
 
-    it('intent row: icon at the left edge, its number and the name, the ticket number after it — no business name', () => {
+    it('intent row: icon at the left edge, its number and the name, the ticket number after it — no workspace name', () => {
         const item = provider().getTreeItem(rows[2]);
         expect(item.label).toEqual({ label: '3: Core Protocols', highlights: [] });
         expect(item.description).toBe('DUE008');
@@ -149,17 +149,17 @@ describe('IntentsProvider', () => {
         expect(item.id).toBe('intent:DUE008');
     });
 
-    it('business row: the emoji, the name and `biz` — no ticket number', () => {
+    it('workspace row: the emoji, the name and `ws` — no ticket number', () => {
         const item = provider().getTreeItem(rows[0]);
         expect(item.label).toEqual({ label: '1: TestLab', highlights: [] });
-        expect(item.description).toBe('biz');
+        expect(item.description).toBe('ws');
         expect(iconOf(item)).toBe('🚀');
-        expect(item.contextValue).toBe('business');
+        expect(item.contextValue).toBe('workspace');
     });
 
-    it('every row is numbered from 1 as shown, the way tabs are — the business window too; rows past the ninth carry no number', () => {
+    it('every row is numbered from 1 as shown, the way tabs are — the workspace window too; rows past the ninth carry no number', () => {
         const many = [
-            businessRow('TestLab'),
+            workspaceRow('TestLab'),
             ...Array.from({ length: 10 }, (_, i) => active(`DUE0${10 + i}`, `Task ${i}`))
         ];
         const p = new IntentsProvider(asRuntime(fakeRuntime(many)));
@@ -171,7 +171,7 @@ describe('IntentsProvider', () => {
     });
 
     it('the numbers follow the order the runtime gives now: after a new order the same rows show new numbers', () => {
-        const runtime = fakeRuntime([businessRow('TestLab'), active('DUE017', 'Intent Switcher'), active('DUE008', 'Core Protocols')]);
+        const runtime = fakeRuntime([workspaceRow('TestLab'), active('DUE017', 'Intent Switcher'), active('DUE008', 'Core Protocols')]);
         const p = new IntentsProvider(asRuntime(runtime));
         const labels = () => runtime.rows.map(row => (p.getTreeItem(row).label as vscode.TreeItemLabel).label);
         expect(labels()).toEqual(['1: TestLab', '2: Intent Switcher', '3: Core Protocols']);
@@ -217,7 +217,7 @@ describe('IntentsProvider', () => {
     });
 
     describe('drag and drop', () => {
-        const three = [businessRow('TestLab'), active('A', 'a'), active('B', 'b'), active('C', 'c')];
+        const three = [workspaceRow('TestLab'), active('A', 'a'), active('B', 'b'), active('C', 'c')];
 
         it('accepts only rows of its own view', () => {
             const p = new IntentsProvider(asRuntime(fakeRuntime(three)));
@@ -242,7 +242,7 @@ describe('IntentsProvider', () => {
             expect(runtime.saveActiveOrder).toHaveBeenCalledWith(['@TestLab', 'B', 'C', 'A']);
         });
 
-        it('a business row is dragged like any other, and an intent may stand before it', async () => {
+        it('a workspace row is dragged like any other, and an intent may stand before it', async () => {
             const runtime = fakeRuntime(three);
             const p = new IntentsProvider(asRuntime(runtime));
 
@@ -285,9 +285,9 @@ describe('IntentsProvider', () => {
 });
 
 describe('BinProvider', () => {
-    const business: ContextEntity = {
-        id: '1', type: 'context', name: 'TestLab', icon: '🧪', path: 'TestLab',
-        absolute_path: B, parent_id: null, meta: false, git_repos: null
+    const lab: WorkspaceEntity = {
+        id: '1', type: 'workspace', name: 'TestLab', icon: '🧪', path: 'TestLab',
+        absolute_path: B, parent_id: null, meta: false, git_repos: null, ticket_code: 'DUE'
     };
     const tickets = [
         ticket('DUEX02_WorkDoctrine', 'work', 'program', null, '📜'),
@@ -315,7 +315,7 @@ describe('BinProvider', () => {
     /** The view over a board that reads the fake runtime's tickets; the order file is absent. */
     function binOf(runtime: ReturnType<typeof fakeRuntime>) {
         const board = new TicketBoard(runtime.tickets as unknown as TicketReader, createMemFs().fs);
-        return { provider: new BinProvider([business], asRuntime(runtime), board), board };
+        return { provider: new BinProvider([lab], asRuntime(runtime), board), board };
     }
 
     async function loaded(openTickets: ActiveIntent[] = []) {
@@ -325,7 +325,7 @@ describe('BinProvider', () => {
         return { provider, runtime, board };
     }
 
-    it('is empty in a window without a business folder, and reads nothing', async () => {
+    it('is empty in a window whose first folder is not a workspace, and reads nothing', async () => {
         (vscode.workspace as unknown as { workspaceFolders: unknown }).workspaceFolders = [{ uri: { fsPath: '/elsewhere' } }];
         const runtime = fakeRuntime([], tickets);
         const { provider, board } = binOf(runtime);
@@ -420,12 +420,12 @@ describe('BinProvider', () => {
         const backlogItem = provider.getTreeItem(backlog);
         expect(backlogItem.label).toBe('Backlog');
         expect(backlogItem.collapsibleState).toBe(vscode.TreeItemCollapsibleState.Collapsed);
-        // toggled by the arrow only, as in «Все Бизнесы»
+        // toggled by the arrow only, as in «Все воркспейсы»
         expect(backlogItem.command).toMatchObject({ command: 'duet.selectNode' });
         expect(provider.getParent(backlog)).toBe(root[0]);
     });
 
-    it('a ticket without an icon gets no emoji from its business — only the empty picture that keeps the column', async () => {
+    it('a ticket without an icon gets no emoji from its workspace — only the empty picture that keeps the column', async () => {
         const { provider } = await loaded();
         expect(iconOf(provider.getTreeItem(find(provider.getChildren(), 'DUE011')))).toBe('');
     });
@@ -456,14 +456,14 @@ describe('BinProvider', () => {
         expect(other.resourceUri).toBeDefined();
     });
 
-    it('the backdrop also marks a container when the window is opened on it; in a business window no row has it', async () => {
+    it('the backdrop also marks a container when the window is opened on it; in a workspace window no row has it', async () => {
         const onProgram = await loaded([active('DUEX02', 'x', { own: true })]);
         const container = onProgram.provider.getTreeItem(find(onProgram.provider.getChildren(), 'DUEX02')).label as vscode.TreeItemLabel;
         expect(container.label.slice(...container.highlights![0])).toBe('WorkDoctrine');
 
-        const inBusiness = await loaded([businessRow('TestLab', { own: true }), active('DUE008', 'x')]);
+        const inWorkspace = await loaded([workspaceRow('TestLab', { own: true }), active('DUE008', 'x')]);
         for (const number of ['DUE008', 'DUE011', 'DUE001', 'DUEX02']) {
-            const label = inBusiness.provider.getTreeItem(find(inBusiness.provider.getChildren(), number)).label;
+            const label = inWorkspace.provider.getTreeItem(find(inWorkspace.provider.getChildren(), number)).label;
             expect((label as vscode.TreeItemLabel).highlights).toEqual([]);
         }
     });
@@ -520,7 +520,7 @@ describe('BinProvider', () => {
         await vi.waitFor(() => expect(runtime.tickets.readShelves).toHaveBeenCalledTimes(2));
     });
 
-    it('hands an own drag over as row keys and rejects a stale drag after business switching', async () => {
+    it('hands an own drag over as row keys and rejects a stale drag after workspace switching', async () => {
         const { provider, board } = await loaded();
         const onDrop = vi.fn(async () => undefined);
         provider.onDrop = onDrop;
@@ -535,8 +535,8 @@ describe('BinProvider', () => {
         expect(onDrop).toHaveBeenLastCalledWith(source.key, null);
         await provider.handleDrop(target, transfer({ unrelated: true }));
         expect(onDrop).toHaveBeenCalledTimes(2);
-        board.setBusiness('/drive/Other');
-        board.setBusiness(B);
+        board.setWorkspace('/drive/Other');
+        board.setWorkspace(B);
         await board.reload();
         await provider.handleDrop(undefined, data);
         expect(onDrop).toHaveBeenCalledTimes(2);
@@ -544,26 +544,26 @@ describe('BinProvider', () => {
     });
 
     it('DUE019: preview is separate from the window; refresh and repeated selection work', async () => {
-        const other = { ...business, id: '2', name: 'Other', absolute_path: '/drive/Other' };
+        const other = { ...lab, id: '2', name: 'Other', absolute_path: '/drive/Other' };
         const runtime = fakeRuntime([], tickets);
         const { provider, board } = binOf(runtime);
-        provider.updateContexts([business, other]);
-        expect(provider.showBusiness(2)).toBe(true);
-        expect(provider.currentBusiness()).toBe(other);
-        expect(provider.windowBusiness()).toBe(business);
-        expect(provider.isForeignBusiness()).toBe(true);
-        expect(board.getBusinessPath()).toBe('/drive/Other');
-        // Selecting a business while hidden reads nothing.
+        provider.updateWorkspaces([lab, other]);
+        expect(provider.showWorkspace(2)).toBe(true);
+        expect(provider.shownWorkspace()).toBe(other);
+        expect(provider.homeWorkspace()).toBe(lab);
+        expect(provider.isForeignWorkspace()).toBe(true);
+        expect(board.getWorkspacePath()).toBe('/drive/Other');
+        // Selecting a workspace while hidden reads nothing.
         expect(runtime.tickets.readShelves).not.toHaveBeenCalled();
-        provider.updateContexts([business, { ...other, name: 'Renamed' }]);
-        expect(provider.currentBusiness()?.name).toBe('Renamed');
+        provider.updateWorkspaces([lab, { ...other, name: 'Renamed' }]);
+        expect(provider.shownWorkspace()?.name).toBe('Renamed');
         await provider.goHome();
-        expect(provider.isForeignBusiness()).toBe(false);
-        expect(provider.currentBusiness()?.name).toBe('TestLab');
-        expect(provider.showBusiness(2)).toBe(true);
-        provider.updateContexts([business]);
-        expect(provider.currentBusiness()).toBe(business);
-        expect(provider.showBusiness(999)).toBe(false);
+        expect(provider.isForeignWorkspace()).toBe(false);
+        expect(provider.shownWorkspace()?.name).toBe('TestLab');
+        expect(provider.showWorkspace(2)).toBe(true);
+        provider.updateWorkspaces([lab]);
+        expect(provider.shownWorkspace()).toBe(lab);
+        expect(provider.showWorkspace(999)).toBe(false);
         provider.dispose(); board.dispose();
     });
 
@@ -607,14 +607,14 @@ describe('NotepadDecorationProvider — the name of this window\'s notepad in th
         expect(colour(NOTE)).toBe('duet.intent.color2');
     });
 
-    it('a window without a palette colour, and a business window, colour nothing', () => {
+    it('a window without a palette colour, and a workspace window, colour nothing', () => {
         const plain = setup(ownIntent, [active('DUE017', 'x', { own: true, color: null })]);
         plain.provider.setNotepad(NOTE);
         expect(plain.colour(NOTE)).toBeUndefined();
 
-        const business = setup({ subject: 'business', key: '@TestLab' }, [businessRow('TestLab', { own: true })]);
-        business.provider.setNotepad(NOTE);
-        expect(business.colour(NOTE)).toBeUndefined();
+        const workspace = setup({ subject: 'workspace', key: '@TestLab' }, [workspaceRow('TestLab', { own: true })]);
+        workspace.provider.setNotepad(NOTE);
+        expect(workspace.colour(NOTE)).toBeUndefined();
     });
 });
 
@@ -623,7 +623,7 @@ describe('TreeDecorationProvider', () => {
     const colour = (path: string, scheme = 'duet-tree') =>
         (provider.provideFileDecoration({ scheme, path } as unknown as vscode.Uri)?.color as unknown as { id: string } | undefined)?.id;
 
-    it('greys the separators of «Все Бизнесы»', () => {
+    it('greys the separators of «Все воркспейсы»', () => {
         expect(colour('/separator/3')).toBe('disabledForeground');
     });
 

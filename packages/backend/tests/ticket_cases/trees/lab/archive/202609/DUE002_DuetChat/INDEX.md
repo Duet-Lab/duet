@@ -1,9 +1,8 @@
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 opened: 2026-09-01
 closed: 2026-09-16
-business-area:
 parent: null
 ---
 

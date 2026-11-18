@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/naming-convention -- vscode API names and repo aliases */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { ContextEntity } from '../../core/api-client';
+import { WorkspaceEntity } from '../../core/api-client';
 import { Paths } from '../../core/paths';
 import { TicketReader, parseTicketFrontmatter } from '../../core/intents/tickets';
 import { TicketService } from '../../core/intents/ticketService';
@@ -9,7 +9,7 @@ import { INTENT_CANON_VERSION, buildIntentWorkspaceText } from '../../core/inten
 import { TicketWorktree, WindowFolder, folderEdit, reconcileFolders, repoFolders } from '../../core/intents/worktrees';
 import { WorktreeSync, WorktreeSyncHost } from '../../core/intents/worktreeSync';
 import { TicketOpener } from '../../vscode/commands/openTicket';
-import { createMemFs } from './helpers/memFs';
+import { createMemFs, workspaceFiles } from './helpers/memFs';
 
 vi.mock('vscode', () => ({
     workspace: { workspaceFolders: [], onDidChangeWorkspaceFolders: () => ({ dispose: () => undefined }) },
@@ -17,12 +17,13 @@ vi.mock('vscode', () => ({
     commands: { executeCommand: vi.fn() },
     Uri: { file: (fsPath: string) => ({ fsPath }) }
 }));
-vi.mock('../../vscode/commands/businessRepos', () => ({
-    prepareBusinessRepos: async () => true, isSafeRepoName: () => true
+vi.mock('../../vscode/commands/workspaceRepos', () => ({
+    prepareWorkspaceRepos: async () => true, isSafeRepoName: () => true
 }));
 
 const REPOS = '/data/repos';
 const B = '/drive/Lab';
+const T = `${B}/work/DUE054_Branches`;
 const wt = (repo: string, number = 'DUE054', branch = 'DUE054_TicketBranches'): TicketWorktree =>
     ({ repo, path: `${REPOS}/${repo}.wt-${number}`, branch });
 const folder = (p: string, name?: string): WindowFolder => (name ? { path: p, name } : { path: p });
@@ -39,38 +40,38 @@ describe('the composition of a ticket window', () => {
         ]);
     });
 
-    it('puts a worktree of a repo the business does not declare after the last repo', () => {
+    it('puts a worktree of a repo the workspace does not declare after the last repo', () => {
         expect(repoFolders(['Duet'], [wt('Genesis'), wt('Duet')]).map(f => f.path)).toEqual([
             '../../repos/Duet.git', `${REPOS}/Duet.wt-DUE054`, `${REPOS}/Genesis.wt-DUE054`
         ]);
     });
 
-    it('writes canon 5 and the worktrees into the file, before the extra folders of a meta business', () => {
+    it('writes canon 6 and the worktrees into the file, before the extra folders of a meta workspace', () => {
         const text = buildIntentWorkspaceText({
-            businessPath: B, aliases: ['Duet'], worktrees: [wt('Duet')],
+            workspacePath: B, ticketPath: T, aliases: ['Duet'], worktrees: [wt('Duet')],
             extraFolders: [{ path: '/drive/Other', name: 'Other' }],
             ticketFolder: 'DUE054_BranchManagement', tabLabel: 'x'
         }, '#336699', ['#336699']);
         const data = JSON.parse(text);
-        expect(INTENT_CANON_VERSION).toBe(5);
-        expect(data.settings['duet.intent.canon']).toBe(5);
+        expect(INTENT_CANON_VERSION).toBe(6);
+        expect(data.settings['duet.intent.canon']).toBe(6);
         expect(data.folders).toEqual([
-            { path: B }, { path: '../../repos/Duet.git' },
+            { path: B }, { path: T }, { path: '../../repos/Duet.git' },
             { path: `${REPOS}/Duet.wt-DUE054`, name: 'Duet (DUE054_TicketBranches)' },
             { path: '/drive/Other', name: 'Other' }
         ]);
     });
 
-    it('a ticket without worktrees gets the same folders as before', () => {
-        const spec = { businessPath: B, aliases: ['Duet'], ticketFolder: 'DUE001_X', tabLabel: 'x' };
+    it('a ticket without worktrees gets its workspace, its folder and the repos', () => {
+        const spec = { workspacePath: B, ticketPath: T, aliases: ['Duet'], ticketFolder: 'DUE001_X', tabLabel: 'x' };
         expect(JSON.parse(buildIntentWorkspaceText(spec, '#336699', [])).folders)
-            .toEqual([{ path: B }, { path: '../../repos/Duet.git' }]);
+            .toEqual([{ path: B }, { path: T }, { path: '../../repos/Duet.git' }]);
     });
 
     it('reads git-branch-name from the frontmatter', () => {
-        expect(parseTicketFrontmatter('---\nwork-type: project\ngit-branch-name: DUE054_TicketBranches\n---\n').branch)
+        expect(parseTicketFrontmatter('---\nticket-type: project\ngit-branch-name: DUE054_TicketBranches\n---\n').branch)
             .toBe('DUE054_TicketBranches');
-        expect(parseTicketFrontmatter('---\nwork-type: project\n---\n').branch).toBeNull();
+        expect(parseTicketFrontmatter('---\nticket-type: project\n---\n').branch).toBeNull();
     });
 });
 
@@ -123,10 +124,12 @@ function fakeHost(over: Partial<WorktreeSyncHost> = {}) {
     const said: string[] = [];
     let named: TicketWorktree[] = [];
     let branch: string | null = 'DUE054_TicketBranches';
+    let place: string | null = T;
     const host: WorktreeSyncHost & { worktrees: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> } = {
         ticketNumber: 'DUE054', reposDir: REPOS,
         owned: async () => true,
         folders: () => folders,
+        ticketPlace: async () => place,
         branch: async () => branch,
         worktrees: vi.fn(async () => named),
         exists: async (p: string) => disk.has(p),
@@ -142,7 +145,8 @@ function fakeHost(over: Partial<WorktreeSyncHost> = {}) {
         get folders() { return folders; },
         set folders(value: WindowFolder[]) { folders = value; },
         set named(value: TicketWorktree[]) { named = value; },
-        set branch(value: string | null) { branch = value; }
+        set branch(value: string | null) { branch = value; },
+        set place(value: string | null) { place = value; }
     };
 }
 
@@ -278,61 +282,61 @@ describe('WorktreeSync', () => {
 });
 
 describe('TicketOpener: worktrees of the window being opened', () => {
-    const business: Pick<ContextEntity, 'name' | 'absolute_path' | 'git_repos' | 'reference_repos' | 'meta'> = {
+    const owner: Pick<WorkspaceEntity, 'name' | 'absolute_path' | 'git_repos' | 'reference_repos' | 'meta'> = {
         name: 'Lab', absolute_path: B, git_repos: { Duet: 'https://x/duet' }, reference_repos: null, meta: false
     };
     const workspace = '/data/workspaces/Lab/DUE054_Branches.code-workspace';
 
     function setup(index: string, worktrees?: TicketService['worktrees'], dirs: string[] = []) {
         const mem = createMemFs({
-            [`${B}/context.json`]: '{"version":4,"name":"Lab","ticket_code":"DUE"}',
+            ...workspaceFiles(B, { name: 'Lab', ticketCode: 'DUE' }),
             [`${B}/work/DUE054_Branches/INDEX.md`]: index
         }, dirs);
         const runtime = {
             tickets: new TicketReader(mem.fs),
             refresh: vi.fn(async () => undefined), getActive: () => [],
-            occupiedColors: () => [], reserve: vi.fn(async () => undefined),
+            occupiedColors: () => [], reserve: vi.fn(async () => undefined), hasFileOpen: () => false,
             inheritedIcon: async () => ''
         };
         const service: TicketService = { create: vi.fn(), move: vi.fn(), worktrees };
         const opener = new TicketOpener(new Paths('/data'), runtime as never, service, undefined, mem.fs);
         const open = async () => {
-            expect(await opener.open({ number: 'DUE054', folder: 'DUE054_Branches', shelf: 'work' }, business, false)).toBe(true);
+            expect(await opener.open({ number: 'DUE054', folder: 'DUE054_Branches', shelf: 'work' }, owner, false)).toBe(true);
             return JSON.parse(mem.files.get(workspace) as string).folders.map((f: WindowFolder) => f.path);
         };
         return { open, service };
     }
-    const branched = '---\nwork-type: project\ngit-branch-name: DUE054_TicketBranches\n---\n';
+    const branched = '---\nticket-type: project\ngit-branch-name: DUE054_TicketBranches\n---\n';
 
     it('a ticket without the field never asks the server', async () => {
         const worktrees = vi.fn();
-        const { open } = setup('---\nwork-type: project\n---\n', worktrees);
-        expect(await open()).toEqual([B, '../../repos/Duet.git']);
+        const { open } = setup('---\nticket-type: project\n---\n', worktrees);
+        expect(await open()).toEqual([B, T, '../../repos/Duet.git']);
         expect(worktrees).not.toHaveBeenCalled();
     });
 
     it('a ticket with the field gets the worktrees the server names', async () => {
         const { open } = setup(branched, async () => [wt('Duet'), wt('Genesis')],
             [wt('Duet').path, wt('Genesis').path]);
-        expect(await open()).toEqual([B, '../../repos/Duet.git', wt('Duet').path, wt('Genesis').path]);
+        expect(await open()).toEqual([B, T, '../../repos/Duet.git', wt('Duet').path, wt('Genesis').path]);
     });
 
     it('a worktree without its folder is left out and named', async () => {
         const { open } = setup(branched, async () => [wt('Duet')]);
-        expect(await open()).toEqual([B, '../../repos/Duet.git']);
+        expect(await open()).toEqual([B, T, '../../repos/Duet.git']);
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('нет на диске'));
     });
 
     it('a server that does not answer opens the window by its base and says so', async () => {
         const { open } = setup(branched, async () => { throw new Error('ECONNREFUSED'); });
-        expect(await open()).toEqual([B, '../../repos/Duet.git']);
+        expect(await open()).toEqual([B, T, '../../repos/Duet.git']);
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('сервер Duet не ответил'));
     });
 
     it('an unreadable INDEX.md opens the window by its base and says so', async () => {
-        const { open } = setup('---\nwork-type: project\n' + 'x: y\n'.repeat(600) + '---\n', async () => [wt('Duet')],
+        const { open } = setup('---\nticket-type: project\n' + 'x: y\n'.repeat(600) + '---\n', async () => [wt('Duet')],
             [wt('Duet').path]);
-        expect(await open()).toEqual([B, '../../repos/Duet.git']);
+        expect(await open()).toEqual([B, T, '../../repos/Duet.git']);
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('INDEX.md тикета не читается'));
     });
 });

@@ -1,4 +1,23 @@
-"""Tickets and businesses as they are on disk, and how to find them."""
+"""Tickets and their workspaces as they are on disk, and how to find them.
+
+Three rules decide which workspace a ticket belongs to; the extension applies
+the same ones:
+
+- The **tickets workspace** of a workspace W: W itself when its `INDEX.md`
+  gives a code of its own (`ticket-code: DUE`); with `ticket-code: inherit`
+  (W is a desk), the nearest ancestor in the registry with a code of its own,
+  never a desk or a workspace without a code in between (an error if there
+  is none); with no `ticket-code`, W has no tickets.
+- The **owner** of a ticket: the workspace on whose `work/`, `backlog/` or
+  `archive/` shelf the ticket's folder lies, found here by the code of its
+  number.
+- The **workspace of a ticket**: the one its `default-workspace` names when
+  that is the owner or one of its desks, otherwise its owner.
+
+Satellite work is not allowed: a ticket is worked on only in a workspace
+whose tickets workspace is its owner — the owner itself or one of its desks
+(`allowed_workspaces`).
+"""
 
 from __future__ import annotations
 
@@ -9,19 +28,20 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from services.manifest import MANIFEST_FILENAME, read_manifest
-from services.resolve_paths import ContextRef, TICKET_NUMBER_RE, list_ticket_folders
+from services.manifest import INDEX_FILENAME as WORKSPACE_INDEX, INHERIT, read_manifest
+from services.resolve_paths import WorkspaceRef, TICKET_NUMBER_RE, list_ticket_folders
 from services.tickets.branch_info import BranchFields, block_lines, record_fields
 from services.tickets.frontmatter import Frontmatter
-from services.tickets.naming import WORK_TYPE_BY_LETTER
+from services.tickets.naming import TICKET_TYPE_BY_LETTER
 
 INDEX_FILENAME = "INDEX.md"
 SHELVES = ("work", "backlog", "archive")
+DEFAULT_WORKSPACE_FIELD = "default-workspace"
 
-# Held while a business's folders are being read and for the whole of every
+# Held while a workspace's ticket folders are being read and for the whole of every
 # write. Without it, a read that overlaps a move can see the ticket in neither
 # place, or in both, and report a missing or duplicated ticket that isn't.
-# Reentrant because a write loads the business while holding it.
+# Reentrant because a write loads the tickets while holding it.
 _disk_lock = threading.RLock()
 # How long to wait for the lock. A read stalled on the drive keeps holding it,
 # and without a deadline every later operation would queue behind it forever.
@@ -48,12 +68,12 @@ class TicketError(Exception):
 class TicketEnv:
     """What every ticket operation is given instead of reaching for globals.
 
-    `contexts` are the registered businesses, `today` is the date in Duet's
+    `workspaces` are the registered workspaces, `today` is the date in Duet's
     time zone, and `repos` is `DuetData/repos`, where the clones and the
     tickets' worktrees live (None if it doesn't exist yet).
     """
 
-    contexts: list[ContextRef]
+    workspaces: list[WorkspaceRef]
     today: date
     repos: Path | None = None
 
@@ -70,16 +90,25 @@ class Ticket:
     read_error: str | None = None
     # False if the folder has no INDEX.md at all. That is a valid ticket.
     has_index: bool = True
+    # The folder of the workspace on whose shelves the ticket lies.
+    owner: Path | None = None
 
     @property
-    def work_type(self) -> str:
+    def ticket_type(self) -> str:
         letter = self.number[3] if self.number[3].isalpha() else ""
-        return WORK_TYPE_BY_LETTER.get(letter, "ticket")
+        return TICKET_TYPE_BY_LETTER.get(letter, "ticket")
 
     @property
     def is_group(self) -> bool:
         """Whether this ticket can be a parent (a program or a routine)."""
-        return self.work_type in ("program", "routine")
+        return self.ticket_type in ("program", "routine")
+
+    @property
+    def default_workspace(self) -> str | None:
+        """The workspace `default-workspace` names, without `@`; None without the field."""
+        raw = self.frontmatter.get(DEFAULT_WORKSPACE_FIELD)
+        name = raw.strip().removeprefix("@").strip() if raw else ""
+        return name or None
 
     @property
     def parent(self) -> str | None:
@@ -107,11 +136,15 @@ class Ticket:
 
 
 @dataclass
-class Business:
+class TicketOwner:
+    """A workspace with a ticket code of its own, and its tickets as loaded."""
+
     name: str
     code: str
     folder: Path
     tickets: list[Ticket]
+    # The workspace that asked for these tickets through `ticket-code: inherit`.
+    inherited_by: str | None = None
 
     def find(self, number: str) -> list[Ticket]:
         return [t for t in self.tickets if t.number == number]
@@ -132,7 +165,7 @@ class Business:
         return [t for t in self.tickets if t.read_error is not None]
 
 
-def _read_ticket(folder: Path, parts: list[str], name: str) -> Ticket:
+def _read_ticket(owner: Path, folder: Path, parts: list[str], name: str) -> Ticket:
     text, read_error, has_index = "", None, True
     try:
         # Decode the raw bytes: `read_text` would translate CRLF to LF, and the
@@ -146,72 +179,139 @@ def _read_ticket(folder: Path, parts: list[str], name: str) -> Ticket:
         read_error = error.strerror or str(error)
     return Ticket(number=name[:6], name=name[7:], folder=folder, shelf=parts[0],
                   frontmatter=Frontmatter.parse(text), read_error=read_error,
-                  has_index=has_index)
+                  has_index=has_index, owner=owner)
 
 
-def load_business(context: ContextRef, code: str) -> Business:
+def load_owner(workspace: WorkspaceRef, code: str) -> TicketOwner:
+    folder = Path(workspace.folder)
     with disk_lock():
         try:
             # Strict: a folder we can't list could hide tickets, and a partial list
             # must never be presented as the full one.
-            found = list_ticket_folders(Path(context.folder), strict=True)
+            found = list_ticket_folders(folder, strict=True)
         except OSError as error:
             raise TicketError(
-                f"couldn't read the ticket folders of {context.name}: {error}. The ticket "
+                f"couldn't read the ticket folders of {workspace.name}: {error}. The ticket "
                 f"list would be incomplete, so nothing was done. Try again once the drive "
                 f"is available."
             ) from error
-        tickets = sorted((_read_ticket(*item) for item in found), key=lambda t: t.number)
-    return Business(context.name, code, Path(context.folder), tickets)
+        tickets = sorted((_read_ticket(folder, *item) for item in found),
+                         key=lambda t: t.number)
+    return TicketOwner(workspace.name, code, folder, tickets)
 
 
-def businesses_with_codes(contexts: list[ContextRef]) -> list[tuple[ContextRef, str]]:
-    """Read ticket owners and their codes live from registered manifests."""
+def ticket_code_of(workspace: WorkspaceRef) -> str | None:
+    """`ticket-code` of a workspace as written (a code, `inherit`, or None), read live."""
+    manifest = read_manifest(workspace.folder)
+    return manifest.ticket_code if manifest else None
+
+
+def owners_with_codes(workspaces: list[WorkspaceRef]) -> list[tuple[WorkspaceRef, str]]:
+    """The workspaces with a ticket code of their own, read live from their `INDEX.md`."""
     out = []
-    for context in contexts:
-        manifest = read_manifest(context.folder)
-        if manifest and manifest.ticket_code:
-            out.append((context, manifest.ticket_code))
+    for workspace in workspaces:
+        code = ticket_code_of(workspace)
+        if code and code != INHERIT:
+            out.append((workspace, code))
     return out
 
 
-def available_codes_hint(contexts: list[ContextRef]) -> str:
-    coded = businesses_with_codes(contexts)
+def available_codes_hint(workspaces: list[WorkspaceRef]) -> str:
+    coded = owners_with_codes(workspaces)
     if not coded:
-        return "No business has a ticket code yet."
-    return "Businesses with ticket codes: " + ", ".join(
-        f"{context.name} ({code})" for context, code in coded) + "."
+        return "No workspace has a ticket code yet."
+    return "Workspaces with ticket codes: " + ", ".join(
+        f"{workspace.name} ({code})" for workspace, code in coded) + "."
 
 
-def resolve_business(contexts: list[ContextRef], code: str = "",
-                     business: str = "") -> Business:
-    """Look up a business by ticket code or by name and load its tickets."""
+def find_workspace(workspaces: list[WorkspaceRef], name: str) -> WorkspaceRef:
+    """A registered workspace by its exact name; `@` in front is allowed."""
+    wanted = name.strip().removeprefix("@").strip()
+    for workspace in workspaces:
+        if workspace.name == wanted:
+            return workspace
+    raise TicketError(f"workspace {wanted} not found. {available_codes_hint(workspaces)}")
+
+
+def tickets_workspace(workspaces: list[WorkspaceRef],
+                      workspace: WorkspaceRef) -> tuple[WorkspaceRef, str]:
+    """The workspace whose tickets `workspace` works on, and its code.
+
+    Its own code makes it itself; `inherit` makes it the nearest ancestor in
+    the registry with a code of its own; no `ticket-code` is an error, as is
+    `inherit` with no such ancestor.
+    """
+    code = ticket_code_of(workspace)
+    if code and code != INHERIT:
+        return workspace, code
+    index = Path(workspace.folder) / WORKSPACE_INDEX
+    if code is None:
+        raise TicketError(
+            f"{workspace.name} has no tickets: the frontmatter of `{index}` has no "
+            f"`ticket-code`. Add `ticket-code: ABC` for tickets of its own, or "
+            f"`ticket-code: inherit` to work on the tickets of the workspace above it, "
+            f"and try again.")
+    by_name = {w.name: w for w in workspaces}
+    seen = {workspace.name}
+    current = workspace
+    while current.parent and current.parent in by_name and current.parent not in seen:
+        current = by_name[current.parent]
+        seen.add(current.name)
+        own = ticket_code_of(current)
+        if own and own != INHERIT:
+            return current, own
+    raise TicketError(
+        f"{workspace.name} has `ticket-code: inherit`, but no workspace above it has a "
+        f"ticket code of its own. Give a workspace above it `ticket-code: ABC`, or give "
+        f"{workspace.name} a code of its own in `{index}`.")
+
+
+def resolve_owner(workspaces: list[WorkspaceRef], code: str = "",
+                  workspace: str = "") -> TicketOwner:
+    """Look up a ticket owner by its code, or by any workspace that works on its tickets.
+
+    With `workspace`, the owner is that workspace's tickets workspace, and an
+    inherited one remembers who asked (`inherited_by`). Given both, they must
+    agree.
+    """
+    if workspace:
+        ref = find_workspace(workspaces, workspace)
+        owner_ref, owner_code = tickets_workspace(workspaces, ref)
+        if code and code != owner_code:
+            whose = (f"{ref.name}'s tickets are those of {owner_ref.name} ({owner_code})"
+                     if owner_ref is not ref else f"{ref.name}'s code is {owner_code}")
+            raise TicketError(f"ticket code {code} doesn't match workspace {ref.name}: "
+                              f"{whose}. Pass only one of `code` and `workspace`.")
+        _check_unique_code(workspaces, owner_code)
+        owner = load_owner(owner_ref, owner_code)
+        if owner_ref is not ref:
+            owner.inherited_by = ref.name
+        return owner
     if code:
-        owners = [(c, k) for c, k in businesses_with_codes(contexts) if k == code]
-        if not owners:
-            raise TicketError(f"no business has ticket code {code}. "
-                              f"{available_codes_hint(contexts)}")
-        if len(owners) > 1:
-            names = ", ".join(c.name for c, _ in owners)
-            raise TicketError(f"ticket code {code} is declared by multiple businesses: "
-                              f"{names}. Remove it from all but one.")
-        if business and owners[0][0].name != business:
-            raise TicketError(f"ticket code {code} belongs to {owners[0][0].name}, not "
-                              f"{business}. Pass only one of `code` and `business`.")
-        return load_business(owners[0][0], code)
-    if business:
-        named = [c for c in contexts if c.name == business]
-        if not named:
-            raise TicketError(f"business {business} not found. "
-                              f"{available_codes_hint(contexts)}")
-        manifest = read_manifest(named[0].folder)
-        if not manifest or not manifest.ticket_code:
-            raise TicketError(
-                f'{business} has no ticket code. Add `"ticket_code": "ABC"` to '
-                f"`{Path(named[0].folder) / MANIFEST_FILENAME}` and try again.")
-        return resolve_business(contexts, code=manifest.ticket_code)
-    raise TicketError(f"specify a business with `code` or `business`. "
-                      f"{available_codes_hint(contexts)}")
+        owners = _check_unique_code(workspaces, code)
+        return load_owner(owners[0][0], code)
+    raise TicketError(f"specify a workspace with `code` or `workspace`. "
+                      f"{available_codes_hint(workspaces)}")
+
+
+def _check_unique_code(workspaces: list[WorkspaceRef],
+                       code: str) -> list[tuple[WorkspaceRef, str]]:
+    owners = [(w, k) for w, k in owners_with_codes(workspaces) if k == code]
+    if not owners:
+        raise TicketError(f"no workspace has ticket code {code}. "
+                          f"{available_codes_hint(workspaces)}")
+    if len(owners) > 1:
+        names = ", ".join(w.name for w, _ in owners)
+        raise TicketError(f"ticket code {code} is declared by multiple workspaces: "
+                          f"{names}. Remove it from all but one.")
+    return owners
+
+
+def inherited_line(owner: TicketOwner) -> list[str]:
+    """The line that says the listed tickets are inherited, or nothing."""
+    if not owner.inherited_by:
+        return []
+    return [f"Tickets of {owner.name} ({owner.code}), inherited by {owner.inherited_by}.", ""]
 
 
 def parse_number(raw: str) -> str:
@@ -225,37 +325,99 @@ def parse_number(raw: str) -> str:
         raise TicketError(f"`{raw}` is not a valid ticket number. To look up several "
                           f"tickets, pass a list: [{as_list}].")
     raise TicketError(f"`{raw}` is not a valid ticket number. Expected the 3-letter "
-                      f"business code followed by 3 characters, e.g. DUE009, DUEX01, "
+                      f"ticket code followed by 3 characters, e.g. DUE009, DUEX01, "
                       f"or DUEA01.")
 
 
-def find_ticket(biz: Business, number: str) -> Ticket:
-    found = biz.find(number)
+def find_ticket(owner: TicketOwner, number: str) -> Ticket:
+    found = owner.find(number)
     if not found:
-        raise TicketError(f"ticket {number} not found in {biz.name} "
+        raise TicketError(f"ticket {number} not found in {owner.name} "
                           f"(checked work, backlog, and archive).")
     if len(found) > 1:
         listing = ", ".join(f"`{t.folder}`" for t in found)
-        raise TicketError(f"multiple folders in {biz.name} use ticket number {number}: "
+        raise TicketError(f"multiple folders in {owner.name} use ticket number {number}: "
                           f"{listing}. This needs a human decision: ask the user which one "
                           f"to keep. Don't delete or renumber folders yourself.")
     return found[0]
 
 
-def check_same_business(biz: Business, number: str, code: str, business: str) -> None:
-    """Reject a `code` or `business` that contradicts the business a number implies."""
-    if code and code != biz.code:
+def check_same_owner(workspaces: list[WorkspaceRef], owner: TicketOwner, number: str,
+                     code: str, workspace: str) -> None:
+    """Reject a `code` or `workspace` that contradicts the owner a number implies.
+
+    A workspace agrees when its tickets are the owner's: the owner itself, or
+    a workspace that inherits them.
+    """
+    if code and code != owner.code:
         raise TicketError(f"{number} doesn't match ticket code {code}. A ticket number "
-                          f"already identifies its business; omit `code` and `business`.")
-    if business and business != biz.name:
-        raise TicketError(f"{number} belongs to {biz.name}, not {business}. A ticket number "
-                          f"already identifies its business; omit `code` and `business`.")
+                          f"already identifies its workspace; omit `code` and `workspace`.")
+    if workspace:
+        ref = find_workspace(workspaces, workspace)
+        owner_ref, _ = tickets_workspace(workspaces, ref)
+        if Path(owner_ref.folder) != owner.folder:
+            raise TicketError(f"{number} belongs to {owner.name}, not to the tickets of "
+                              f"{ref.name}. A ticket number already identifies its "
+                              f"workspace; omit `code` and `workspace`.")
 
 
-def group_numbers(biz: Business) -> list[str]:
+def allowed_workspaces(workspaces: list[WorkspaceRef],
+                       owner_folder: Path) -> list[WorkspaceRef]:
+    """Where a ticket of this owner may be worked on: the owner, then its desks.
+
+    A desk is a workspace whose tickets workspace is the owner. A workspace
+    nested in the owner with no code, or with a code of its own, is not one.
+    """
+    owner_folder = Path(owner_folder)
+    owner = [w for w in workspaces if Path(w.folder) == owner_folder]
+    desks = []
+    for workspace in workspaces:
+        if Path(workspace.folder) == owner_folder:
+            continue
+        try:
+            found, _ = tickets_workspace(workspaces, workspace)
+        except TicketError:
+            continue
+        if Path(found.folder) == owner_folder:
+            desks.append(workspace)
+    return owner + desks
+
+
+def default_workspace_problem(workspaces: list[WorkspaceRef], owner_folder: Path,
+                              name: str) -> str | None:
+    """Why `default-workspace: "@<name>"` can't hold for a ticket of this owner, or None.
+
+    The answer completes "`@<name>` …": it is unknown, or neither the owner
+    nor a desk inheriting its tickets.
+    """
+    if not any(w.name == name for w in workspaces):
+        return "is not a registered workspace"
+    if not any(w.name == name for w in allowed_workspaces(workspaces, owner_folder)):
+        return "is neither the owner nor a desk inheriting its tickets"
+    return None
+
+
+def check_default_workspace(workspaces: list[WorkspaceRef], owner: TicketOwner,
+                            raw: str) -> str:
+    """The `default-workspace` value to write for a name a caller gave: `@<name>`.
+
+    The name must be the owner or one of its desks: a ticket is worked on
+    nowhere else. `@` in front is allowed.
+    """
+    name = raw.strip().removeprefix("@").strip()
+    problem = default_workspace_problem(workspaces, owner.folder, name)
+    if problem:
+        allowed = ", ".join(w.name for w in allowed_workspaces(workspaces, owner.folder))
+        raise TicketError(f"`default_workspace` names {name}, which {problem}. A ticket of "
+                          f"{owner.name} is worked on only in {owner.name} or a desk "
+                          f"inheriting its tickets: {allowed}. Nothing was changed.")
+    return f"@{name}"
+
+
+def group_numbers(owner: TicketOwner) -> list[str]:
     """Return group numbers: programs, then routines, then any other parent in use."""
-    own = {t.number for t in biz.tickets if t.is_group}
-    referenced = {t.parent for t in biz.tickets if t.parent}
+    own = {t.number for t in owner.tickets if t.is_group}
+    referenced = {t.parent for t in owner.tickets if t.parent}
     rank = {"X": 0, "A": 1}
     return sorted(own | referenced, key=lambda n: (rank.get(n[3:4], 2), n))
 
@@ -293,9 +455,16 @@ def collect_affected():
 
 
 def record(ticket: Ticket, repos: Path | None) -> None:
-    """Report a ticket the current operation resolved or changed, with its branches."""
+    """Report a ticket the current operation resolved or changed, with its branches.
+
+    `owner` is the absolute folder of its owner workspace; `default_workspace`
+    is the name its `default-workspace` gives, without `@`, even if no
+    workspace has that name, or None.
+    """
     collected = _affected.get()
     if collected is not None:
         collected.append({"number": ticket.number, "name": ticket.name,
                           "shelf": ticket.shelf, "folder": str(ticket.folder),
+                          "owner": str(ticket.owner) if ticket.owner else None,
+                          "default_workspace": ticket.default_workspace,
                           **record_fields(ticket.number, ticket.branches, repos)})

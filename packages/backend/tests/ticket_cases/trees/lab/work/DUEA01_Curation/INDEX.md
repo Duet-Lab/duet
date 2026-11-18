@@ -1,8 +1,7 @@
 ---
-folder-type: work
-work-type: routine
+folder-type: ticket
+ticket-type: routine
 opened: 2026-10-01
-business-area: DuetLab
 parent: null
 ---
 

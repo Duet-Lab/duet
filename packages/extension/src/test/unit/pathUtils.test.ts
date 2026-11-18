@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/naming-convention */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
-import { formatAtReference, formatBusinessReference, formatTicketReference } from '../../core/pathUtils';
+import { formatAtReference, formatWorkspaceReference, formatTicketReference } from '../../core/pathUtils';
 
 // We need to mock process.platform for Windows tests
 // Import the module after setting up mocks
@@ -92,6 +92,11 @@ describe('pathUtils', () => {
                 .toBe('`@DUE009/Решения.md`');
         });
 
+        it('finds a ticket up to three grouping folders below a shelf, the depth the server searches', () => {
+            expect(formatTicketReference(`${lab}/archive/a/b/c/DUE009_AlphaPaths/x.md`)).toBe('`@DUE009/x.md`');
+            expect(formatTicketReference(`${lab}/archive/a/b/c/d/DUE009_AlphaPaths/x.md`)).toBeNull();
+        });
+
         it('gives the bare ticket for the ticket folder itself', () => {
             expect(formatTicketReference(`${lab}/work/DUE009_AlphaPaths`)).toBe('`@DUE009`');
         });
@@ -134,13 +139,22 @@ describe('pathUtils', () => {
         });
     });
 
-    describe('formatBusinessReference', () => {
+    describe('formatWorkspaceReference', () => {
+        const workspace = (folder: string, name: string) => ({
+            [path.join(folder, 'context.json')]: '{"version": 4}',
+            [path.join(folder, 'INDEX.md')]: `---\nfolder-type: workspace\nname: ${name}\n---\n# ${name}\n`
+        });
         const manifests: Record<string, string> = {
-            [path.join('/Drive/!СЕМЬЯ', 'context.json')]: '{"version": 4, "name": "СЕМЬЯ"}',
-            [path.join('/Drive/!МетаЛаб/DuetLab', 'context.json')]: '{"version": 4, "name": "DuetLab"}',
-            [path.join('/Drive/!МетаЛаб/DuetLab/Duet', 'context.json')]: '{"version": 4, "name": "Duet"}',
+            ...workspace('/Drive/!СЕМЬЯ', 'СЕМЬЯ'),
+            ...workspace('/Drive/!МетаЛаб/DuetLab', 'DuetLab'),
+            ...workspace('/Drive/!МетаЛаб/DuetLab/Duet', 'Duet'),
             [path.join('/Drive/Broken', 'context.json')]: '{not json',
             [path.join('/Drive/Broken/Inner', 'context.json')]: '{"version": 4}',
+            [path.join('/Drive/Broken/Inner', 'INDEX.md')]: '---\nfolder-type: workspace\n---\n',
+            // DUE063: a name left in context.json is not read
+            [path.join('/Drive/Old', 'context.json')]: '{"version": 4, "name": "Old"}',
+            // an INDEX.md with a name but no context.json is not a workspace
+            [path.join('/Drive/Plain', 'INDEX.md')]: '---\nname: Plain\n---\n',
         };
         const readText = async (file: string): Promise<string> => {
             if (file in manifests) {
@@ -149,28 +163,48 @@ describe('pathUtils', () => {
             throw new Error('ENOENT');
         };
 
-        it('uses the business name, not the folder name', async () => {
-            expect(await formatBusinessReference('/Drive/!СЕМЬЯ/ЗОЖ/план.md', readText))
+        it('uses the workspace name from INDEX.md, not the folder name', async () => {
+            expect(await formatWorkspaceReference('/Drive/!СЕМЬЯ/ЗОЖ/план.md', readText))
                 .toBe('`@СЕМЬЯ/ЗОЖ/план.md`');
         });
 
-        it('gives the bare business for the business folder itself', async () => {
-            expect(await formatBusinessReference('/Drive/!СЕМЬЯ', readText)).toBe('`@СЕМЬЯ`');
+        it('gives the bare workspace for the workspace folder itself', async () => {
+            expect(await formatWorkspaceReference('/Drive/!СЕМЬЯ', readText)).toBe('`@СЕМЬЯ`');
         });
 
-        it('uses the nearest business', async () => {
-            expect(await formatBusinessReference('/Drive/!МетаЛаб/DuetLab/Duet/notes/a.md', readText))
+        it('uses the nearest workspace', async () => {
+            expect(await formatWorkspaceReference('/Drive/!МетаЛаб/DuetLab/Duet/notes/a.md', readText))
                 .toBe('`@Duet/notes/a.md`');
-            expect(await formatBusinessReference('/Drive/!МетаЛаб/DuetLab/README.md', readText))
+            expect(await formatWorkspaceReference('/Drive/!МетаЛаб/DuetLab/README.md', readText))
                 .toBe('`@DuetLab/README.md`');
         });
 
         it('skips manifests without a usable name', async () => {
-            expect(await formatBusinessReference('/Drive/Broken/Inner/x.md', readText)).toBeNull();
+            expect(await formatWorkspaceReference('/Drive/Broken/Inner/x.md', readText)).toBeNull();
+            expect(await formatWorkspaceReference('/Drive/Old/x.md', readText)).toBeNull();
+            expect(await formatWorkspaceReference('/Drive/Plain/x.md', readText)).toBeNull();
         });
 
-        it('returns null outside any business', async () => {
-            expect(await formatBusinessReference('/DuetData/repos/Duet.git/README.md', readText)).toBeNull();
+        it('returns null outside any workspace', async () => {
+            expect(await formatWorkspaceReference('/DuetData/repos/Duet.git/README.md', readText)).toBeNull();
         });
+    });
+});
+
+describe('samePath', () => {
+    it('treats a folder and a symlink to it as the same folder', async () => {
+        const { mkdtempSync, mkdirSync, symlinkSync, rmSync } = await import('fs');
+        const { tmpdir } = await import('os');
+        const { join } = await import('path');
+        const { samePath } = await import('../../core/pathUtils');
+        const root = mkdtempSync(join(tmpdir(), 'samepath-'));
+        try {
+            mkdirSync(join(root, 'CloudStorage', 'Drive', 'DuetDev'), { recursive: true });
+            symlinkSync(join(root, 'CloudStorage', 'Drive'), join(root, 'Google Drive'));
+            expect(samePath(join(root, 'Google Drive', 'DuetDev'), join(root, 'CloudStorage', 'Drive', 'DuetDev'))).toBe(true);
+            expect(samePath(join(root, 'Google Drive', 'DuetDev'), join(root, 'CloudStorage', 'Drive'))).toBe(false);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 });

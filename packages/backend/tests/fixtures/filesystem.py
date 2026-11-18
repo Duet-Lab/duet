@@ -1,12 +1,13 @@
 """Filesystem fixtures for tests.
 
-Provides builders for creating DuetData directory structures
-and `context.json` v2 manifests in temporary directories.
+Provides builders for creating DuetData directory structures and
+workspaces — `context.json` v4 plus the `INDEX.md` frontmatter that names
+them — in temporary directories.
 
 Architecture mirrors production:
 - Pointer file (~/.org.ve68.duet) → points to DuetData and DuetConfig
 - DuetData/ → local cache (entities.db, repos/, logs)
-- DuetConfig/ → cloud-synced config (settings.json with `root_context_folders`,
+- DuetConfig/ → cloud-synced config (settings.json with `root_workspace_folders`,
   {machine}.json)
 """
 
@@ -20,14 +21,48 @@ if TYPE_CHECKING:
     pass
 
 
+def workspace_index(name: str | None, icon: str | None = None,
+                    ticket_code: str | None = None, description: str | None = None,
+                    body: str = "") -> str:
+    """The text of a workspace's `INDEX.md`: frontmatter with its fields, then `body`."""
+    lines = ["---", "folder-type: workspace"]
+    if name is not None:
+        lines.append(f"name: {json.dumps(name, ensure_ascii=False)}")
+    if icon is not None:
+        lines.append(f"icon: {json.dumps(icon, ensure_ascii=False)}")
+    if ticket_code is not None:
+        lines.append(f"ticket-code: {ticket_code}")
+    if description is not None:
+        lines.append(f"description: {json.dumps(description, ensure_ascii=False)}")
+    lines.append("---")
+    return "\n".join(lines) + "\n" + body
+
+
+def write_index_body(folder: Path, body: str) -> Path:
+    """Replace the body of a workspace's `INDEX.md`, keeping its frontmatter."""
+    path = folder / "INDEX.md"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if text.startswith("---\n") and "\n---\n" in text[3:]:
+        end = text.index("\n---\n", 3) + len("\n---\n")
+        text = text[:end]
+    else:
+        text = ""
+    path.write_text(text + body, encoding="utf-8")
+    return path
+
+
 class ManifestBuilder:
-    """Builder for creating `context.json` v3 manifests.
+    """Builder for creating workspaces: `context.json` v4 and the `INDEX.md` frontmatter.
+
+    `name`, `icon` and `ticket_code` go into the frontmatter of `INDEX.md`
+    (`name:`, `icon:`, `ticket-code:`); everything else into `context.json`.
 
     Usage:
-        ManifestBuilder.context(path, "Duet", git_repos={"Duet": "https://..."})
-        ManifestBuilder.context(path, "БАЗА", meta=True)
-        # Backwards-compat sugar: single-repo git-backed context.
-        ManifestBuilder.context(path, "Duet", git_url="https://...")
+        ManifestBuilder.workspace(path, "Duet", git_repos={"Duet": "https://..."})
+        ManifestBuilder.workspace(path, "БАЗА", meta=True)
+        ManifestBuilder.workspace(path, "DuetDev", ticket_code="inherit")
+        # Backwards-compat sugar: single-repo git-backed workspace.
+        ManifestBuilder.workspace(path, "Duet", git_url="https://...")
         # ↳ writes git_repos={"Duet": "https://..."} under the hood.
     """
 
@@ -38,7 +73,7 @@ class ManifestBuilder:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     @classmethod
-    def context(
+    def workspace(
         cls,
         folder: Path,
         name: str,
@@ -49,19 +84,25 @@ class ManifestBuilder:
         reference_repos: dict[str, str] | None = None,
         description: str | None = None,
         version: int = 4,
+        ticket_code: str | None = None,
+        index_body: str = "",
         **extra,
     ) -> Path:
-        """Create `context.json` v4 manifest at `folder`.
+        """Create a workspace at `folder`: `context.json` v4 and `INDEX.md`.
 
         `git_url=` is single-repo sugar for `git_repos={name: git_url}`,
         kept so older single-repo test scenarios stay legible. Pass
-        `version` only to test version mismatch behavior.
+        `version` only to test version mismatch behavior. `index_body` is
+        the text of `INDEX.md` below its frontmatter.
         """
         if git_repos is None and git_url is not None:
             git_repos = {name: git_url}
         if icon is None:
             icon = "📦" if git_repos else "📁"
-        data: dict = {"version": version, "name": name, "icon": icon}
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "INDEX.md").write_text(
+            workspace_index(name, icon, ticket_code, body=index_body), encoding="utf-8")
+        data: dict = {"version": version}
         if meta:
             data["meta"] = True
         if git_repos is not None:
@@ -94,7 +135,7 @@ class DuetDataBuilder:
     DEFAULT_MACHINE = "test_machine"
 
     DEFAULT_SETTINGS = {
-        "root_context_folders": [],
+        "root_workspace_folders": [],
         "timestampTZ": {"id": "Z", "value": "UTC"},
     }
 
@@ -109,8 +150,8 @@ class DuetDataBuilder:
         self._machine_config = self.DEFAULT_MACHINE_CONFIG.copy()
         self._version: str | None = "test"
         # (name, folder_name, extra_manifest_kwargs)
-        self._contexts: list[tuple[str, str, dict]] = []
-        self._root_context_folders: list[Path] = []
+        self._workspaces: list[tuple[str, str, dict]] = []
+        self._root_workspace_folders: list[Path] = []
         self._repos: list[tuple[str, list[str]]] = []
         self._aliases: dict[str, str] = {}
 
@@ -142,32 +183,32 @@ class DuetDataBuilder:
         self._settings["timestampTZ"] = {"id": tz_id, "value": tz_value}
         return self
 
-    def with_root_context_folders(self, folders: list[str]) -> "DuetDataBuilder":
-        """Set root_context_folders in settings (as @aliases or absolute paths)."""
-        self._settings["root_context_folders"] = folders
+    def with_root_workspace_folders(self, folders: list[str]) -> "DuetDataBuilder":
+        """Set root_workspace_folders in settings (as @aliases or absolute paths)."""
+        self._settings["root_workspace_folders"] = folders
         return self
 
     def add_alias(self, alias: str, path: str) -> "DuetDataBuilder":
         self._aliases[alias] = path
         return self
 
-    def add_root_context(
+    def add_root_workspace(
         self,
         name: str,
         folder_name: str | None = None,
         meta: bool = False,
     ) -> "DuetDataBuilder":
-        """Add a root context folder to be created with a `context.json` v2.
+        """Add a root workspace folder, created as a workspace.
 
         Args:
-            name: Context name (for manifest)
+            name: Workspace name (for the INDEX.md frontmatter)
             folder_name: Folder name (defaults to name)
-            meta: Whether this is the meta-context
+            meta: Whether this is the meta workspace
         """
         extra: dict = {}
         if meta:
             extra["meta"] = True
-        self._contexts.append((name, folder_name or name, extra))
+        self._workspaces.append((name, folder_name or name, extra))
         return self
 
     def add_repo(
@@ -187,14 +228,14 @@ class DuetDataBuilder:
             version_path.parent.mkdir(parents=True, exist_ok=True)
             version_path.write_text(self._version)
 
-        for name, folder_name, extra in self._contexts:
-            ctx_path = self.root / folder_name
-            ctx_path.mkdir(parents=True, exist_ok=True)
-            ManifestBuilder.context(ctx_path, name, **extra)
-            self._root_context_folders.append(ctx_path)
+        for name, folder_name, extra in self._workspaces:
+            workspace_path = self.root / folder_name
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            ManifestBuilder.workspace(workspace_path, name, **extra)
+            self._root_workspace_folders.append(workspace_path)
 
             alias = f"@{folder_name}"
-            self._aliases[alias] = str(ctx_path)
+            self._aliases[alias] = str(workspace_path)
 
         if self._repos:
             repos_path = self.duet_data_path / "repos"
@@ -209,9 +250,9 @@ class DuetDataBuilder:
                         comp_path = packages_path / comp_name
                         comp_path.mkdir(parents=True, exist_ok=True)
 
-        if self._root_context_folders:
-            self._settings["root_context_folders"] = [
-                f"@{p.name}" for p in self._root_context_folders
+        if self._root_workspace_folders:
+            self._settings["root_workspace_folders"] = [
+                f"@{p.name}" for p in self._root_workspace_folders
             ]
 
         self.duet_config_path.mkdir(parents=True, exist_ok=True)
@@ -240,10 +281,10 @@ class DuetDataBuilder:
 
         return self.duet_data_path
 
-    def get_root_context_path(self, index: int = 0) -> Path:
-        if index < len(self._root_context_folders):
-            return self._root_context_folders[index]
-        raise IndexError(f"No root context folder at index {index}")
+    def get_root_workspace_path(self, index: int = 0) -> Path:
+        if index < len(self._root_workspace_folders):
+            return self._root_workspace_folders[index]
+        raise IndexError(f"No root workspace folder at index {index}")
 
     def get_repo_path(self, name: str) -> Path:
         return self.duet_data_path / "repos" / f"{name}.git"
@@ -253,12 +294,12 @@ class DuetDataBuilder:
 
 
 class HierarchyBuilder:
-    """Builder for creating context hierarchies in filesystem.
+    """Builder for creating workspace hierarchies in filesystem.
 
-    Creates folder structure with `context.json` v2 manifests for testing scanner.
+    Creates folder structure with workspaces for testing scanner.
 
     Usage:
-        builder = HierarchyBuilder(root_context_path, "RootCtx")
+        builder = HierarchyBuilder(root_workspace_path, "RootWs")
         builder.add_child("Mid").add_child("Product", git_url="https://...")
         builder.build()
     """
@@ -270,14 +311,14 @@ class HierarchyBuilder:
         self._manifest_kwargs = manifest_kwargs
 
     def add_child(self, name: str, **manifest_kwargs) -> "HierarchyBuilder":
-        """Add a nested context."""
+        """Add a nested workspace."""
         child = HierarchyBuilder(self.root / name, name, **manifest_kwargs)
         self._children.append(child)
         return child
 
     def build(self) -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
-        ManifestBuilder.context(self.root, self.name or self.root.name, **self._manifest_kwargs)
+        ManifestBuilder.workspace(self.root, self.name or self.root.name, **self._manifest_kwargs)
         for child in self._children:
             child.build()
         return self.root

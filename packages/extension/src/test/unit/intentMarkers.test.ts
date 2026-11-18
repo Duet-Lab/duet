@@ -8,6 +8,7 @@ import {
     markerFileName,
     occupiedColors,
     parseMarker,
+    serializeMarker,
     splitMarkers
 } from '../../core/intents/markers';
 import {
@@ -35,8 +36,8 @@ function marker(overrides: Partial<WindowMarker> = {}): WindowMarker {
         subject: 'intent',
         ticket: 'DUE017',
         ticketFolder: 'DUE017_IntentSwitcher',
-        business: 'DuetLab',
-        businessPath: '/drive/DuetLab',
+        workspace: 'DuetLab',
+        workspacePath: '/drive/DuetLab',
         icon: '🚀',
         ticketIcon: '',
         workspaceFile: '/data/workspaces/DuetLab/DUE017_IntentSwitcher.code-workspace',
@@ -57,9 +58,19 @@ describe('marker files', () => {
         expect(markerFileName(marker({ kind: 'reservation' }))).toBe('DUE017-100.reserve.json');
     });
 
-    it('round-trip through JSON', () => {
+    it('round-trip through the file', () => {
         const original = marker({ kind: 'reservation', expiresAt: NOW + 5 });
-        expect(parseMarker(JSON.stringify(original))).toEqual(original);
+        expect(parseMarker(serializeMarker(original))).toEqual(original);
+        const workspace = marker({ subject: 'workspace', ticket: '@DuetLab', ticketFolder: '' });
+        expect(parseMarker(serializeMarker(workspace))).toEqual(workspace);
+    });
+
+    it('DUE063: the file speaks of the workspace, with no business keys', () => {
+        const onDisk = JSON.parse(serializeMarker(marker({ subject: 'workspace', ticket: '@DuetLab', ticketFolder: '' })));
+        expect(onDisk).toMatchObject({ subject: 'workspace', workspace: 'DuetLab', workspacePath: '/drive/DuetLab' });
+        expect(onDisk.business).toBeUndefined();
+        expect(onDisk.businessPath).toBeUndefined();
+        expect(onDisk.workspaceFile).toBe('/data/workspaces/DuetLab/DUE017_IntentSwitcher.code-workspace');
     });
 
     it('text that is not a marker parses to null', () => {
@@ -76,10 +87,10 @@ describe('marker files', () => {
         expect(parseMarker(JSON.stringify(old))).toMatchObject({ subject: 'intent', ticketIcon: '' });
     });
 
-    it('the marker of a business window is named by its key', () => {
-        const business = marker({ subject: 'business', ticket: '@DuetLab', ticketFolder: '' });
-        expect(markerFileName(business)).toBe('@DuetLab-100.json');
-        expect(parseMarker(JSON.stringify(business))?.subject).toBe('business');
+    it('the marker of a workspace window is named by its key', () => {
+        const workspace = marker({ subject: 'workspace', ticket: '@DuetLab', ticketFolder: '' });
+        expect(markerFileName(workspace)).toBe('@DuetLab-100.json');
+        expect(parseMarker(serializeMarker(workspace))?.subject).toBe('workspace');
     });
 
     it('an unknown location reads as missing', () => {
@@ -255,7 +266,7 @@ describe('MarkerStore', () => {
 });
 
 describe('activeFromMarkers', () => {
-    it('gives one row per ticket, with the readable name and the emoji of the business', () => {
+    it('gives one row per ticket, with the readable name and the emoji of the workspace', () => {
         const rows = activeFromMarkers([marker(), marker({ pid: 200 })], 999);
         expect(rows).toEqual([{
             subject: 'intent',
@@ -263,7 +274,7 @@ describe('activeFromMarkers', () => {
             folder: 'DUE017_IntentSwitcher',
             name: 'Intent Switcher',
             icon: '🚀',
-            business: 'DuetLab',
+            workspace: 'DuetLab',
             workspaceFile: '/data/workspaces/DuetLab/DUE017_IntentSwitcher.code-workspace',
             color: '#1f6f43',
             own: false,
@@ -271,7 +282,7 @@ describe('activeFromMarkers', () => {
         }]);
     });
 
-    it("shows the ticket's emoji — its own or the one inherited from its parent — and the emoji of the business only when there is none", () => {
+    it("shows the ticket's emoji — its own or the one inherited from its parent — and the emoji of the workspace only when there is none", () => {
         expect(activeFromMarkers([marker({ ticketIcon: '🧰' })], 0)[0].icon).toBe('🧰');
         expect(activeFromMarkers([marker({ ticketIcon: '' })], 0)[0].icon).toBe('🚀');
         expect(activeFromMarkers([marker({ ticketIcon: '', icon: '' })], 0)[0].icon).toBe('');
@@ -282,11 +293,11 @@ describe('activeFromMarkers', () => {
         expect(activeFromMarkers([marker({ color: null })], 0)[0].color).toBeNull();
     });
 
-    it('a business window is a row named by the business, with its emoji', () => {
+    it('a workspace window is a row named by the workspace, with its emoji', () => {
         const rows = activeFromMarkers(
-            [marker({ subject: 'business', ticket: '@DuetLab', ticketFolder: '', pid: 100 })], 100
+            [marker({ subject: 'workspace', ticket: '@DuetLab', ticketFolder: '', pid: 100 })], 100
         );
-        expect(rows[0]).toMatchObject({ subject: 'business', ticket: '@DuetLab', name: 'DuetLab', icon: '🚀', own: true });
+        expect(rows[0]).toMatchObject({ subject: 'workspace', ticket: '@DuetLab', name: 'DuetLab', icon: '🚀', own: true });
     });
 
     it('marks the intent of the asking window, also when another window holds the same ticket', () => {
@@ -312,9 +323,9 @@ describe('activeRowText', () => {
         expect(activeRowText(rowOf({}))).toMatchObject({ label: 'Intent Switcher', description: 'DUE017' });
     });
 
-    it('business: the name, then biz — no ticket number', () => {
-        expect(activeRowText(rowOf({ subject: 'business', ticket: '@DuetLab', ticketFolder: '' })))
-            .toMatchObject({ label: 'DuetLab', description: 'biz' });
+    it('workspace: the name, then ws — no ticket number', () => {
+        expect(activeRowText(rowOf({ subject: 'workspace', ticket: '@DuetLab', ticketFolder: '' })))
+            .toMatchObject({ label: 'DuetLab', description: 'ws' });
     });
 
     it('a numbered row carries its number in the name, the way tabs do; the whole of it is the name', () => {
@@ -327,17 +338,17 @@ describe('activeRowText', () => {
     it("the row of this window ends with the red dot; other rows have none", () => {
         expect(activeRowText(rowOf({ pid: 100 }, 100)).description).toBe('DUE017 🔴');
         expect(activeRowText(rowOf({ pid: 100 }, 200)).description).toBe('DUE017');
-        expect(activeRowText(rowOf({ subject: 'business', ticket: '@DuetLab', ticketFolder: '', pid: 100 }, 100)).description)
-            .toBe('biz 🔴');
+        expect(activeRowText(rowOf({ subject: 'workspace', ticket: '@DuetLab', ticketFolder: '', pid: 100 }, 100)).description)
+            .toBe('ws 🔴');
     });
 });
 
 describe('numbers of rows', () => {
-    const row = (ticket: string, subject: 'intent' | 'business' = 'intent') =>
+    const row = (ticket: string, subject: 'intent' | 'workspace' = 'intent') =>
         activeFromMarkers([marker({ ticket, subject, ticketFolder: subject === 'intent' ? `${ticket}_Some` : '' })], 0)[0];
-    const shown = [row('@DuetLab', 'business'), row('DUE017'), row('DUE013')];
+    const shown = [row('@DuetLab', 'workspace'), row('DUE017'), row('DUE013')];
 
-    it('every row is counted from 1 in shown order — business windows and intents alike', () => {
+    it('every row is counted from 1 in shown order — workspace windows and intents alike', () => {
         expect(numberedRows(shown).map(r => r.ticket)).toEqual(['@DuetLab', 'DUE017', 'DUE013']);
         expect(rowNumber(shown, '@DuetLab')).toBe(1);
         expect(rowNumber(shown, 'DUE017')).toBe(2);
@@ -360,13 +371,13 @@ describe('numbers of rows', () => {
         expect(rowByNumber(closed, 2)?.ticket).toBe('DUE013');
         expect(rowByNumber(closed, 3)).toBeNull();
 
-        const opened = orderActive([...shown, row('@LOS', 'business')], ['DUE017', 'DUE013']);
+        const opened = orderActive([...shown, row('@LOS', 'workspace')], ['DUE017', 'DUE013']);
         expect(opened.map(r => `${rowNumber(opened, r.ticket)}:${r.ticket}`))
             .toEqual(['1:DUE017', '2:DUE013', '3:@DuetLab', '4:@LOS']);
     });
 
     it('only the first nine carry a number', () => {
-        const twelve = [row('@DuetLab', 'business'), ...Array.from({ length: 11 }, (_, i) => row(`DUE1${String(i).padStart(2, '0')}`))];
+        const twelve = [row('@DuetLab', 'workspace'), ...Array.from({ length: 11 }, (_, i) => row(`DUE1${String(i).padStart(2, '0')}`))];
         expect(numberedRows(twelve)).toHaveLength(9);
         expect(rowNumber(twelve, 'DUE107')).toBe(9);
         expect(rowNumber(twelve, 'DUE108')).toBeNull();
@@ -387,8 +398,8 @@ describe('numbers of rows', () => {
 
 describe('orderActive', () => {
     const row = (ticket: string) => activeFromMarkers([marker({ ticket, ticketFolder: `${ticket}_X` })], 0)[0];
-    const business = (name: string) => activeFromMarkers(
-        [marker({ subject: 'business', ticket: `@${name}`, ticketFolder: '', business: name })], 0
+    const workspaceRow = (name: string) => activeFromMarkers(
+        [marker({ subject: 'workspace', ticket: `@${name}`, ticketFolder: '', workspace: name })], 0
     )[0];
 
     it('follows the remembered order; a row it does not hold stands at the end, in the sequence it came in', () => {
@@ -397,8 +408,8 @@ describe('orderActive', () => {
             .toEqual(['DUE017', 'DUE008', 'DUE013', 'DUE004']);
     });
 
-    it('a business window is a row like any other: it stands where the order puts it, and at the end when it is new', () => {
-        const rows = [row('DUE017'), business('МетаЛаб'), row('DUE008'), business('DuetLab')];
+    it('a workspace window is a row like any other: it stands where the order puts it, and at the end when it is new', () => {
+        const rows = [row('DUE017'), workspaceRow('МетаЛаб'), row('DUE008'), workspaceRow('DuetLab')];
         expect(orderActive(rows, ['DUE008', '@МетаЛаб', 'DUE017', '@DuetLab']).map(r => r.ticket))
             .toEqual(['DUE008', '@МетаЛаб', 'DUE017', '@DuetLab']);
         expect(orderActive(rows, ['DUE008', 'DUE017']).map(r => r.ticket))
@@ -410,7 +421,7 @@ describe('listNewRows', () => {
     const row = (ticket: string) => activeFromMarkers([marker({ ticket, ticketFolder: `${ticket}_X` })], 0)[0];
     const at = (ticket: string, writtenAt: number) => ({ ticket, writtenAt });
 
-    it('a new window goes to the end of the order, a business like an intent; the one opened earlier first', () => {
+    it('a new window goes to the end of the order, a workspace like an intent; the one opened earlier first', () => {
         const rows = [row('@DuetLab'), row('DUE004'), row('DUE017')];
         const live = [at('@DuetLab', 30), at('DUE004', 20), at('DUE017', 10)];
         expect(listNewRows(['DUE017', 'DUE099'], rows, live, 200)).toEqual(['DUE017', 'DUE099', 'DUE004', '@DuetLab']);
@@ -434,7 +445,7 @@ describe('listNewRows', () => {
 
 describe('reorderActive', () => {
     const row = (ticket: string) => activeFromMarkers([marker({ ticket, ticketFolder: `${ticket}_X` })], 0)[0];
-    const biz = activeFromMarkers([marker({ subject: 'business', ticket: '@DuetLab', ticketFolder: '' })], 0)[0];
+    const biz = activeFromMarkers([marker({ subject: 'workspace', ticket: '@DuetLab', ticketFolder: '' })], 0)[0];
     const shown = [biz, row('A'), row('B'), row('C')];
 
     it('moves a row among the rows: up — before the target, down — after it, past the rows — to the end', () => {
@@ -443,7 +454,7 @@ describe('reorderActive', () => {
         expect(reorderActive(shown, 'A', null, placeNextTo)).toEqual(['@DuetLab', 'B', 'C', 'A']);
     });
 
-    it('a business row is dragged like any other, and an intent may stand before it', () => {
+    it('a workspace row is dragged like any other, and an intent may stand before it', () => {
         expect(reorderActive(shown, '@DuetLab', 'B', placeNextTo)).toEqual(['A', 'B', '@DuetLab', 'C']);
         expect(reorderActive(shown, '@DuetLab', null, placeNextTo)).toEqual(['A', 'B', 'C', '@DuetLab']);
         expect(reorderActive(shown, 'C', '@DuetLab', placeNextTo)).toEqual(['C', '@DuetLab', 'A', 'B']);

@@ -6,13 +6,13 @@ import { createInitialState } from '../../../src/core/app-state'
 
 // Render the real page and controls without mounting Electron or touching live config.
 describe('user name in Duet paths', () => {
-  it('renders the default after Machine and before root contexts', () => {
+  it('renders the default after Machine and before root workspaces', () => {
     const html = renderToStaticMarkup(
       createElement(DuetPathsPage, { appState: createInitialState(), onStatusChange: () => {} })
     )
     expect(html).toContain('value="Human"')
     expect(html.indexOf('Машина')).toBeLessThan(html.indexOf('Пользователь'))
-    expect(html.indexOf('Пользователь')).toBeLessThan(html.indexOf('Корневые контексты'))
+    expect(html.indexOf('Пользователь')).toBeLessThan(html.indexOf('Корневые воркспейсы'))
     expect(html).toMatch(/id="duet-user-name"[^>]*disabled=""/)
   })
 

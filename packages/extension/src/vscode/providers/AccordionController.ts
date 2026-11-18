@@ -1,14 +1,14 @@
 import * as vscode from 'vscode';
-import { TreeNode } from '../../core/tree/contextTree';
-import { ContextTreeProvider } from './ContextTreeProvider';
+import { TreeNode } from '../../core/tree/workspaceTree';
+import { WorkspaceTreeProvider } from './WorkspaceTreeProvider';
 
 type TreeElement = TreeNode | { id: string };
 
 /**
- * Manages accordion expand/collapse behavior for the context tree.
+ * Manages accordion expand/collapse behavior for the workspace tree («Все воркспейсы»).
  *
  * Invariants:
- * - Only one root context can be expanded at a time
+ * - Only one root workspace can be expanded at a time
  * - Expanding a root expands all its descendants to leaves
  * - Collapsing a root resets the expanded state
  */
@@ -16,12 +16,12 @@ export class AccordionController {
     private isProcessing = false;
 
     constructor(
-        private readonly contextProvider: ContextTreeProvider,
+        private readonly treeProvider: WorkspaceTreeProvider,
         private readonly treeView: vscode.TreeView<TreeElement>
     ) {}
 
     /**
-     * Expand a root context and all its descendants.
+     * Expand a root workspace and all its descendants.
      * Collapses other roots first (accordion behavior).
      */
     async expandRoot(entityId: number): Promise<void> {
@@ -31,14 +31,14 @@ export class AccordionController {
         this.isProcessing = true;
 
         try {
-            const root = this.contextProvider.getRoots()
+            const root = this.treeProvider.getRoots()
                 .find(r => r.entityId === entityId);
             if (!root) {
                 return;
             }
 
             // Collapse all first (VS Code has no API to collapse a specific element)
-            const currentExpanded = this.contextProvider.getExpandedRootId();
+            const currentExpanded = this.treeProvider.getExpandedRootId();
             if (currentExpanded !== null && currentExpanded !== entityId) {
                 await vscode.commands.executeCommand(
                     'workbench.actions.treeView.duet.contexts.collapseAll'
@@ -46,12 +46,12 @@ export class AccordionController {
             }
 
             // Remember new expanded root (updates status icon)
-            this.contextProvider.setExpandedRoot(entityId);
+            this.treeProvider.setExpandedRoot(entityId);
 
             // Expand the root and all its descendants
             await this.treeView.reveal(root, { expand: true, focus: false, select: false });
 
-            const descendants = this.contextProvider.getDescendants(entityId);
+            const descendants = this.treeProvider.getDescendants(entityId);
             for (const descendant of descendants) {
                 if (descendant.hasChildren) {
                     try {
@@ -96,8 +96,8 @@ export class AccordionController {
                 if ('entityId' in element) {
                     const node = element as TreeNode;
                     if (node.isRoot &&
-                        node.entityId === this.contextProvider.getExpandedRootId()) {
-                        this.contextProvider.setExpandedRoot(null);
+                        node.entityId === this.treeProvider.getExpandedRootId()) {
+                        this.treeProvider.setExpandedRoot(null);
                     }
                 }
             })
@@ -111,7 +111,7 @@ export class AccordionController {
      * Call this after tree view is initialized.
      */
     autoExpandActive(): void {
-        const activeRootId = this.contextProvider.getActiveRootId();
+        const activeRootId = this.treeProvider.getActiveRootId();
         if (activeRootId !== null) {
             // Delay to let tree view initialize
             setTimeout(() => this.expandRoot(activeRootId), 100);

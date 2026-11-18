@@ -28,6 +28,11 @@ export interface TicketRecord {
     shelf: string;
     /** Absolute path of the ticket folder. */
     folder: string;
+    /** `default-workspace` without the `@`; null when the ticket has none. */
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    default_workspace?: string | null;
+    /** Absolute path of the workspace that owns the ticket. */
+    owner?: string;
     /** The ticket's branch, `git-branch-name`; null without one. */
     branch?: string | null;
     /** Its worktrees: the repo and the absolute path of each; `path` is null when the server has no repos folder. */
@@ -52,16 +57,20 @@ export interface TicketBackend {
 
 export interface TicketService {
     /**
-     * Create the next project ticket of a business in `work/`.
+     * Create the next project ticket for a workspace, in `work/` of its
+     * tickets workspace. The server reads the workspace's `ticket-code` at the
+     * moment of creation, takes the code of its tickets workspace and, for a
+     * desk, writes `default-workspace` with the desk's name — so a code changed
+     * since the registry was loaded is the one used.
      *
-     * @param code - the business's ticket code: `DUE`
+     * @param workspace - the name of the window's workspace: `DuetDev`
      * @param name - the name as typed; empty for a ticket with a bare number
      * @throws with the server's reason when the ticket was not created
      */
-    create(code: string, name: string): Promise<NewTicket>;
+    create(workspace: string, name: string): Promise<NewTicket>;
 
     /**
-     * Move a ticket to the other shelf of its business.
+     * Move a ticket to the other shelf of its owner.
      *
      * @returns the new path of the folder
      * @throws with the server's reason when the ticket was not moved
@@ -89,8 +98,8 @@ export function ticketNameLength(typed: string): number {
 export class ServerTicketService implements TicketService {
     constructor(private readonly backend: TicketBackend) {}
 
-    async create(code: string, name: string): Promise<NewTicket> {
-        const made = await this.run('new_ticket', { name, code });
+    async create(workspace: string, name: string): Promise<NewTicket> {
+        const made = await this.run('new_ticket', { name, workspace });
         const shelf: Shelf = made.shelf === 'backlog' ? 'backlog' : 'work';
         return { number: made.number, shelf, folder: path.basename(made.folder), path: made.folder };
     }

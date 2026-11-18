@@ -7,6 +7,7 @@
  * - Path normalization
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 /**
@@ -17,6 +18,39 @@ export function normalizePath(p: string): string {
     const normalized = path.normalize(p);
     // On Windows, paths are case-insensitive
     return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+/**
+ * A folder's real path, for telling whether two paths name the same folder.
+ * The registry may hold a workspace through a symlink (`~/Google Drive/…`)
+ * while VS Code reports the window's folder by its real path
+ * (`~/Library/CloudStorage/…`), so plain string equality says "different".
+ * A path that cannot be resolved (missing, unreadable) compares as written.
+ */
+export function realPathOf(p: string): string {
+    let resolved = p;
+    try {
+        resolved = fs.realpathSync.native(p);
+    } catch {
+        // compare as written
+    }
+    return normalizePath(resolved).normalize('NFC');
+}
+
+/**
+ * The value of a one-line frontmatter field (`key: <raw>`): a trailing
+ * ` # comment` and one pair of surrounding quotes are dropped; an empty value,
+ * `null` and `~` are no value.
+ */
+export function frontmatterValue(raw: string): string | null {
+    // Trimmed first, so that a value which itself starts with `#` (the emoji #️⃣) is not taken for a comment
+    const value = raw.trim().replace(/\s+#.*$/, '').trim().replace(/^(["'`])(.*)\1$/, '$2').trim();
+    return value === '' || value === 'null' || value === '~' ? null : value;
+}
+
+/** Whether two paths name the same folder, symlinks resolved. */
+export function samePath(a: string, b: string): boolean {
+    return normalizePath(a) === normalizePath(b) || realPathOf(a) === realPathOf(b);
 }
 
 /**
@@ -37,7 +71,7 @@ export function formatAtReference(rootName: string, relativePath: string): strin
     return `\`@${body}\``;
 }
 
-/** A ticket folder: `DUE009`, `DUEX01_Name` — business code + three-character number. */
+/** A ticket folder: `DUE009`, `DUEX01_Name` — ticket code + three-character number. */
 const TICKET_FOLDER_RE = /^([A-Z]{3}(?:\d{3}|[A-Z]\d{2}))(?:_|$)/;
 
 /**
@@ -53,30 +87,33 @@ export function parseTicketFolderName(name: string): { number: string; rest: str
     return { number: match[1], rest: name.slice(match[1].length).replace(/^_/, '') };
 }
 
-/** Folders that hold a business's tickets; a ticket is recognised only below one. */
+/** Folders that hold a workspace's tickets; a ticket is recognised only below one. */
 const TICKET_STATUS_DIRS = new Set(['work', 'backlog', 'archive']);
+/** Grouping folders allowed between a shelf and a ticket, as Backend's `resolve_paths` walks them. */
+const MAX_GROUPING_DEPTH = 3;
 
 /**
  * Format the short ticket @-reference for a path inside a ticket folder:
  * `` `@DUE009/<rest>` `` (or `` `@DUE009` `` for the folder itself).
  *
  * The short form stays valid when the ticket moves between `work/`,
- * `backlog/` and `archive/`, so it beats `@<business>/work/DUE009_Name/...`.
+ * `backlog/` and `archive/`, so it beats `@<workspace>/work/DUE009_Name/...`.
  * The ticket is the outermost folder matching the ticket pattern that lies
- * below a `work` / `backlog` / `archive` folder (at any grouping depth, e.g.
- * `archive/2026/09/`). Returns null when the path is not inside a ticket.
+ * below a `work` / `backlog` / `archive` folder, at most three grouping
+ * folders deep (`archive/2026/09/`), the depth Backend's `resolve_paths`
+ * searches. Returns null when the path is not inside such a ticket.
  */
 export function formatTicketReference(absolutePath: string): string | null {
     const segments = absolutePath.split(/[\\/]/).filter(Boolean);
-    let belowStatusDir = false;
+    let shelf = -1;
     for (let i = 0; i < segments.length; i++) {
-        const match = belowStatusDir ? TICKET_FOLDER_RE.exec(segments[i]) : null;
+        const match = shelf >= 0 && i - shelf - 1 <= MAX_GROUPING_DEPTH ? TICKET_FOLDER_RE.exec(segments[i]) : null;
         if (match) {
             const rest = segments.slice(i + 1).join('/');
             return rest ? `\`@${match[1]}/${rest}\`` : `\`@${match[1]}\``;
         }
         if (TICKET_STATUS_DIRS.has(segments[i])) {
-            belowStatusDir = true;
+            shelf = i;
         }
     }
     return null;
@@ -86,22 +123,23 @@ export function formatTicketReference(absolutePath: string): string | null {
 export type ReadText = (filePath: string) => Promise<string>;
 
 /**
- * Format the @-reference through the nearest business:
- * `` `@<business name>/<relative>` ``.
+ * Format the @-reference through the nearest workspace:
+ * `` `@<workspace name>/<relative>` ``.
  *
- * Walks up from `absolutePath` (the path itself first, so a business folder
- * gives `` `@<name>` ``) to the nearest folder whose `context.json` declares a
- * non-empty `name`, and uses that canonical name — the one Duet registers —
- * not the folder name: `!СЕМЬЯ/…` copies as `` `@СЕМЬЯ/…` ``. Returns null
- * when no ancestor is a business (e.g. files in a repo under DuetData).
+ * Walks up from `absolutePath` (the path itself first, so a workspace folder
+ * gives `` `@<name>` ``) to the nearest folder that is a workspace — a
+ * `context.json` beside an `INDEX.md` whose frontmatter declares a non-empty
+ * `name` — and uses that name, the one Duet registers, not the folder name:
+ * `!СЕМЬЯ/…` copies as `` `@СЕМЬЯ/…` ``. Returns null when no ancestor is a
+ * workspace (e.g. files in a repo under DuetData).
  */
-export async function formatBusinessReference(
+export async function formatWorkspaceReference(
     absolutePath: string,
     readText: ReadText
 ): Promise<string | null> {
     let dir = absolutePath;
     for (;;) {
-        const name = await readBusinessName(dir, readText);
+        const name = await readWorkspaceName(dir, readText);
         if (name) {
             return formatAtReference(name, path.relative(dir, absolutePath));
         }
@@ -113,23 +151,27 @@ export async function formatBusinessReference(
     }
 }
 
-async function readBusinessName(dir: string, readText: ReadText): Promise<string | null> {
+async function readWorkspaceName(dir: string, readText: ReadText): Promise<string | null> {
+    try {
+        await readText(path.join(dir, 'context.json'));
+    } catch {
+        return null; // not a workspace folder
+    }
     let text: string;
     try {
-        text = await readText(path.join(dir, 'context.json'));
+        text = await readText(path.join(dir, 'INDEX.md'));
     } catch {
         return null;
     }
-    try {
-        const data: unknown = JSON.parse(text);
-        if (data && typeof data === 'object' && !Array.isArray(data)) {
-            const name = (data as Record<string, unknown>).name;
-            if (typeof name === 'string' && name.trim()) {
-                return name;
-            }
+    const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+    if (lines[0] !== '---') {
+        return null;
+    }
+    for (let i = 1; i < lines.length && lines[i] !== '---'; i++) {
+        const match = /^name\s*:(.*)$/.exec(lines[i]);
+        if (match) {
+            return frontmatterValue(match[1]);
         }
-    } catch {
-        // malformed manifest: not a business Duet registers
     }
     return null;
 }

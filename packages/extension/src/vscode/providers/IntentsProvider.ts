@@ -8,8 +8,8 @@ import { rowColorResource, rowIcon, rowLabel } from './rowLook';
 const INTENTS_MIME = 'application/vnd.code.tree.duet.intents';
 
 /**
- * «Активная Работа» view — the windows Duet opened in this program: business windows
- * first, then the active intents of every business. A flat list read from the
+ * «Активная Работа» view — the windows Duet opened in this program: workspace windows
+ * and the active intents of every workspace. A flat list read from the
  * window markers. One click switches to the window of the row; the order of
  * intents is set by dragging and is the same in every window. The first nine
  * rows carry a number, their place in the list — the one Cmd+1 … Cmd+9 switch by.
@@ -41,7 +41,7 @@ implements vscode.TreeDataProvider<ActiveIntent>, vscode.TreeDragAndDropControll
         // The text takes the colour that is in force in the row's window now
         item.resourceUri = rowColorResource(row.color, row.ticket);
         item.contextValue = row.subject;
-        item.tooltip = row.subject === 'business' ? row.workspaceFile : `${row.business}\n${row.workspaceFile}`;
+        item.tooltip = row.subject === 'workspace' ? row.workspaceFile : `${row.workspace}\n${row.workspaceFile}`;
         item.command = { command: 'duet.intents.switch', title: 'Переключиться', arguments: [row] };
         return item;
     }
@@ -60,7 +60,7 @@ implements vscode.TreeDataProvider<ActiveIntent>, vscode.TreeDragAndDropControll
     }
 
     handleDrag(source: readonly ActiveIntent[], dataTransfer: vscode.DataTransfer): void {
-        // Every row is dragged, a business window like an intent
+        // Every row is dragged, a workspace window like an intent
         if (source.length > 0) {
             dataTransfer.set(INTENTS_MIME, new vscode.DataTransferItem(source[0].ticket));
         }

@@ -23,7 +23,7 @@ import type {
 export const HOST_STATE_CHANNELS = {
   appState: 'app-state-changed',
   agents: 'agents:status-changed',
-  scan: 'root-contexts:scan-changed'
+  scan: 'root-workspaces:scan-changed'
 } as const
 
 export interface HostSyncDeps {

@@ -1,11 +1,14 @@
 /* eslint-disable @typescript-eslint/naming-convention -- VS Code setting keys are dotted */
 import { parseJsonc } from '../jsonc';
 import { backdropColor, chooseIntentColor, isPaletteColor, normalizeRemembered } from './colors';
+import { WorkspaceFolder, uniqueFolders } from '../workspace';
 import { TicketWorktree, repoFolders } from './worktrees';
 
 /**
- * The workspace file of an intent: `DuetData/workspaces/<business>/<ticket
- * folder>.code-workspace`. Duet owns it whole — it is rebuilt on every open by
+ * The workspace file of an intent: `DuetData/workspaces/<owner>/<ticket
+ * folder>.code-workspace`, under the workspace that owns the ticket whatever
+ * workspace it is worked in, so a change of `default-workspace` keeps the path,
+ * the colour and the tabs. Duet owns it whole — it is rebuilt on every open by
  * button and holds nothing but what Duet writes now; only the colours the
  * intent remembers survive a rebuild.
  */
@@ -22,23 +25,32 @@ export const INTENT_CANON_KEY = 'duet.intent.canon';
  * 2 — the colour block also sets the selection of lists (see `windowColorBlock`).
  * 3 — and the backdrop of highlighted text.
  * 4 — the tab label of the notepad carries the intent's emoji by the three
- *     steps of its row (`naming.ts:intentIcon`), not always the business's.
+ *     steps of its row (`naming.ts:intentIcon`), not always the workspace's.
  * 5 — the ticket's worktrees follow the main clones, each with a `name`
  *     (`worktrees.ts:repoFolders`).
+ * 6 — the window is built around the ticket's workspace: that workspace, the
+ *     ticket folder, then the rest of the workspace's window (`ticketWindowFolders`).
  */
-export const INTENT_CANON_VERSION = 5;
+export const INTENT_CANON_VERSION = 6;
 
 const WINDOW_COLOR_KEY = 'titleBar.activeBackground';
 
 export interface IntentWorkspaceSpec {
-    /** Absolute path of the business folder — the first folder of the window. */
-    businessPath: string;
-    /** `git_repos` aliases in declared order. */
+    /**
+     * Absolute path of the ticket's workspace D — the first folder of the window: the owner, or
+     * one of its desks that `default-workspace` names.
+     */
+    workspacePath: string;
+    /** Absolute path of the ticket folder — the second folder. */
+    ticketPath: string;
+    /** Tickets workspace of D when D is a desk (`ticket-code: inherit`) — the owner of the ticket; null otherwise. */
+    ticketsWorkspacePath?: string | null;
+    /** `git_repos` aliases of D in declared order. */
     aliases: string[];
     /** Worktrees of the ticket whose folders exist, in the server's order; absent or empty without a branch. */
     worktrees?: TicketWorktree[];
-    /** Additional folders of a meta business (`core/workspace.ts:metaExtraFolders`); absent or empty otherwise. */
-    extraFolders?: Array<{ path: string; name?: string }>;
+    /** Additional folders of a meta workspace D (`core/workspace.ts:metaExtraFolders`); absent or empty otherwise. */
+    extraFolders?: WorkspaceFolder[];
     /** Ticket folder name: `DUE017_IntentSwitcher`. */
     ticketFolder: string;
     /** Label of the notepad tab: `🧰 Intent Switcher` (`naming.ts:intentTabLabel`). */
@@ -77,20 +89,34 @@ export function windowColorBlock(color: string): Record<string, string> {
 }
 
 /**
+ * The folders of a ticket window: its workspace D first, the ticket folder T
+ * second, then the window of D without its first folder, in the same order —
+ * the tickets workspace of D when D is a desk, the repos of D with the
+ * ticket's worktrees among them, the additional folders of a meta workspace.
+ * The owner of the ticket is D or D's tickets workspace, so it is in the window
+ * and is there once. Repo paths are relative to `workspaces/<owner>/`, two
+ * levels below DuetData.
+ */
+export function ticketWindowFolders(spec: Omit<IntentWorkspaceSpec, 'ticketFolder' | 'tabLabel'>): WorkspaceFolder[] {
+    return uniqueFolders([
+        { path: spec.workspacePath },
+        { path: spec.ticketPath },
+        ...(spec.ticketsWorkspacePath ? [{ path: spec.ticketsWorkspacePath }] : []),
+        ...repoFolders(spec.aliases, spec.worktrees ?? []),
+        ...(spec.extraFolders ?? [])
+    ]);
+}
+
+/**
  * Text of the workspace file. Deterministic: the same input gives the same
- * bytes, so an unchanged file is never rewritten. Repo paths are relative to
- * `workspaces/<business>/`, two levels below DuetData.
+ * bytes, so an unchanged file is never rewritten.
  */
 export function buildIntentWorkspaceText(
     spec: IntentWorkspaceSpec,
     color: string,
     remembered: string[]
 ): string {
-    const folders = [
-        { path: spec.businessPath },
-        ...repoFolders(spec.aliases, spec.worktrees ?? []),
-        ...(spec.extraFolders ?? [])
-    ];
+    const folders = ticketWindowFolders(spec);
     const settings = {
         'workbench.editor.customLabels.patterns': {
             [`**/${spec.ticketFolder}/notepad.md`]: spec.tabLabel
@@ -188,43 +214,43 @@ export function planIntentWorkspace(
 }
 
 /**
- * What opening a business by button does to the colour of its window. The
- * workspace file of a business — `DuetData/workspaces/<business>.code-workspace`
- * — keeps its folders as before and gains a `settings` block: the colour of the
- * window and the colours the business remembers, by the same rules as an intent.
+ * What opening a workspace by button does to the colour of its window. The
+ * file of a workspace window — `DuetData/workspaces/<workspace>.code-workspace`
+ * — carries its folders and a `settings` block: the colour of the window and
+ * the colours the workspace remembers, by the same rules as an intent.
  */
-export type BusinessColorPlan =
+export type WorkspaceColorPlan =
     /** Write the file with these `settings`; undefined means "without a settings block", as before colours. */
     | { action: 'write'; settings: Record<string, unknown> | undefined; color: string | null }
     /** Leave the file as it is: a newer Duet wrote it. */
     | { action: 'as-is'; color: string | null };
 
 /**
- * @param existing - current text of the business's workspace file, null when there is none
+ * @param existing - current text of the workspace's file, null when there is none
  * @param occupied - colours of the open windows of this program
  * @param windowOpen - true when a window of this program has the file open: its colour is then kept as
  *                     it is, so the folders can be refreshed without recolouring a living window
  */
-export function planBusinessColor(
+export function planWorkspaceColor(
     existing: string | null,
     occupied: string[],
     windowOpen: boolean,
     random: () => number = Math.random
-): BusinessColorPlan {
+): WorkspaceColorPlan {
     const state = existing === null ? null : readIntentWorkspaceState(existing);
     if (state && state.canon !== null && state.canon > INTENT_CANON_VERSION) {
         return { action: 'as-is', color: state.color };
     }
     if (windowOpen) {
         return state?.color
-            ? { action: 'write', settings: businessSettings(state.color, state.remembered), color: state.color }
+            ? { action: 'write', settings: workspaceSettings(state.color, state.remembered), color: state.color }
             : { action: 'write', settings: undefined, color: null };
     }
     const choice = chooseIntentColor(state?.remembered ?? [], occupied, random);
-    return { action: 'write', settings: businessSettings(choice.color, choice.remembered), color: choice.color };
+    return { action: 'write', settings: workspaceSettings(choice.color, choice.remembered), color: choice.color };
 }
 
-function businessSettings(color: string, remembered: string[]): Record<string, unknown> {
+function workspaceSettings(color: string, remembered: string[]): Record<string, unknown> {
     return {
         'workbench.colorCustomizations': windowColorBlock(color),
         [INTENT_COLORS_KEY]: remembered,

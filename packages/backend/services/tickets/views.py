@@ -2,91 +2,43 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
 from pathlib import Path
 
-from services.resolve_paths import ContextRef
+from services.resolve_paths import WorkspaceRef
 from services.tickets.branch_info import BRANCH_FIELDS, block_lines
 from services.tickets.model import (
     INDEX_FILENAME,
     SHELVES,
-    Business,
     Ticket,
     TicketEnv,
     TicketError,
-    businesses_with_codes,
-    check_same_business,
+    TicketOwner,
+    check_same_owner,
+    default_workspace_problem,
     find_ticket,
+    find_workspace,
     group_numbers,
+    inherited_line,
     location_lines,
     parse_number,
     pluralize,
     record,
-    resolve_business,
+    resolve_owner,
 )
 
 UNSORTED = "Unsorted"
 
 
-@dataclass
-class AreaView(Business):
-    """A read-only area selection; parent headings still use the owning business."""
+def tickets(env: TicketEnv, workspace: str = "", code: str = "", number: str | list[str] = "",
+            parent: str = "", shelf: str = "") -> str:
+    """List a workspace's tickets. See the `tickets` MCP tool for the output format.
 
-    area: str
-    owner: Business
-
-    def find(self, number: str) -> list[Ticket]:
-        return self.owner.find(number)
-
-
-def _resolve_view(contexts: list[ContextRef], code: str = "", business: str = "",
-                  loaded: dict[str, Business] | None = None) -> Business:
-    """Resolve a ticket owner or an exact `business-area` value, without changing writes."""
-    if not business:
-        return resolve_business(contexts, code)
-    coded = businesses_with_codes(contexts)
-    # Registered ticket owners retain their existing meaning and conflict checks.
-    if any(context.name == business for context, _ in coded):
-        return resolve_business(contexts, code, business)
-    cache = loaded if loaded is not None else {}
-
-    def load(ticket_code: str) -> Business:
-        if ticket_code not in cache:
-            cache[ticket_code] = resolve_business(contexts, code=ticket_code)
-        return cache[ticket_code]
-
-    owners = [load(code)] if code else [load(k) for k in dict.fromkeys(k for _, k in coded)]
-    matches = []
-    for owner in owners:
-        if owner.unreadable:
-            numbers = ", ".join(t.number for t in owner.unreadable)
-            raise TicketError(f"can't select business area {business}: {owner.name} has "
-                              f"unreadable tickets ({numbers}), so their business area "
-                              "is unknown. Fix their INDEX.md files and try again.")
-        selected = [t for t in owner.tickets
-                    if t.frontmatter.get("business-area") == business]
-        if selected:
-            matches.append(AreaView(f"{business} — {owner.name}", owner.code,
-                                    owner.folder, selected, business, owner))
-    if len(matches) > 1:
-        names = ", ".join(f"{view.owner.name} ({view.code})" for view in matches)
-        raise TicketError(f"business area {business} occurs in multiple businesses: "
-                          f"{names}. Pass `code` as well to select its ticket owner.")
-    if matches:
-        return matches[0]
-    # Keep the existing actionable errors for unknown names and missing codes.
-    return resolve_business(contexts, code, business)
-
-
-def tickets(env: TicketEnv, code: str = "", business: str = "",
-            shelf: str = "", parent: str = "", number: str | list[str] = "") -> str:
-    """List a business's tickets. See the `tickets` MCP tool for the output format.
-
-    `number` is a lookup and stands alone. `parent` and `shelf` are filters
-    and combine. Conflicting arguments are rejected rather than ignored.
+    A workspace with `ticket-code: inherit` lists the tickets of the
+    workspace it inherits them from, and the answer says so. `number` is a
+    lookup and stands alone. `parent` and `shelf` are filters and combine.
+    Conflicting arguments are rejected rather than ignored.
     """
-    contexts, repos = env.contexts, env.repos
+    workspaces, repos = env.workspaces, env.repos
     shelf = (shelf or "").strip().lower()
     if shelf and shelf not in SHELVES:
         raise TicketError(f'`shelf` must be "work", "backlog", or "archive"; got "{shelf}".')
@@ -96,62 +48,68 @@ def tickets(env: TicketEnv, code: str = "", business: str = "",
                               "`number` to look up specific tickets, or `parent` and "
                               "`shelf` to list them.")
         if isinstance(number, list):
-            return _lookup_batch(contexts, repos, number, code, business)
-        return _lookup(contexts, repos, number, code, business, {})
+            return _lookup_batch(workspaces, repos, number, code, workspace)
+        return _lookup(workspaces, repos, number, code, workspace, {})
     if isinstance(number, list):
         raise TicketError("`number` is an empty list. Pass at least one ticket number.")
     if parent and parent.lower() != "unsorted":
         group = parse_number(parent)
-        biz = resolve_business(contexts, code=group[:3])
-        check_same_business(biz, group, code, "")
-        if business:
-            biz = _resolve_view(contexts, biz.code, business, {biz.code: biz})
-        return _render_group(biz, group, repos, shelf)
-    biz = _resolve_view(contexts, code, business)
+        owner = resolve_owner(workspaces, code=group[:3])
+        check_same_owner(workspaces, owner, group, code, workspace)
+        _mark_inherited(workspaces, owner, workspace)
+        return _with_inherited(owner, _render_group(owner, group, repos, shelf))
+    owner = resolve_owner(workspaces, code, workspace)
     if parent:
-        return _render_group(biz, None, repos, shelf)
+        return _with_inherited(owner, _render_group(owner, None, repos, shelf))
     if shelf:
-        return _render_shelf(biz, shelf, repos)
-    return _render_overview(biz, repos)
+        return _with_inherited(owner, _render_shelf(owner, shelf, repos))
+    return _render_overview(owner, repos)
 
 
-def _lookup(contexts: list[ContextRef], repos: Path | None, raw: str, code: str,
-            business: str, loaded: dict[str, Business]) -> str:
-    """Look up one ticket. `loaded` caches businesses so a batch reads each one once."""
+def _mark_inherited(workspaces: list[WorkspaceRef], owner: TicketOwner, workspace: str) -> None:
+    """Remember that `workspace` asked for the owner's tickets by inheriting them."""
+    if workspace:
+        ref = find_workspace(workspaces, workspace)
+        if Path(ref.folder) != owner.folder:
+            owner.inherited_by = ref.name
+
+
+def _with_inherited(owner: TicketOwner, text: str) -> str:
+    return "\n".join([*inherited_line(owner), text])
+
+
+def _lookup(workspaces: list[WorkspaceRef], repos: Path | None, raw: str, code: str,
+            workspace: str, loaded: dict[str, TicketOwner]) -> str:
+    """Look up one ticket. `loaded` caches owners so a batch reads each one once."""
     number = parse_number(raw)
     if code and code != number[:3]:
         # Checked before resolving, so an unknown `code` isn't reported as a missing ticket.
         raise TicketError(f"{number} doesn't match ticket code {code}. A ticket number "
-                          f"already identifies its business; omit `code` and `business`.")
+                          f"already identifies its workspace; omit `code` and `workspace`.")
     if number[:3] not in loaded:
-        loaded[number[:3]] = resolve_business(contexts, code=number[:3])
-    biz = loaded[number[:3]]
-    check_same_business(biz, number, code, "")
-    ticket = find_ticket(biz, number)
-    if business:
-        biz = _resolve_view(contexts, biz.code, business, loaded)
-        if isinstance(biz, AreaView) and ticket not in biz.tickets:
-            raise TicketError(f"{number} is not in business area {biz.area}. Omit "
-                              "`business` to look it up without an area filter.")
+        loaded[number[:3]] = resolve_owner(workspaces, code=number[:3])
+    owner = loaded[number[:3]]
+    check_same_owner(workspaces, owner, number, code, workspace)
+    ticket = find_ticket(owner, number)
     record(ticket, repos)
-    return _render_ticket(biz, ticket, repos)
+    return _render_ticket(owner, ticket, repos, workspaces)
 
 
-def _lookup_batch(contexts: list[ContextRef], repos: Path | None, numbers: list[str],
-                  code: str, business: str) -> str:
+def _lookup_batch(workspaces: list[WorkspaceRef], repos: Path | None, numbers: list[str],
+                  code: str, workspace: str) -> str:
     """Look up several tickets. One failure doesn't affect the others.
 
     Each number gets its own section; one that can't be resolved gets an
     `Error:` section under its own heading. The first line says how many
     resolved. If none do, the whole call is an error.
     """
-    loaded: dict[str, Business] = {}
+    loaded: dict[str, TicketOwner] = {}
     sections: list[str] = []
     failed: list[str] = []
     for raw in numbers:
         label = str(raw).strip().lstrip("@")
         try:
-            sections.append(_lookup(contexts, repos, raw, code, business, loaded))
+            sections.append(_lookup(workspaces, repos, raw, code, workspace, loaded))
         except TicketError as error:
             failed.append(label)
             sections.append(f"### {label}\n\nError: {error}")
@@ -194,8 +152,8 @@ def _ticket_entry(ticket: Ticket, current_shelf: str) -> str:
     return f"{text} ({', '.join(tags)})" if tags else text
 
 
-def _group_heading(biz: Business, number: str, current_shelf: str) -> tuple[str, Ticket | None]:
-    found = biz.find(number)
+def _group_heading(owner: TicketOwner, number: str, current_shelf: str) -> tuple[str, Ticket | None]:
+    found = owner.find(number)
     if not found:
         return f"{number} (not found)", None
     group = found[0]
@@ -222,15 +180,17 @@ def _group_branch(group: Ticket | None, repos: Path | None) -> list[str]:
     return [*branch, ""] if branch else []
 
 
-def _render_overview(biz: Business, repos: Path | None) -> str:
+def _render_overview(owner: TicketOwner, repos: Path | None) -> str:
     """Render the default view: active work, with each group's backlog alongside."""
-    lines = [f"### Tickets of {biz.name} ({biz.code})", "",
-             f"**Business folder:** `{biz.folder}`", ""]
+    heading = f"### Tickets of {owner.name} ({owner.code})"
+    if owner.inherited_by:
+        heading += f", inherited by {owner.inherited_by}"
+    lines = [heading, "", f"**Workspace folder:** `{owner.folder}`", ""]
     open_shelves = ("work", "backlog")
     backlog_groups: list[str] = []
-    for number in group_numbers(biz):
-        title, group = _group_heading(biz, number, "work")
-        items = biz.children(number)
+    for number in group_numbers(owner):
+        title, group = _group_heading(owner, number, "work")
+        items = owner.children(number)
         listed = [t for t in items if t.shelf in open_shelves]
         has_active = any(t.shelf == "work" for t in items)
         if group and group.shelf == "backlog" and not has_active:
@@ -239,35 +199,31 @@ def _render_overview(biz: Business, repos: Path | None) -> str:
         elif (group and group.shelf == "work") or has_active or (listed and not group) \
                 or (listed and group.shelf == "archive"):
             lines += _render_section(title, group, items, listed, "work", repos)
-    unsorted = biz.children(None)
+    unsorted = owner.children(None)
     if any(t.shelf in open_shelves for t in unsorted):
         lines += _render_section(UNSORTED, None, unsorted,
                                  [t for t in unsorted if t.shelf in open_shelves], "work",
                                  repos)
     lines += backlog_groups
-    lines += _render_unreadable(biz, open_shelves)
-    lines += _render_archive_summary(biz)
+    lines += _render_unreadable(owner, open_shelves)
+    lines += _render_archive_summary(owner)
 
-    selector = f'code="{biz.code}"'
-    if isinstance(biz, AreaView):
-        # JSON quoting also handles names containing quotes or backslashes.
-        selector += f", business={json.dumps(biz.area, ensure_ascii=False)}"
+    selector = f'code="{owner.code}"'
     examples = [f'`tickets({selector}, shelf="backlog")`',
                 f'`tickets({selector}, shelf="archive")`']
-    groups = [n for n in group_numbers(biz) if biz.find(n)]
+    groups = [n for n in group_numbers(owner) if owner.find(n)]
     if groups:
-        scope = f"{selector}, " if isinstance(biz, AreaView) else ""
-        examples.append(f'`tickets({scope}parent="{groups[0]}")`')
-    if biz.tickets:
-        projects = [t for t in biz.tickets if not t.is_group and t.shelf == "work"]
-        examples.append(f'`tickets(number="{(projects or biz.tickets)[0].number}")`')
+        examples.append(f'`tickets(parent="{groups[0]}")`')
+    if owner.tickets:
+        projects = [t for t in owner.tickets if not t.is_group and t.shelf == "work"]
+        examples.append(f'`tickets(number="{(projects or owner.tickets)[0].number}")`')
     lines += ["", "For more detail: " + ", ".join(examples) + "."]
     return "\n".join(lines)
 
 
-def _render_unreadable(biz: Business, shelves: tuple[str, ...]) -> list[str]:
+def _render_unreadable(owner: TicketOwner, shelves: tuple[str, ...]) -> list[str]:
     """List tickets that couldn't be read, so they aren't silently dropped from a listing."""
-    unreadable = [t for t in biz.unreadable if t.shelf in shelves]
+    unreadable = [t for t in owner.unreadable if t.shelf in shelves]
     if not unreadable:
         return []
     return ["#### Unreadable", "",
@@ -276,7 +232,7 @@ def _render_unreadable(biz: Business, shelves: tuple[str, ...]) -> list[str]:
             *[f"* `{t.number}` {t.name}: {t.read_error}" for t in unreadable], ""]
 
 
-def _render_archive_summary(biz: Business) -> list[str]:
+def _render_archive_summary(owner: TicketOwner) -> list[str]:
     """Summarize the archive: its size, and what the sections above don't show.
 
     The lines under the count are deliberately not a breakdown that adds up:
@@ -284,20 +240,20 @@ def _render_archive_summary(biz: Business) -> list[str]:
     section, so only closed programs, closed routines, and closed projects
     with no parent are named here. "including" says so.
     """
-    archived = [t for t in biz.tickets if t.shelf == "archive"]
+    archived = [t for t in owner.tickets if t.shelf == "archive"]
     lines = ["#### Archive", ""]
     if not archived:
         return lines + ["No tickets."]
     notable: list[str] = []
-    for work_type in ("program", "routine"):
-        of_type = [t for t in archived if t.work_type == work_type]
+    for ticket_type in ("program", "routine"):
+        of_type = [t for t in archived if t.ticket_type == ticket_type]
         if of_type:
             by_close_date = sorted(
                 of_type, key=lambda t: (t.frontmatter.get_list("closed")[-1:], t.number))
             names = ", ".join(t.number for t in by_close_date[-5:])
             suffix = ", 5 most recent" if len(of_type) > 5 else ""
-            notable.append(f"* {pluralize(len(of_type), work_type)} ({names}{suffix})")
-    orphans = [t for t in archived if t.work_type == "project" and t.parent is None]
+            notable.append(f"* {pluralize(len(of_type), ticket_type)} ({names}{suffix})")
+    orphans = [t for t in archived if t.ticket_type == "project" and t.parent is None]
     if orphans:
         word = "project" if len(orphans) == 1 else "projects"
         notable.append(f"* {len(orphans)} {word} without a parent")
@@ -305,52 +261,48 @@ def _render_archive_summary(biz: Business) -> list[str]:
     return lines + ([f"{count}, including:", "", *notable] if notable else [f"{count}."])
 
 
-def _render_shelf(biz: Business, shelf: str, repos: Path | None) -> str:
+def _render_shelf(owner: TicketOwner, shelf: str, repos: Path | None) -> str:
     """Render every ticket on one shelf, grouped by parent."""
-    lines = [f"### {biz.name} ({biz.code}) {shelf}", ""]
-    if not any(t.shelf == shelf for t in biz.tickets):
+    lines = [f"### {owner.name} ({owner.code}) {shelf}", ""]
+    if not any(t.shelf == shelf for t in owner.tickets):
         return "\n".join(lines + ["No tickets."])
-    for number in group_numbers(biz):
-        title, group = _group_heading(biz, number, shelf)
-        items = biz.children(number)
+    for number in group_numbers(owner):
+        title, group = _group_heading(owner, number, shelf)
+        items = owner.children(number)
         listed = [t for t in items if t.shelf == shelf]
         if listed or (group and group.shelf == shelf):
             if group and group.shelf == shelf == "archive":
                 closed = group.frontmatter.get_list("closed")
                 title += f" (closed {closed[-1]})" if closed else ""
             lines += _render_section(title, group, items, listed, shelf, repos)
-    unsorted = biz.children(None)
+    unsorted = owner.children(None)
     if any(t.shelf == shelf for t in unsorted):
         lines += _render_section(UNSORTED, None, unsorted,
                                  [t for t in unsorted if t.shelf == shelf], shelf, repos)
-    lines += _render_unreadable(biz, (shelf,))
+    lines += _render_unreadable(owner, (shelf,))
     return "\n".join(lines).rstrip("\n")
 
 
-def _render_group(biz: Business, number: str | None, repos: Path | None,
+def _render_group(owner: TicketOwner, number: str | None, repos: Path | None,
                   shelf: str = "") -> str:
     """Render one group's tickets: every shelf by default, or just `shelf`."""
-    items = biz.children(number)
-    if isinstance(biz, AreaView) and number and not items and not any(
-            t.number == number for t in biz.tickets):
-        raise TicketError(f"{number} has no tickets in business area {biz.area} "
-                          "and is not in that area itself.")
+    items = owner.children(number)
     note: list[str] = []
     group: Ticket | None = None
     if number is None:
         title = UNSORTED
-    elif not biz.find(number) and items:
+    elif not owner.find(number) and items:
         # Still answer: this is how a caller finds tickets to reassign.
         title = f"{number} (not found)"
         note = [f"No ticket {number} exists, but the tickets below name it as their parent. "
                 f"Give them a valid parent with `edit_ticket`.", ""]
     else:
-        group = find_ticket(biz, number)
+        group = find_ticket(owner, number)
         if not group.is_group and not items:
             raise TicketError(f"{group.title} is a project with no tickets under it. "
                               f'Use `tickets(number="{number}")` to see the ticket itself.')
         title = f"{group.title} ({group.shelf})" if group.shelf != "work" else group.title
-    lines = [f"### {title} — {biz.name} ({biz.code})", "", *note]
+    lines = [f"### {title} — {owner.name} ({owner.code})", "", *note]
     if group and group.description:
         lines += [group.description, ""]
     lines += _group_branch(group, repos)
@@ -367,12 +319,14 @@ def _render_group(biz: Business, number: str | None, repos: Path | None,
 _STATE_LABELS = {"work": "in work", "backlog": "in backlog", "archive": "closed (archived)"}
 
 
-def _render_ticket(biz: Business, ticket: Ticket, repos: Path | None) -> str:
+def _render_ticket(owner: TicketOwner, ticket: Ticket, repos: Path | None,
+                   workspaces: list[WorkspaceRef]) -> str:
     """Render a single ticket: its location and branches, its frontmatter fields, and any
-    tickets under it. The branch fields are shown by the branch block, not in the list."""
+    tickets under it. The branch fields are shown by the branch block, not in the list.
+    A `default-workspace` the ticket can't open in gets a note saying where it opens."""
     lines = [f"### {ticket.title}", "",
-             f"{ticket.work_type.capitalize()}, {_STATE_LABELS[ticket.shelf]}. "
-             f"Business: {biz.name} ({biz.code}).", "",
+             f"{ticket.ticket_type.capitalize()}, {_STATE_LABELS[ticket.shelf]}. "
+             f"Owner workspace: {owner.name} ({owner.code}).", "",
              *location_lines(ticket, repos), ""]
     if ticket.read_error:
         return "\n".join(lines + [f"{INDEX_FILENAME} could not be read ({ticket.read_error}), "
@@ -386,10 +340,12 @@ def _render_ticket(biz: Business, ticket: Ticket, repos: Path | None) -> str:
             continue
         values = ticket.frontmatter.get_list(key)
         text = ", ".join(values) if values else "none"
-        if key == "parent" and ticket.parent and biz.find(ticket.parent):
-            text = biz.find(ticket.parent)[0].title
+        if key == "parent" and ticket.parent and owner.find(ticket.parent):
+            text = owner.find(ticket.parent)[0].title
         lines.append(f"* {key}: {text}")
-    children = biz.children(ticket.number)
+    if note := _default_workspace_note(workspaces, owner, ticket):
+        lines += ["", note]
+    children = owner.children(ticket.number)
     if children or ticket.is_group:
         ordered = sorted(children, key=lambda t: (SHELVES.index(t.shelf), t.number))
         lines += ["", _count_line(children)]
@@ -398,17 +354,42 @@ def _render_ticket(biz: Business, ticket: Ticket, repos: Path | None) -> str:
     return "\n".join(lines)
 
 
-def ticket_orientation(env: TicketEnv, raw: str) -> str:
-    """The section `orientation(ticket=...)` adds: where the ticket is and its branches."""
+def _default_workspace_note(workspaces: list[WorkspaceRef], owner: TicketOwner,
+                            ticket: Ticket) -> str:
+    """A note for a `default-workspace` the ticket can't open in, or ""."""
+    default = ticket.default_workspace
+    problem = default_workspace_problem(workspaces, owner.folder, default) if default else None
+    if not problem:
+        return ""
+    return (f"Note: `default-workspace` names `@{default}`, which {problem}, so the ticket "
+            f"opens in its owner workspace `@{owner.name}`.")
+
+
+def find_for_orientation(env: TicketEnv, raw: str) -> tuple[TicketOwner, Ticket]:
+    """The owner and the ticket a number names, for `orientation`."""
     number = parse_number(raw)
-    biz = resolve_business(env.contexts, code=number[:3])
-    ticket = find_ticket(biz, number)
+    owner = resolve_owner(env.workspaces, code=number[:3])
+    return owner, find_ticket(owner, number)
+
+
+def ticket_orientation(env: TicketEnv, owner: TicketOwner, ticket: Ticket) -> str:
+    """The section `orientation` adds for a ticket: where it is, its workspace, its branches."""
     lines = [f"**Ticket:** `@{ticket.number}` {ticket.name or ticket.number} — "
-             f"{ticket.work_type}, {_STATE_LABELS[ticket.shelf]}. Business: {biz.name}.", "",
-             f"**Folder:** `{ticket.folder}`", ""]
+             f"{ticket.ticket_type}, {_STATE_LABELS[ticket.shelf]}. "
+             f"Owner workspace: {owner.name}.", ""]
+    default = None if ticket.read_error else ticket.default_workspace
+    if default:
+        problem = default_workspace_problem(env.workspaces, owner.folder, default)
+        if problem:
+            lines += [f"**Default workspace:** `@{default}` {problem}, so the ticket's window "
+                      f"opens in its owner workspace `@{owner.name}`.", ""]
+        else:
+            lines += [f"**Default workspace:** `@{default}` — the ticket's window opens there.",
+                      ""]
+    lines += [f"**Folder:** `{ticket.folder}`", ""]
     if ticket.read_error:
         return "\n".join(lines + [f"{INDEX_FILENAME} could not be read ({ticket.read_error}), "
-                                  f"so its branches are unknown."])
+                                  f"so its default workspace and branches are unknown."])
     branch = block_lines(ticket.number, ticket.branches, env.repos)
     if not branch or not ticket.branches.active:
         branch = ["No branch: work on this ticket goes to `main` in the main clones "

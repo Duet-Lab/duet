@@ -2,7 +2,7 @@
 
 Pointer-based architecture:
 - ~/.org.ve68.duet (pointer) → duetDataPath, duetConfigPath, machine
-- DuetConfig/settings.json → root_context_folders (@aliases), timestampTZ
+- DuetConfig/settings.json → root_workspace_folders (@aliases), timestampTZ
 - DuetConfig/{machine}.json → port, @alias mappings
 
 Backend reads pointer at startup, resolves all paths itself.
@@ -49,7 +49,7 @@ def _get_pointer() -> PointerData:
 
 
 def _get_resolver() -> AliasResolver:
-    # Host edits {machine}.json in runtime (add-root-context flow writes a new
+    # Host edits {machine}.json in runtime (add-root-workspace flow writes a new
     # @alias before appending it to settings.json). A cached resolver would keep
     # a snapshot from startup and reject freshly-added aliases with
     # AliasNotFoundError, breaking the next /scan. Reading a small JSON on each
@@ -128,7 +128,7 @@ def read_settings() -> dict:
     """Read settings.json from DuetConfig.
 
     Returns:
-        Dict with root_context_folders (list of @aliases), timestampTZ.
+        Dict with root_workspace_folders (list of @aliases), timestampTZ.
 
     Raises:
         ConfigError: If file is missing or invalid.
@@ -285,10 +285,10 @@ def get_timezone() -> dict:
     return timezone
 
 
-def get_root_context_folders() -> list[str]:
-    """Get list of root context folders (resolved from @aliases).
+def get_root_workspace_folders() -> list[str]:
+    """Get list of root workspace folders (resolved from @aliases).
 
-    Reads root_context_folders from settings.json (as @aliases),
+    Reads root_workspace_folders from settings.json (as @aliases),
     resolves them to absolute paths using machine config.
 
     Normalizes paths to NFC for consistent comparison.
@@ -297,27 +297,27 @@ def get_root_context_folders() -> list[str]:
         List of absolute paths.
 
     Raises:
-        ConfigError: If root_context_folders not set or alias not found.
+        ConfigError: If root_workspace_folders not set or alias not found.
     """
     settings = read_settings()
-    folders = settings.get("root_context_folders")
+    folders = settings.get("root_workspace_folders")
 
     if folders is None:
         raise ConfigError(
-            "root_context_folders not set in settings.json. "
-            "Add 'root_context_folders' field with list of @aliases."
+            "root_workspace_folders not set in settings.json. "
+            "Add 'root_workspace_folders' field with list of @aliases."
         )
 
     if not isinstance(folders, list):
         raise ConfigError(
-            f"root_context_folders must be a list in settings.json, got {type(folders).__name__}"
+            f"root_workspace_folders must be a list in settings.json, got {type(folders).__name__}"
         )
 
     resolver = _get_resolver()
     try:
         resolved = resolver.resolve_all(folders)
     except Exception as e:
-        raise ConfigError(f"Failed to resolve root_context_folders: {e}") from e
+        raise ConfigError(f"Failed to resolve root_workspace_folders: {e}") from e
 
     # Normalize Unicode: macOS filesystem may use NFD
     return [unicodedata.normalize("NFC", f) for f in resolved]

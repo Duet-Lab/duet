@@ -14,10 +14,10 @@ describe('ServerTicketService', () => {
         const ticketAction = vi.fn(async () => answer({
             tickets: [{ number: 'DUE039', name: 'UiResearch', shelf: 'work', folder: '/drive/DuetLab/work/DUE039_UiResearch' }]
         }));
-        const made = await new ServerTicketService({ ticketAction }).create('DUE', 'ui research');
+        const made = await new ServerTicketService({ ticketAction }).create('DuetLab', 'ui research');
 
-        // The name goes as typed: the folder name is made by the server
-        expect(ticketAction).toHaveBeenCalledWith('new_ticket', { name: 'ui research', code: 'DUE' });
+        // The name goes as typed: the folder name is made by the server; the code too, from the workspace's name
+        expect(ticketAction).toHaveBeenCalledWith('new_ticket', { name: 'ui research', workspace: 'DuetLab' });
         expect(made).toEqual({
             number: 'DUE039', shelf: 'work', folder: 'DUE039_UiResearch', path: '/drive/DuetLab/work/DUE039_UiResearch'
         });
@@ -41,7 +41,7 @@ describe('ServerTicketService', () => {
 
     it('says the server did not answer when the request itself fails', async () => {
         const ticketAction = async (): Promise<TicketActionResponse> => { throw new Error('fetch failed'); };
-        await expect(new ServerTicketService({ ticketAction }).create('DUE', 'x'))
+        await expect(new ServerTicketService({ ticketAction }).create('DuetLab', 'x'))
             .rejects.toThrow(/сервер Duet не ответил.*fetch failed/);
     });
 

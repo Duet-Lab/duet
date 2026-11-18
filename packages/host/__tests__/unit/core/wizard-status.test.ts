@@ -143,7 +143,7 @@ describe('core/wizard-status', () => {
       expect(s['workspaces']).toBe('error')
     })
 
-    it('leaves business-folders undefined when no scan performed', () => {
+    it('leaves workspaces undefined when no scan performed', () => {
       const s = computePageStatuses(baseInput)
       expect(s['workspaces']).toBeUndefined()
     })
@@ -187,24 +187,24 @@ describe('core/wizard-status', () => {
             reason_code: 'future_version',
             description: 'settings.json is from a future Duet version'
           },
-          contextErrors: [],
+          workspaceErrors: [],
           migratedCount: 0
         }
       })
       expect(s['duet-paths']).toBe('error')
     })
 
-    it('marks duet-paths as error when migration has per-context errors (data corruption is red)', () => {
+    it('marks duet-paths as error when migration has per-workspace errors (data corruption is red)', () => {
       const s = computePageStatuses({
         ...baseInput,
         migrationStatus: {
           critical: null,
-          contextErrors: [
+          workspaceErrors: [
             {
               path: '/foo/Х',
-              root_context_path: '/foo/Х',
+              root_workspace_path: '/foo/Х',
               reason_code: 'future_version',
-              description: 'context manifest from future version'
+              description: 'workspace manifest from future version'
             }
           ],
           migratedCount: 0
@@ -216,7 +216,7 @@ describe('core/wizard-status', () => {
     it('marks duet-paths as ok when migration is clean and paths set', () => {
       const s = computePageStatuses({
         ...baseInput,
-        migrationStatus: { critical: null, contextErrors: [], migratedCount: 0 }
+        migrationStatus: { critical: null, workspaceErrors: [], migratedCount: 0 }
       })
       expect(s['duet-paths']).toBe('ok')
     })
@@ -294,14 +294,14 @@ describe('core/wizard-status', () => {
       expect(scanResultToPageStatus({ status: 'ok', entities_count: 5, errors: [] })).toBe('ok')
     })
 
-    it('returns warning when only warning-codes (name_collision, repo_collision, missing_manifest)', () => {
+    it('returns warning when only warning-codes (name_collision, repo_collision, ticket_code_collision)', () => {
       expect(
         scanResultToPageStatus({
           status: 'ok',
           entities_count: 1,
           errors: [
             { path: '/foo', reason_code: 'name_collision', description: 'x' },
-            { path: '/bar', reason_code: 'missing_manifest', description: 'y' }
+            { path: '/bar', reason_code: 'ticket_code_collision', description: 'y' }
           ]
         })
       ).toBe('warning')

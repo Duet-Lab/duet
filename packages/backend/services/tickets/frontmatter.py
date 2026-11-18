@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 
 # Canonical field order, used to place a field that isn't in the file yet.
 FIELD_ORDER = (
-    "folder-type", "work-type", "routine-type", "icon", "description",
+    "folder-type", "ticket-type", "routine-type", "icon", "description",
     "opened", "closed", "reopened", "renamed-from", "renamed",
-    "business-area", "parent",
+    "default-workspace", "parent",
     # Written only by the branch operations (`services/tickets/branches.py`).
     # They come right after `parent` because the extension reads only the
     # first 2 KB of INDEX.md and must still see the fields above them.

@@ -18,39 +18,39 @@ class EntityFactory:
     """Factory for creating Entity objects with sensible defaults.
 
     Usage:
-        # Plain context
-        entity = EntityFactory.context("МетаЛаб", "/path")
+        # Plain workspace
+        entity = EntityFactory.workspace("МетаЛаб", "/path")
 
-        # Context with git_url (git-backed product lives in repo)
-        entity = EntityFactory.context("Duet", "/path", git_url="https://...")
+        # Workspace with git_url (git-backed product lives in repo)
+        entity = EntityFactory.workspace("Duet", "/path", git_url="https://...")
 
-        # Meta-context (one per workspace)
-        entity = EntityFactory.context("БАЗА", "/path", meta=True)
+        # Meta workspace (one per installation)
+        entity = EntityFactory.workspace("БАЗА", "/path", meta=True)
 
         # Insert directly into db
-        entity_id = EntityFactory.insert_context(db, "МетаЛаб", "/path")
+        entity_id = EntityFactory.insert_workspace(db, "МетаЛаб", "/path")
     """
 
-    DEFAULT_ICON_CONTEXT = "📁"
+    DEFAULT_ICON_WORKSPACE = "📁"
     DEFAULT_ICON_GIT = "📦"
     DEFAULT_ICON_COMPONENT = "📁"
 
     @classmethod
-    def context(
+    def workspace(
         cls,
-        name: str = "Context",
-        drive_path: str = "/context",
+        name: str = "Workspace",
+        drive_path: str = "/workspace",
         **kwargs,
     ) -> Entity:
-        """Create a context entity.
+        """Create a workspace entity.
 
-        Pass ``meta=True`` for the meta-context, ``git_url=...`` for a
-        context whose product lives in a git repo.
+        Pass ``meta=True`` for the meta workspace, ``git_url=...`` for a
+        workspace whose product lives in a git repo.
         """
-        icon_default = cls.DEFAULT_ICON_GIT if kwargs.get("git_url") else cls.DEFAULT_ICON_CONTEXT
+        icon_default = cls.DEFAULT_ICON_GIT if kwargs.get("git_url") else cls.DEFAULT_ICON_WORKSPACE
         return Entity(
             id=kwargs.pop("id", None),
-            type="context",
+            type="workspace",
             name=name,
             icon=kwargs.pop("icon", icon_default),
             drive_path=drive_path,
@@ -67,7 +67,7 @@ class EntityFactory:
         """Create a component entity (used in tests that pre-populate DB)."""
         return Entity(
             id=kwargs.pop("id", None),
-            type="context",
+            type="workspace",
             name=name,
             icon=kwargs.pop("icon", cls.DEFAULT_ICON_COMPONENT),
             drive_path=drive_path,
@@ -75,21 +75,21 @@ class EntityFactory:
         )
 
     @classmethod
-    def insert_context(
+    def insert_workspace(
         cls,
         db,
-        name: str = "Context",
-        drive_path: str = "/context",
+        name: str = "Workspace",
+        drive_path: str = "/workspace",
         **kwargs,
     ) -> int:
-        """Create and insert a context entity, return its ID."""
-        return db.insert_entity(cls.context(name, drive_path, **kwargs))
+        """Create and insert a workspace entity, return its ID."""
+        return db.insert_entity(cls.workspace(name, drive_path, **kwargs))
 
     @classmethod
     def insert_hierarchy(cls, db, base_path: str = "/repos") -> dict[str, int]:
-        """Create a standard 3-level context hierarchy.
+        """Create a standard 3-level workspace hierarchy.
 
-        Top-level (root context) -> intermediate context -> context-with-git.
+        Root workspace -> intermediate workspace -> workspace-with-git.
 
         Returns dict: {"root": id, "mid": id, "product": id}.
         """
@@ -97,9 +97,9 @@ class EntityFactory:
         mid_path = f"{root_path}/Mid"
         product_path = f"{mid_path}/Product"
 
-        root_id = cls.insert_context(db, "Root", root_path)
-        mid_id = cls.insert_context(db, "Mid", mid_path, parent_id=root_id)
-        product_id = cls.insert_context(
+        root_id = cls.insert_workspace(db, "Root", root_path)
+        mid_id = cls.insert_workspace(db, "Mid", mid_path, parent_id=root_id)
+        product_id = cls.insert_workspace(
             db,
             "Product",
             product_path,

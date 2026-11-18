@@ -11,13 +11,12 @@ Updated frontmatter:
 
 ```yaml
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 description: Agenda and reply conventions
 opened: 2026-10-01
 renamed-from: DUE008_CoreProtocols
 renamed: 2026-10-08
-business-area: DuetWork
 parent: DUEX02
 ---
 ```

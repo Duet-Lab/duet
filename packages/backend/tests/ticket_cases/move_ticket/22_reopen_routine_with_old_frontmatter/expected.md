@@ -10,12 +10,11 @@ Updated frontmatter:
 
 ```yaml
 ---
-folder-type: work
-work-type: process
+folder-type: ticket
+ticket-type: process
 opened: 2026-10-01
 closed: 2026-10-04
 reopened: 2026-10-08
-business-area: DuetLab
 parent: null
 ---
 ```

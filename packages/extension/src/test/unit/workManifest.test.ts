@@ -31,14 +31,14 @@ describe('М1.1, T7: вью', () => {
         expect(views.find(view => view.id === 'duet.intents')?.when).toBe('duet.hasPointer');
     });
 
-    it('перед вью бизнесов: между «Рабочей папкой» и «Все Бизнесы» только вью, которых при готовом Duet не видно', () => {
+    it('перед вью воркспейсов: между «Рабочей папкой» и «Все воркспейсы» только вью, которых при готовом Duet не видно', () => {
         const views: Array<{ id: string; when: string; visibility?: string }> = contributes.views['duet-explorer'];
         const between = views.slice(views.findIndex(view => view.id === 'duet.work') + 1, views.findIndex(view => view.id === 'duet.contexts'));
         expect(between.map(view => view.id)).toEqual(['duet.status', 'duet.context']);
         expect(between[0].when).toBe('!duet.ready');
     });
 
-    it('«КОНТЕКСТ» устарел: изначально скрыт, остаётся в меню панели', () => {
+    it('«ВОРКСПЕЙС» устарел: изначально скрыт, остаётся в меню панели', () => {
         const views: Array<{ id: string; visibility?: string }> = contributes.views['duet-explorer'];
         expect(views.find(view => view.id === 'duet.context')?.visibility).toBe('hidden');
     });

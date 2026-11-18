@@ -4,16 +4,15 @@
 
 **Index:** `@DUE037/INDEX.md`
 
-Project in work. No parent. No business area; set one with `edit_ticket` if it belongs to one.
+Project in work of DuetLab. No parent.
 
 Frontmatter written to INDEX.md:
 
 ```yaml
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 opened: 2026-10-08
-business-area:
 parent: null
 ---
 ```

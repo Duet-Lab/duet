@@ -11,8 +11,9 @@ import { ElectronAPI } from '@electron-toolkit/preload'
 export type {
   AppStatus,
   AppState,
-  RootContextEntry,
+  RootWorkspaceEntry,
   DeployChannel,
+  BackendSources,
   DeployStatus,
   BackendStatus,
   PythonStatus,
@@ -27,9 +28,9 @@ export type {
   AppInfo,
   ScanError,
   ScanResult,
-  ContextEntity,
-  ContextsCache,
-  MigrationContextError,
+  WorkspaceEntity,
+  WorkspacesCache,
+  MigrationWorkspaceError,
   MigrationCriticalError,
   MigrationResult
 } from '../shared/types'
@@ -39,13 +40,14 @@ export type { PageStatus, PageStatuses, WizardPage } from '../core/wizard-status
 // Import for use in DuetAPI interface
 import type {
   AppState,
-  RootContextEntry,
+  BackendSources,
+  RootWorkspaceEntry,
   DeployStatus,
   BackendStatus,
   PythonStatus,
   AgentInfo,
   ScanResult,
-  ContextsCache,
+  WorkspacesCache,
   MigrationResult
 } from '../shared/types'
 
@@ -64,6 +66,8 @@ export interface DuetAPI {
   // Config
   setUserName: (name: string) => Promise<AppState>
   setDeployChannel: (channel: 'dev' | 'prod') => Promise<AppState>
+  getBackendSources: () => Promise<BackendSources>
+  setDevBackendPath: (path: string) => Promise<AppState>
 
   // Deploy
   getDeployStatus: () => Promise<DeployStatus>
@@ -90,14 +94,14 @@ export interface DuetAPI {
   configureAgents: () => Promise<AgentInfo[]>
   fixAgentIssue: (agentId: string, reasonCode: string) => Promise<boolean>
 
-  // Root Contexts
-  getRootContextFolders: () => Promise<RootContextEntry[]>
-  saveRootContextFolders: (folders: string[]) => Promise<void>
-  addRootContextFolder: (absolutePath: string) => Promise<RootContextEntry[]>
-  scanContexts: () => Promise<ScanResult>
+  // Root Workspaces
+  getRootWorkspaceFolders: () => Promise<RootWorkspaceEntry[]>
+  saveRootWorkspaceFolders: (folders: string[]) => Promise<void>
+  addRootWorkspaceFolder: (absolutePath: string) => Promise<RootWorkspaceEntry[]>
+  scanWorkspaces: () => Promise<ScanResult>
   getCachedScan: () => Promise<ScanResult | null>
   onScanChanged: (callback: (scan: ScanResult | null) => void) => () => void
-  getCachedContexts: () => Promise<ContextsCache | null>
+  getCachedWorkspaces: () => Promise<WorkspacesCache | null>
 
   // Schema migrations
   getMigrationStatus: () => Promise<MigrationResult>

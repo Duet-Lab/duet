@@ -37,7 +37,7 @@ from config import (
     get_duet_data_path,
     get_log_path,
     get_port,
-    get_root_context_folders,
+    get_root_workspace_folders,
     get_timezone,
     get_version,
 )
@@ -49,13 +49,13 @@ from mcp_handler import (
     get_duet_data_path_str,
     get_entities_service,
     get_timestamp,
-    get_workspace_service,
+    get_orientation_service,
     init_services,
     mcp,
 )
 from services.entities import EntitiesService
 from services.tickets import ACTIONS as TICKET_ACTIONS
-from services.workspace import WorkspaceService
+from services.orientation import OrientationService
 
 
 # Logger
@@ -157,17 +157,17 @@ async def duet_data_path_handler(request: Request) -> JSONResponse:
     return JSONResponse({"path": get_duet_data_path_str()})
 
 
-async def contexts_handler(request: Request) -> JSONResponse:
-    """GET /contexts - Get all context entities."""
-    result = get_entities_service().get_contexts()
-    response = {"contexts": result}
+async def workspaces_handler(request: Request) -> JSONResponse:
+    """GET /workspaces - Get all registered workspaces."""
+    result = get_entities_service().get_workspaces()
+    response = {"workspaces": result}
 
     # JSON cache: write for file watcher consumers (Host, Extension)
     try:
-        cache_path = get_duet_data_path() / "data" / "contexts.json"
+        cache_path = get_duet_data_path() / "data" / "workspaces.json"
         atomic_write_json(cache_path, response)
     except Exception as e:
-        logger.warning(f"Failed to write contexts cache: {e}")
+        logger.warning(f"Failed to write workspaces cache: {e}")
 
     return JSONResponse(response)
 
@@ -177,19 +177,19 @@ def _scan_and_write_cache() -> dict:
 
     No event-loop APIs here — this runs via asyncio.to_thread so the HTTP
     server (and /health) stays responsive during slow filesystem walks
-    (root context folders live on network-backed CloudStorage mounts).
+    (root workspace folders live on network-backed CloudStorage mounts).
     """
     start = time.time()
     result = get_entities_service().run_scan()
     result["duration_ms"] = int((time.time() - start) * 1000)
 
-    # JSON cache: write scan result + fresh contexts for file watcher consumers
+    # JSON cache: write scan result + fresh workspaces for file watcher consumers
     if result.get("status") == "completed":
         try:
             data_dir = get_duet_data_path() / "data"
             atomic_write_json(data_dir / "scan.json", result)
-            contexts = get_entities_service().get_contexts()
-            atomic_write_json(data_dir / "contexts.json", {"contexts": contexts})
+            workspaces = get_entities_service().get_workspaces()
+            atomic_write_json(data_dir / "workspaces.json", {"workspaces": workspaces})
         except Exception as e:
             logger.warning(f"Failed to write scan cache: {e}")
 
@@ -204,11 +204,11 @@ async def run_scan_with_cache() -> dict:
     """
     result = await asyncio.to_thread(_scan_and_write_cache)
 
-    # Restart watcher if root context folders changed (loop-only API —
+    # Restart watcher if root workspace folders changed (loop-only API —
     # must not run inside the worker thread)
     if result.get("status") == "completed" and _watcher:
         try:
-            _watcher.maybe_restart(get_root_context_folders())
+            _watcher.maybe_restart(get_root_workspace_folders())
         except Exception as e:
             logger.warning(f"Failed to update watcher: {e}")
 
@@ -221,14 +221,15 @@ async def scan_handler(request: Request) -> JSONResponse:
 
 
 async def deploy_instructions_handler(request: Request) -> JSONResponse:
-    """POST /deploy-instructions - Deploy a context's instruction components.
+    """POST /deploy-instructions - Deploy a workspace's instruction components.
 
-    Request body: {"workspace_paths": ["/path1", "/path2"]}. Picks the
-    business from the business folders among the paths and materializes its `skills` / `system_prompt` declarations
-    into its Drive folder. Idempotent.
+    Request body: {"workspace_paths": ["/path1", "/path2"]}: the folders of a
+    window, first folder first. The first path must be a workspace folder
+    itself; the other paths take no part. Its `skills` / `system_prompt`
+    declarations are materialized into its Drive folder. Idempotent.
 
     Response: {status, deployed: {...}, warnings: [...], errors: [...]}; `errors`
-    lists the symlinks in the business folder that the deploy refused to follow.
+    lists the symlinks in the workspace folder that the deploy refused to follow.
     """
     try:
         body = await request.json()
@@ -246,7 +247,7 @@ async def deploy_instructions_handler(request: Request) -> JSONResponse:
         )
 
     try:
-        result = get_workspace_service().deploy_instructions(workspace_paths)
+        result = get_orientation_service().deploy_instructions(workspace_paths)
     except ConfigError as e:
         return JSONResponse(
             {"error": str(e), "code": "CONFIG_ERROR"},
@@ -266,8 +267,8 @@ async def tickets_handler(request: Request) -> JSONResponse:
     Response: `{text, is_error, tickets}`. `text` is Markdown; a failed
     operation has `is_error: true` and a text starting with `Error:`.
     `tickets` lists the tickets the operation looked up, created, moved, or
-    edited as `{number, name, shelf, folder, branch, worktrees, parked}`, so a
-    client never has to parse the text. HTTP 400 is only for a request that isn't a JSON object, 404
+    edited as `{number, name, shelf, folder, owner, default_workspace, branch,
+    worktrees, parked}`, so a client never has to parse the text. HTTP 400 is only for a request that isn't a JSON object, 404
     for an unknown action.
     """
     action = request.path_params["action"]
@@ -286,7 +287,7 @@ async def tickets_handler(request: Request) -> JSONResponse:
             status_code=400,
         )
     # Off the event loop: ticket folders live on a cloud drive that can stall.
-    work = functools.partial(get_workspace_service().ticket_action, action, **arguments)
+    work = functools.partial(get_orientation_service().ticket_action, action, **arguments)
     result = await anyio.to_thread.run_sync(work)
     return JSONResponse(
         {"text": result.text, "is_error": result.is_error, "tickets": result.tickets})
@@ -319,15 +320,15 @@ async def _initial_scan_and_watch() -> None:
     """Initial scan in a worker thread, then start the manifest watcher.
 
     Runs as a background task after the server starts listening: the scan
-    walks all root context folders (CloudStorage mounts — seconds on a cold
+    walks all root workspace folders (CloudStorage mounts — seconds on a cold
     cache) and must never block /health, or Host kills the backend during
     startup. Every outcome — success with timing, or failure with full
     traceback — is logged so a dead scan is always diagnosable.
     """
     try:
-        folders = get_root_context_folders()
+        folders = get_root_workspace_folders()
         if not folders:
-            logger.info("No root context folders configured, skipping initial scan")
+            logger.info("No root workspace folders configured, skipping initial scan")
             return
         logger.info("Running initial scan")
         result = await run_scan_with_cache()
@@ -359,11 +360,11 @@ async def lifespan(app: Starlette):
     db.init()
 
     # Initialize services with DI
-    workspace_service = WorkspaceService(db)
+    orientation_service = OrientationService(db)
     entities_service = EntitiesService(db)
 
     # Initialize services (shared between REST and MCP handlers)
-    init_services(workspace_service, entities_service, _start_time)
+    init_services(orientation_service, entities_service, _start_time)
 
     logger.info(f"Duet backend started (version {get_version()})")
 
@@ -384,7 +385,10 @@ async def lifespan(app: Starlette):
     # short budget and SIGKILLs the process if it doesn't answer in time —
     # a silent death with nothing in the log. See _initial_scan_and_watch.
     global _watcher, _initial_scan_task
-    _watcher = ManifestWatcher(on_scan=run_scan_with_cache)
+    _watcher = ManifestWatcher(
+        on_scan=run_scan_with_cache,
+        frontmatters=lambda: entities_service.index_frontmatters,
+    )
     _initial_scan_task = asyncio.create_task(_initial_scan_and_watch())
 
     # Initialize MCP session manager (required for streamable HTTP transport)
@@ -412,7 +416,7 @@ def create_app() -> Starlette:
         Route("/stop", stop_handler, methods=["POST"]),
         Route("/timestamp", timestamp_handler, methods=["GET"]),
         Route("/duet-data-path", duet_data_path_handler, methods=["GET"]),
-        Route("/contexts", contexts_handler, methods=["GET"]),
+        Route("/workspaces", workspaces_handler, methods=["GET"]),
         Route("/scan", scan_handler, methods=["POST"]),
         Route("/deploy-instructions", deploy_instructions_handler, methods=["POST"]),
         Route("/merge-duet-instructions", merge_instructions_handler, methods=["POST"]),
@@ -506,7 +510,7 @@ def main() -> None:
         get_version()
         get_port()
         get_timezone()
-        get_root_context_folders()
+        get_root_workspace_folders()
     except ConfigError as e:
         logger.error(f"Config error: {e}")
         logger.error(

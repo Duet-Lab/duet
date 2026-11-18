@@ -12,8 +12,8 @@ Updated frontmatter:
 
 ```yaml
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 closed: 2026-10-08
 ---
 ```

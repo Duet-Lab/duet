@@ -1,5 +1,5 @@
 /*
- * What Host does once the backend is up after launch: scan root contexts that were never
+ * What Host does once the backend is up after launch: scan root workspaces that were never
  * scanned, configure AI clients that were never configured (the fresh-install safety net;
  * upgrades are covered by the post-deploy configure), then refresh state once.
  *
@@ -8,7 +8,7 @@
 
 export interface PostStartDeps {
   readPort: () => number
-  hasRootContexts: () => boolean
+  hasRootWorkspaces: () => boolean
   readCachedScan: (duetDataPath: string) => unknown
   triggerScan: (port: number) => Promise<unknown>
   /** Null when the instructions merge never ran, i.e. clients were never configured. */
@@ -24,11 +24,11 @@ export const runPostStartSetup = async (
 ): Promise<void> => {
   const port = deps.readPort()
 
-  if (deps.hasRootContexts() && deps.readCachedScan(duetDataPath) === null) {
+  if (deps.hasRootWorkspaces() && deps.readCachedScan(duetDataPath) === null) {
     try {
       await deps.triggerScan(port)
     } catch (e) {
-      console.error('Auto-scan root contexts failed:', e)
+      console.error('Auto-scan root workspaces failed:', e)
     }
   }
 

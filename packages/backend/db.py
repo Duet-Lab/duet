@@ -1,13 +1,14 @@
 """SQLite database manager for Duet entities.
 
 Stores three entity kinds:
-- `context`: bounded contexts on Drive. Roles inferred from manifest fields,
-  not from a column: `meta=1` marks the meta-context; presence of `git_repos`
-  means the context owns one or more git-backed products. Drive context
-  discovery may still continue below that folder. The `git_url` column is
-  never populated on context rows.
-- `product_repo`: registered once per alias in a context's `git_repos` map;
-  a repo several contexts declare is registered by the first of them.
+- `workspace`: folders on Drive with `context.json`, named by the frontmatter
+  of their `INDEX.md`. `meta=1` marks the meta workspace; `ticket_code` keeps
+  `ticket-code` as written (a code, `inherit`, or NULL). Presence of
+  `git_repos` in the manifest means the workspace owns one or more git-backed
+  products; workspace discovery still continues below that folder. The
+  `git_url` column is never populated on workspace rows.
+- `product_repo`: registered once per alias in a workspace's `git_repos` map;
+  a repo several workspaces declare is registered by the first of them.
   Entity name = `{alias}.git`, `git_url` = URL from the manifest.
   Path-resolution helper; not shown in tree.
 - `reference_repo`: read-only clones declared via `reference_repos` map.
@@ -27,7 +28,7 @@ from typing import Literal
 from config import get_db_path
 
 
-EntityType = Literal["context", "product_repo", "reference_repo"]
+EntityType = Literal["workspace", "product_repo", "reference_repo"]
 
 
 @dataclass
@@ -40,6 +41,8 @@ class Entity:
     parent_id: int | None = None
     git_url: str | None = None
     meta: bool = False
+    # `ticket-code` of a workspace as written: a code, `inherit`, or None.
+    ticket_code: str | None = None
 
 
 class DatabaseManager:
@@ -88,6 +91,10 @@ class DatabaseManager:
         )
 
         self._migrate_add_column("entities", "meta", "INTEGER DEFAULT 0")
+        self._migrate_add_column("entities", "ticket_code", "TEXT")
+        # Rows written before DUE063 called a workspace `context`; the next
+        # scan rewrites them anyway, this keeps `/workspaces` whole until then.
+        self.conn.execute("UPDATE entities SET type = 'workspace' WHERE type = 'context'")
 
         self.conn.commit()
 
@@ -130,8 +137,8 @@ class DatabaseManager:
 
             self.conn.execute(
                 """INSERT OR IGNORE INTO entities
-                   (type, name, icon, drive_path, parent_id, git_url, meta)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (type, name, icon, drive_path, parent_id, git_url, meta, ticket_code)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     entity.type,
                     entity.name,
@@ -140,6 +147,7 @@ class DatabaseManager:
                     entity.parent_id,
                     entity.git_url,
                     1 if entity.meta else 0,
+                    entity.ticket_code,
                 ),
             )
             self.conn.commit()
@@ -152,26 +160,6 @@ class DatabaseManager:
                 return row["id"]
 
             raise RuntimeError(f"Failed to insert/get entity: {entity.drive_path}")
-
-    def get_entities(self, parent_id: int | None = None) -> list[Entity]:
-        """Get entities by parent_id.
-
-        parent_id=None returns root entities.
-        """
-        with self._lock:
-            if not self.conn:
-                raise RuntimeError("Database not initialized")
-
-            if parent_id is None:
-                cursor = self.conn.execute(
-                    "SELECT * FROM entities WHERE parent_id IS NULL"
-                )
-            else:
-                cursor = self.conn.execute(
-                    "SELECT * FROM entities WHERE parent_id = ?", (parent_id,)
-                )
-
-            return [self._row_to_entity(row) for row in cursor.fetchall()]
 
     def get_all_entities(self) -> list[Entity]:
         """Get all entities."""
@@ -252,24 +240,14 @@ class DatabaseManager:
 
             return cursor.fetchone() is not None
 
-    def find_closest_entity(self, path: str) -> Entity | None:
-        """Find deepest entity whose `drive_path` is a path-segment ancestor of `path`.
-
-        Match is segment-aware: `Root/Alpha` matches `Root/Alpha` and
-        `Root/Alpha/sub`, but NOT `Root/AlphaBeta/...`. The trick is to
-        append `/` to both sides before substring-matching, so the
-        comparison is anchored on segment boundaries.
-        """
+    def find_by_drive_path(self, drive_path: str) -> Entity | None:
+        """Find the entity registered at exactly this `drive_path`, or None."""
         with self._lock:
             if not self.conn:
                 raise RuntimeError("Database not initialized")
 
             cursor = self.conn.execute(
-                """SELECT * FROM entities
-                   WHERE instr(? || '/', drive_path || '/') = 1
-                   ORDER BY length(drive_path) DESC
-                   LIMIT 1""",
-                (path,),
+                "SELECT * FROM entities WHERE drive_path = ?", (drive_path,)
             )
             row = cursor.fetchone()
             return self._row_to_entity(row) if row else None
@@ -304,35 +282,20 @@ class DatabaseManager:
             row = cursor.fetchone()
             return row[0] if row else 0
 
-    def get_contexts(self) -> list[Entity]:
-        """Get all context entities (excludes product_repo, reference_repo).
+    def get_workspaces(self) -> list[Entity]:
+        """Get all workspace entities (excludes product_repo, reference_repo).
 
         Order is not guaranteed at the DB layer — display order is the
-        service's responsibility (`EntitiesService.get_contexts`).
+        service's responsibility (`EntitiesService.get_workspaces`).
         """
         with self._lock:
             if not self.conn:
                 raise RuntimeError("Database not initialized")
 
             cursor = self.conn.execute(
-                "SELECT * FROM entities WHERE type = 'context'"
+                "SELECT * FROM entities WHERE type = 'workspace'"
             )
             return [self._row_to_entity(row) for row in cursor.fetchall()]
-
-    def find_meta_context(self) -> Entity | None:
-        """Find the meta-context entity (meta=true in context.json).
-
-        Wins when a window has several business folders open.
-        """
-        with self._lock:
-            if not self.conn:
-                raise RuntimeError("Database not initialized")
-
-            cursor = self.conn.execute(
-                "SELECT * FROM entities WHERE type = 'context' AND meta = 1 LIMIT 1"
-            )
-            row = cursor.fetchone()
-            return self._row_to_entity(row) if row else None
 
     def _row_to_entity(self, row: sqlite3.Row) -> Entity:
         """Convert database row to Entity."""
@@ -345,4 +308,5 @@ class DatabaseManager:
             parent_id=row["parent_id"],
             git_url=row["git_url"],
             meta=bool(row["meta"]) if row["meta"] else False,
+            ticket_code=row["ticket_code"],
         )

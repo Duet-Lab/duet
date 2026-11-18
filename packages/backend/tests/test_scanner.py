@@ -1,4 +1,4 @@
-"""Tests for scanner.py — strict v3 reader, multi-repo contexts."""
+"""Tests for scanner.py — strict v3 reader, multi-repo workspaces."""
 
 import json
 from pathlib import Path
@@ -18,9 +18,9 @@ class TestScanner:
     """Tests for Scanner class."""
 
     def test_scan_empty(self, db: DatabaseManager, monkeypatch) -> None:
-        """Scanning with no root context folders returns empty."""
+        """Scanning with no root workspace folders returns empty."""
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: []
         )
 
@@ -30,15 +30,15 @@ class TestScanner:
         assert result["status"] == "completed"
         assert result["entities_count"] == 0
 
-    def test_scan_root_context(self, db: DatabaseManager, tmp_path: Path, monkeypatch) -> None:
-        """Scans a root context folder with manifest."""
-        ctx_path = tmp_path / "MyContext"
-        ctx_path.mkdir()
-        ManifestBuilder.context(ctx_path, "My Context", icon="🏢")
+    def test_scan_root_workspace(self, db: DatabaseManager, tmp_path: Path, monkeypatch) -> None:
+        """Scans a root workspace folder with manifest."""
+        ws_path = tmp_path / "MyWorkspace"
+        ws_path.mkdir()
+        ManifestBuilder.workspace(ws_path, "My Workspace", icon="🏢")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
-            lambda: [str(ctx_path)]
+            "scanner.get_root_workspace_folders",
+            lambda: [str(ws_path)]
         )
 
         scanner = Scanner(db)
@@ -49,19 +49,19 @@ class TestScanner:
 
         entities = db.get_all_entities()
         assert len(entities) == 1
-        assert entities[0].type == "context"
-        assert entities[0].name == "My Context"
+        assert entities[0].type == "workspace"
+        assert entities[0].name == "My Workspace"
         assert entities[0].icon == "🏢"
 
-    def test_scan_meta_context(self, db: DatabaseManager, tmp_path: Path, monkeypatch) -> None:
+    def test_scan_meta_workspace(self, db: DatabaseManager, tmp_path: Path, monkeypatch) -> None:
         """Scanner reads `meta: true` and stores it on the entity."""
-        ctx_path = tmp_path / "Meta"
-        ctx_path.mkdir()
-        ManifestBuilder.context(ctx_path, "Meta", meta=True)
+        ws_path = tmp_path / "Meta"
+        ws_path.mkdir()
+        ManifestBuilder.workspace(ws_path, "Meta", meta=True)
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
-            lambda: [str(ctx_path)]
+            "scanner.get_root_workspace_folders",
+            lambda: [str(ws_path)]
         )
 
         Scanner(db).scan()
@@ -69,38 +69,38 @@ class TestScanner:
         meta = db.find_by_name("Meta")
         assert meta is not None
         assert meta.meta is True
-        assert db.find_meta_context() == meta
+        assert [e.name for e in db.get_workspaces() if e.meta] == ["Meta"]
 
     def test_scan_hierarchy(self, db: DatabaseManager, tmp_path: Path, monkeypatch) -> None:
-        """Scans full hierarchy: root → mid → context-with-git_repos."""
+        """Scans full hierarchy: root → mid → workspace-with-git_repos."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         mid_path = root_path / "Mid"
         mid_path.mkdir()
-        ManifestBuilder.context(mid_path, "Mid")
+        ManifestBuilder.workspace(mid_path, "Mid")
 
         product_path = mid_path / "Product"
         product_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             product_path, "Product",
             git_repos={"Product": "https://example.com/p.git"},
         )
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
         scanner = Scanner(db, repos_path=tmp_path / "repos")
         result = scanner.scan()
 
-        # 3 contexts + 1 product_repo for the git-backed context
+        # 3 workspaces + 1 product_repo for the git-backed workspace
         assert result["entities_count"] == 4
 
-        contexts = db.get_contexts()
-        names = {e.name for e in contexts}
+        workspaces = db.get_workspaces()
+        names = {e.name for e in workspaces}
         assert names == {"Root", "Mid", "Product"}
 
         root = db.find_by_name("Root")
@@ -116,13 +116,13 @@ class TestScanner:
         assert product_repo.parent_id == product.id
         assert product_repo.git_url == "https://example.com/p.git"
 
-    def test_scan_multi_repo_context_registers_n_product_repos(
+    def test_scan_multi_repo_workspace_registers_n_product_repos(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """A context with two `git_repos` aliases yields two product_repo children."""
+        """A workspace with two `git_repos` aliases yields two product_repo children."""
         root_path = tmp_path / "Lab"
         root_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             root_path, "Lab",
             git_repos={
                 "Duet": "https://github.com/owner/duet.git",
@@ -131,13 +131,13 @@ class TestScanner:
         )
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
         result = Scanner(db).scan()
         assert result["status"] == "completed"
-        # 1 context + 2 product_repos
+        # 1 workspace + 2 product_repos
         assert result["entities_count"] == 3
 
         lab = db.find_by_name("Lab")
@@ -154,13 +154,13 @@ class TestScanner:
             assert repo.parent_id == lab.id
             assert repo.git_url == expected_url
 
-    def test_multi_repo_context_recurses_drive_children(
+    def test_multi_repo_workspace_recurses_drive_children(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """A context with `git_repos` still scans Drive child contexts."""
+        """A workspace with `git_repos` still scans Drive child workspaces."""
         root_path = tmp_path / "Lab"
         root_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             root_path, "Lab",
             git_repos={"Duet": "https://duet.git"},
         )
@@ -168,10 +168,10 @@ class TestScanner:
         # Nested folder that *would* register if recursion happened.
         deep = root_path / "DeepChild"
         deep.mkdir()
-        ManifestBuilder.context(deep, "DeepChild")
+        ManifestBuilder.workspace(deep, "DeepChild")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -182,33 +182,33 @@ class TestScanner:
 
         assert lab is not None
         assert deep_child is not None
-        assert deep_child.type == "context"
+        assert deep_child.type == "workspace"
         assert deep_child.parent_id == lab.id
         assert duet_repo is not None
         assert duet_repo.type == "product_repo"
         assert duet_repo.parent_id == lab.id
 
-    def test_context_with_git_recurses_drive_children(
+    def test_workspace_with_git_recurses_drive_children(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """Single-repo `git_repos` context also scans Drive child contexts."""
+        """Single-repo `git_repos` workspace also scans Drive child workspaces."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         product_path = root_path / "Product"
         product_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             product_path, "Product",
             git_repos={"Product": "https://example.com/p.git"},
         )
 
         deep = product_path / "DeepChild"
         deep.mkdir()
-        ManifestBuilder.context(deep, "DeepChild")
+        ManifestBuilder.workspace(deep, "DeepChild")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -220,7 +220,7 @@ class TestScanner:
 
         assert product is not None
         assert deep_child is not None
-        assert deep_child.type == "context"
+        assert deep_child.type == "workspace"
         assert deep_child.parent_id == product.id
         assert product_repo is not None
         assert product_repo.type == "product_repo"
@@ -230,7 +230,7 @@ class TestScanner:
         """projects/ subdirectories without manifest don't become entities."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         # projects/ without manifest — scanner recurses but finds nothing
         projects_path = root_path / "projects"
@@ -239,36 +239,36 @@ class TestScanner:
 
         product_path = root_path / "Product"
         product_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             product_path, "Product",
             git_repos={"Product": "https://example.com/p.git"},
         )
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
         result = Scanner(db).scan()
 
-        # Root + Product (context) + Product.git (product_repo)
+        # Root + Product (workspace) + Product.git (product_repo)
         assert result["entities_count"] == 3
-        contexts = db.get_contexts()
-        assert {e.name for e in contexts} == {"Root", "Product"}
+        workspaces = db.get_workspaces()
+        assert {e.name for e in workspaces} == {"Root", "Product"}
 
     def test_name_conflict_same_type(self, db: DatabaseManager, tmp_path: Path, monkeypatch) -> None:
-        """Same-name contexts get suffix on the second-comer."""
-        ctx1_path = tmp_path / "Ctx1"
-        ctx1_path.mkdir()
-        ManifestBuilder.context(ctx1_path, "SameName")
+        """Same-name workspaces get suffix on the second-comer."""
+        ws1_path = tmp_path / "Ctx1"
+        ws1_path.mkdir()
+        ManifestBuilder.workspace(ws1_path, "SameName")
 
-        ctx2_path = tmp_path / "Ctx2"
-        ctx2_path.mkdir()
-        ManifestBuilder.context(ctx2_path, "SameName")
+        ws2_path = tmp_path / "Ctx2"
+        ws2_path.mkdir()
+        ManifestBuilder.workspace(ws2_path, "SameName")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
-            lambda: [str(ctx1_path), str(ctx2_path)]
+            "scanner.get_root_workspace_folders",
+            lambda: [str(ws1_path), str(ws2_path)]
         )
 
         Scanner(db).scan()
@@ -281,21 +281,22 @@ class TestScanner:
         """Scan order is deterministic (sorted by name)."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         for name in ["Zebra", "Apple", "Mango"]:
             p = root_path / name
             p.mkdir()
-            ManifestBuilder.context(p, name)
+            ManifestBuilder.workspace(p, name)
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
         Scanner(db).scan()
 
-        children = db.get_entities(parent_id=db.find_by_name("Root").id)
+        root_id = db.find_by_name("Root").id
+        children = [e for e in db.get_all_entities() if e.parent_id == root_id]
         names = [c.name for c in children]
         assert names == sorted(names)
 
@@ -303,18 +304,18 @@ class TestScanner:
         """Hidden folders (starting with .) are skipped."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         hidden_path = root_path / ".hidden"
         hidden_path.mkdir()
-        ManifestBuilder.context(hidden_path, "Hidden")
+        ManifestBuilder.workspace(hidden_path, "Hidden")
 
         normal_path = root_path / "Normal"
         normal_path.mkdir()
-        ManifestBuilder.context(normal_path, "Normal")
+        ManifestBuilder.workspace(normal_path, "Normal")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -331,7 +332,7 @@ class TestScannerEdgeCases:
     def test_scan_nonexistent_root_folder(self, db: DatabaseManager, monkeypatch) -> None:
         """Folder that doesn't exist on disk is skipped."""
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: ["/nonexistent/path/that/does/not/exist"]
         )
 
@@ -343,16 +344,16 @@ class TestScannerEdgeCases:
     def test_root_folder_without_manifest_skipped(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """Root context folder without `context.json` is skipped silently.
+        """Root workspace folder without `context.json` is skipped silently.
 
         Backend is strict reader; Host owns creation of missing manifests.
         """
-        ctx_path = tmp_path / "NoManifest"
-        ctx_path.mkdir()
+        ws_path = tmp_path / "NoManifest"
+        ws_path.mkdir()
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
-            lambda: [str(ctx_path)]
+            "scanner.get_root_workspace_folders",
+            lambda: [str(ws_path)]
         )
 
         result = Scanner(db).scan()
@@ -365,13 +366,13 @@ class TestScannerEdgeCases:
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
         """Corrupt JSON in `context.json` produces invalid_manifest error."""
-        ctx_path = tmp_path / "Bad"
-        ctx_path.mkdir()
-        (ctx_path / "context.json").write_text("{corrupt json!!!", encoding="utf-8")
+        ws_path = tmp_path / "Bad"
+        ws_path.mkdir()
+        (ws_path / "context.json").write_text("{corrupt json!!!", encoding="utf-8")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
-            lambda: [str(ctx_path)]
+            "scanner.get_root_workspace_folders",
+            lambda: [str(ws_path)]
         )
 
         result = Scanner(db).scan()
@@ -383,20 +384,20 @@ class TestScannerEdgeCases:
     def test_malformed_manifest_no_silent_repair(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """Manifest with `version: 4` but missing `name` must not register
-        a context under the folder name. Strict reader rejects malformed
-        shape with `invalid_manifest`; scanner skips.
+        """A folder with `context.json` whose `INDEX.md` gives no `name` must not
+        register a workspace under the folder name. It is reported as
+        `missing_workspace_name`; scanner skips.
         """
-        ctx_path = tmp_path / "MyFolder"
-        ctx_path.mkdir()
-        (ctx_path / "context.json").write_text(
-            json.dumps({"version": 4}),  # no `name`
+        ws_path = tmp_path / "MyFolder"
+        ws_path.mkdir()
+        (ws_path / "context.json").write_text(
+            json.dumps({"version": 4, "name": "MyFolder"}),  # the old place of `name`
             encoding="utf-8",
         )
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
-            lambda: [str(ctx_path)]
+            "scanner.get_root_workspace_folders",
+            lambda: [str(ws_path)]
         )
 
         result = Scanner(db).scan()
@@ -406,22 +407,59 @@ class TestScannerEdgeCases:
         assert result["entities_count"] == 0
 
         codes = {e["reason_code"] for e in result["errors"]}
-        assert "invalid_manifest" in codes
+        assert codes == {"missing_workspace_name"}
+
+    def test_unnamed_workspace_is_reported_and_its_children_still_found(
+        self, db: DatabaseManager, tmp_path: Path, monkeypatch
+    ) -> None:
+        root_path = tmp_path / "Root"
+        ManifestBuilder.workspace(root_path, "Root")
+        unnamed = root_path / "Unnamed"
+        ManifestBuilder.workspace(unnamed, "Unnamed")
+        (unnamed / "INDEX.md").write_text("# Unnamed\n", encoding="utf-8")
+        ManifestBuilder.workspace(unnamed / "Inner", "Inner")
+        monkeypatch.setattr("scanner.get_root_workspace_folders", lambda: [str(root_path)])
+
+        result = Scanner(db).scan()
+
+        assert [(e["reason_code"], e["path"]) for e in result["errors"]] == [
+            ("missing_workspace_name", str(unnamed / "INDEX.md"))]
+        assert db.find_by_name("Unnamed") is None
+        assert db.find_by_name("Inner").parent_id == db.find_by_name("Root").id
+
+    def test_name_icon_and_ticket_code_come_from_index(
+        self, db: DatabaseManager, tmp_path: Path, monkeypatch
+    ) -> None:
+        root_path = tmp_path / "Root"
+        ManifestBuilder.workspace(root_path, "Root Name", icon="🏛", ticket_code="ROO")
+        ManifestBuilder.workspace(root_path / "Desk", "Desk", ticket_code="inherit")
+        monkeypatch.setattr("scanner.get_root_workspace_folders", lambda: [str(root_path)])
+
+        scanner = Scanner(db)
+        assert scanner.scan()["errors"] == []
+
+        root = db.find_by_name("Root Name")
+        assert (root.icon, root.ticket_code) == ("🏛", "ROO")
+        assert db.find_by_name("Desk").ticket_code == "inherit"
+        assert set(scanner.index_frontmatters) == {
+            str(root_path / "INDEX.md"), str(root_path / "Desk" / "INDEX.md")}
+        assert "ticket-code: inherit" in scanner.index_frontmatters[
+            str(root_path / "Desk" / "INDEX.md")]
 
     def test_unrecognized_version_skipped(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
         """`version != 3` produces unrecognized_manifest_version warning, no entity created."""
-        ctx_path = tmp_path / "Future"
-        ctx_path.mkdir()
-        (ctx_path / "context.json").write_text(
+        ws_path = tmp_path / "Future"
+        ws_path.mkdir()
+        (ws_path / "context.json").write_text(
             json.dumps({"version": 99, "name": "Future"}),
             encoding="utf-8",
         )
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
-            lambda: [str(ctx_path)]
+            "scanner.get_root_workspace_folders",
+            lambda: [str(ws_path)]
         )
 
         result = Scanner(db).scan()
@@ -433,7 +471,7 @@ class TestScannerEdgeCases:
     def test_scan_reentrancy_guard(self, db: DatabaseManager, monkeypatch) -> None:
         """scan() returns 'skipped' if already in progress."""
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: []
         )
 
@@ -448,22 +486,22 @@ class TestScannerEdgeCases:
     def test_scan_intermediate_folder_without_manifest(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """Folder without any manifest recurses to find deeper contexts."""
+        """Folder without any manifest recurses to find deeper workspaces."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         intermediate = root_path / "SomeFolder"
         intermediate.mkdir()
         product_path = intermediate / "DeepProduct"
         product_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             product_path, "DeepProduct",
             git_repos={"DeepProduct": "https://example.com/d.git"},
         )
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -473,7 +511,7 @@ class TestScannerEdgeCases:
         assert result["entities_count"] == 3
         deep = db.find_by_name("DeepProduct")
         assert deep is not None
-        assert deep.type == "context"
+        assert deep.type == "workspace"
         # Parent should be Root (intermediate folder is not an entity)
         assert deep.parent_id == db.find_by_name("Root").id
 
@@ -486,17 +524,17 @@ class TestScanErrors:
     ) -> None:
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         s1 = root_path / "ChildA"
         s1.mkdir()
-        ManifestBuilder.context(s1, "Conflict")
+        ManifestBuilder.workspace(s1, "Conflict")
         s2 = root_path / "ChildB"
         s2.mkdir()
-        ManifestBuilder.context(s2, "Conflict")
+        ManifestBuilder.workspace(s2, "Conflict")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -509,14 +547,14 @@ class TestScanErrors:
     def test_ticket_code_collision_error(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """One error per code declared by two contexts; both stay registered."""
+        """One error per code declared by two workspaces; both stay registered."""
         root_path = tmp_path / "Root"
-        ManifestBuilder.context(root_path, "Root", ticket_code="ROO")
-        ManifestBuilder.context(root_path / "A", "Alpha", ticket_code="DUE")
-        ManifestBuilder.context(root_path / "B", "Beta", ticket_code="DUE")
+        ManifestBuilder.workspace(root_path, "Root", ticket_code="ROO")
+        ManifestBuilder.workspace(root_path / "A", "Alpha", ticket_code="DUE")
+        ManifestBuilder.workspace(root_path / "B", "Beta", ticket_code="DUE")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -529,16 +567,27 @@ class TestScanErrors:
         assert "Beta" in collisions[0]["description"]
         assert db.find_by_name("Alpha") and db.find_by_name("Beta")
 
-    def test_invalid_ticket_code_keeps_context(
+    def test_inherit_is_not_a_code_and_never_collides(
         self, db: DatabaseManager, tmp_path: Path, monkeypatch
     ) -> None:
-        """A typo in `ticket_code` is reported but never unregisters the business."""
         root_path = tmp_path / "Root"
-        ManifestBuilder.context(root_path, "Root")
-        ManifestBuilder.context(root_path / "Lab", "Lab", ticket_code="due")
+        ManifestBuilder.workspace(root_path, "Root", ticket_code="ROO")
+        ManifestBuilder.workspace(root_path / "A", "Alpha", ticket_code="inherit")
+        ManifestBuilder.workspace(root_path / "B", "Beta", ticket_code="inherit")
+        monkeypatch.setattr("scanner.get_root_workspace_folders", lambda: [str(root_path)])
+
+        assert Scanner(db).scan()["errors"] == []
+
+    def test_invalid_ticket_code_keeps_workspace(
+        self, db: DatabaseManager, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A typo in `ticket-code` is reported but never unregisters the workspace."""
+        root_path = tmp_path / "Root"
+        ManifestBuilder.workspace(root_path, "Root")
+        ManifestBuilder.workspace(root_path / "Lab", "Lab", ticket_code="due")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -552,14 +601,14 @@ class TestScanErrors:
     ) -> None:
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         bad_path = root_path / "Bad"
         bad_path.mkdir()
         (bad_path / "context.json").write_text("{not valid json!!!", encoding="utf-8")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -575,20 +624,20 @@ class TestScanErrors:
         """Product repo vs reference_repo name collision produces repo_collision."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             root_path, "Root",
             reference_repos={"Lib": "https://github.com/test/lib-ref"},
         )
 
         p1 = root_path / "Inner"
         p1.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             p1, "Inner",
             git_repos={"Lib": "https://github.com/test/lib"},
         )
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -606,7 +655,7 @@ class TestScanErrors:
         """One name with one address in several manifests is one shared clone."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
         for name, kwargs in (
             ("A", {"git_repos": {"Lib": "git@github.com:test/lib.git"}}),
             ("B", {"git_repos": {"Lib": "git@github.com:test/lib"}}),
@@ -614,17 +663,17 @@ class TestScanErrors:
         ):
             folder = root_path / name
             folder.mkdir()
-            ManifestBuilder.context(folder, name, **kwargs)
+            ManifestBuilder.workspace(folder, name, **kwargs)
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
         result = Scanner(db).scan()
 
         assert result["errors"] == []
-        repos = [e for e in db.get_all_entities() if e.type != "context"]
+        repos = [e for e in db.get_all_entities() if e.type != "workspace"]
         assert [(e.name, e.type) for e in repos] == [("Lib.git", "product_repo")]
         assert db.get_entity(repos[0].parent_id).name == "A"
 
@@ -634,14 +683,14 @@ class TestScanErrors:
         """One name with different addresses is a real conflict over one clone folder."""
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
         for name, url in (("A", "git@github.com:test/lib.git"), ("B", "git@github.com:fork/lib.git")):
             folder = root_path / name
             folder.mkdir()
-            ManifestBuilder.context(folder, name, git_repos={"Lib": url})
+            ManifestBuilder.workspace(folder, name, git_repos={"Lib": url})
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 
@@ -656,10 +705,10 @@ class TestScanErrors:
     ) -> None:
         root_path = tmp_path / "Root"
         root_path.mkdir()
-        ManifestBuilder.context(root_path, "Root")
+        ManifestBuilder.workspace(root_path, "Root")
 
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: [str(root_path)]
         )
 

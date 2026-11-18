@@ -3,20 +3,20 @@
 An alpha path is `@<head>/<rest>`. `<head>` is, in this order:
 
 1. a repo dir under ``<DuetData>/repos`` (``@Duet.git``);
-2. a context name, canonical as in the entities DB (``@DuetLab``);
+2. a workspace name, canonical as in the entities DB (``@DuetLab``);
 3. a ticket number (``@DUE009``, ``@DUEX01``) — three letters of the
-   business's ticket code, then three characters of the number. A leading
-   letter in the number types the ticket: ``X`` program, ``A`` routine, none
-   a project.
+   ticket code of its owner workspace, then three characters of the number.
+   A leading letter in the number types the ticket: ``X`` program, ``A``
+   routine, none a project.
 
-A ticket resolves through the context whose `context.json` declares that
-`ticket_code`; its folder ``<number>_*`` is searched at any depth (bounded)
-inside the context's ``work/``, ``backlog/`` and ``archive/``, and the state
-is the first of those folders. Codes are read live from the manifests on each
-call, so a code the agent has just added works on the next call, without
-waiting for a rescan.
+A ticket resolves through the workspace whose `INDEX.md` frontmatter declares
+that code as its own `ticket-code` (``inherit`` is not a code); its folder
+``<number>_*`` is searched at any depth (bounded) inside the workspace's
+``work/``, ``backlog/`` and ``archive/``, and the state is the first of those
+folders. Codes are read live from `INDEX.md` on each call, so a code the agent
+has just added works on the next call, without waiting for a rescan.
 
-The form of an address, the repo and context heads and the containment check
+The form of an address, the repo and workspace heads and the containment check
 are not decided here: they are `services/at_paths.py`, the same code that
 resolves deploy declarations. This module adds what an agent needs on top —
 ticket heads, and an explanation for every failure, because its reader has to
@@ -39,7 +39,7 @@ from services.at_paths import (
     join_under,
     parse_at_path,
 )
-from services.manifest import MANIFEST_FILENAME, read_manifest
+from services.manifest import INDEX_FILENAME, read_manifest
 
 
 # `DUE009`, `DUEX01`, `DUEA01`: code + (three digits | letter + two digits).
@@ -47,15 +47,15 @@ TICKET_NUMBER_RE = re.compile(r"([A-Z]{3})(\d{3}|[A-Z]\d{2})")
 # Any ticket folder: `<number>` or `<number>_<name>`.
 TICKET_FOLDER_RE = re.compile(r"[A-Z]{3}(?:\d{3}|[A-Z]\d{2})(?:_|$)")
 
-# Where a business keeps its tickets; the first one on the path is the state.
+# Where a workspace keeps its tickets; the first one on the path is the state.
 STATUS_DIRS = ("work", "backlog", "archive")
 STATE_BY_DIR = {"work": "active", "backlog": "waiting", "archive": "closed"}
 # Grouping levels allowed below a status dir: `archive/2026/09/<ticket>`.
 MAX_GROUPING_DEPTH = 3
 
-# Work type by the leading letter of the number.
-WORK_TYPE_BY_LETTER = {"": "Project", "X": "Program", "A": "Routine"}
-UNKNOWN_WORK_TYPE = "Ticket"
+# Ticket type by the leading letter of the number.
+TICKET_TYPE_BY_LETTER = {"": "Project", "X": "Program", "A": "Routine"}
+UNKNOWN_TICKET_TYPE = "Ticket"
 # The same words the `tickets` tool uses for a ticket's state; a closed ticket
 # also gets its archive month here when the folder shows one.
 STATE_LABELS = {"active": "in work", "waiting": "in backlog", "closed": "closed (archived)"}
@@ -66,20 +66,22 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augus
 # Messages follow the ticket tools: lowercase, what is wrong, then what to do.
 # `render_markdown` puts `Error:` in front.
 _FORM_REFUSALS = {
-    "not_alpha_path": "not an alpha path. An alpha path starts with `@` and a business "
+    "not_alpha_path": "not an alpha path. An alpha path starts with `@` and a workspace "
                       "name, a repo, or a ticket number, e.g. `@DuetLab/INDEX.md`, "
                       "`@Duet.git/README.md`, or `@DUE009`.",
     "dot_segment": "an alpha path can't contain `.` or `..` segments. Write the full "
-                   "path from the business, repo, or ticket.",
+                   "path from the workspace, repo, or ticket.",
 }
 
 
 @dataclass
-class ContextRef:
-    """A registered context: canonical name and absolute Drive folder."""
+class WorkspaceRef:
+    """A registered workspace: canonical name, absolute Drive folder, parent's name."""
 
     name: str
     folder: Path
+    # The name of the parent workspace in the registry; None for a root workspace.
+    parent: str | None = None
 
 
 @dataclass
@@ -87,7 +89,7 @@ class TicketInfo:
     number: str
     letter: str        # "" project, "X" program, "A" routine, other letter
     state: str         # "active" | "waiting" | "closed"
-    business: str
+    owner: str         # name of the owner workspace
     archive_month: tuple[int, int] | None = None  # (year, month)
 
 
@@ -115,19 +117,19 @@ class Resolution:
 def resolve_paths(
     paths: list[str],
     repos_path: Path | None,
-    contexts: list[ContextRef],
+    workspaces: list[WorkspaceRef],
 ) -> list[Resolution]:
     """Resolve each alpha path; one `Resolution` per input, in input order."""
-    resolver = _Resolver(repos_path, contexts)
+    resolver = _Resolver(repos_path, workspaces)
     return [resolver.resolve(p) for p in paths]
 
 
 class _Resolver:
-    def __init__(self, repos_path: Path | None, contexts: list[ContextRef]):
+    def __init__(self, repos_path: Path | None, workspaces: list[WorkspaceRef]):
         self.repos_path = repos_path
-        self.contexts = contexts
-        self.context_folders = {c.name: c.folder for c in contexts}
-        self._codes: dict[str, str | None] | None = None  # name → ticket_code
+        self.workspaces = workspaces
+        self.workspace_folders = {w.name: w.folder for w in workspaces}
+        self._codes: dict[str, str | None] | None = None  # name → `ticket-code` as written
 
     # --- entry point ---
 
@@ -139,7 +141,7 @@ class _Resolver:
             return _fail(res, e.code, _FORM_REFUSALS[e.code])
         head, rest = parsed.head, parsed.rest
 
-        base = find_base(head, self.repos_path, self.context_folders)
+        base = find_base(head, self.repos_path, self.workspace_folders)
         if base is not None:
             return self._finish(res, head, base, rest)
 
@@ -152,12 +154,12 @@ class _Resolver:
     # --- tickets ---
 
     def _resolve_ticket(self, res: Resolution, number: str, code: str, rest: str) -> Resolution:
-        owners = [c for c in self.contexts if self._code_of(c) == code]
+        owners = [w for w in self.workspaces if self._code_of(w) == code]
 
         if len(owners) > 1:
-            names = ", ".join(c.name for c in owners)
+            names = ", ".join(w.name for w in owners)
             return _fail(res, "ticket_code_conflict",
-                         f"ticket code {code} is declared by multiple businesses: "
+                         f"ticket code {code} is declared by multiple workspaces: "
                          f"{names}. Remove it from all but one.")
 
         if not owners:
@@ -193,41 +195,42 @@ class _Resolver:
         return block_lines(number, BranchFields.of(Frontmatter.parse(text)), self.repos_path)
 
     def _unregistered_code(self, res: Resolution, number: str, code: str) -> Resolution:
-        hits = [(c, found) for c in self.contexts
-                if (found := find_ticket_folders(Path(c.folder), number))]
-        head = f"no business has ticket code {code}."
+        hits = [(w, found) for w in self.workspaces
+                if (found := find_ticket_folders(Path(w.folder), number))]
+        head = f"no workspace has ticket code {code}."
 
         if not hits:
             return _fail(res, "ticket_code_unregistered",
-                         f"{head} No business has a ticket folder {number}_* either "
+                         f"{head} No workspace has a ticket folder {number}_* either "
                          f"(checked work, backlog, and archive).")
 
         if len(hits) > 1:
-            lines = ", ".join(f"{c.name} (`{found[0][0]}`)" for c, found in hits)
+            lines = ", ".join(f"{w.name} (`{found[0][0]}`)" for w, found in hits)
             return _fail(res, "ticket_code_unregistered",
-                         f"{head} A folder {number}_* exists in several businesses: "
-                         f"{lines}. Only one business can own a code: ask the user "
+                         f"{head} A folder {number}_* exists in several workspaces: "
+                         f"{lines}. Only one workspace can own a code: ask the user "
                          f"which one.")
 
-        context, found = hits[0]
+        workspace, found = hits[0]
         folder = found[0][0]
-        other = self._code_of(context)
+        other = self._code_of(workspace)
         if other:
             return _fail(res, "ticket_code_unregistered",
-                         f"{head} `{folder}` is in {context.name}, whose ticket code "
+                         f"{head} `{folder}` is in {workspace.name}, whose ticket code "
                          f"is {other}.")
-        manifest = Path(context.folder) / MANIFEST_FILENAME
+        index = Path(workspace.folder) / INDEX_FILENAME
         return _fail(res, "ticket_code_unregistered",
-                     f"{head} `{folder}` is in {context.name}. Add "
-                     f"`\"ticket_code\": \"{code}\"` to `{manifest}` and try again.")
+                     f"{head} `{folder}` is in {workspace.name}. Add "
+                     f"`ticket-code: {code}` to the frontmatter of `{index}` and try again.")
 
-    def _code_of(self, context: ContextRef) -> str | None:
+    def _code_of(self, workspace: WorkspaceRef) -> str | None:
+        """The workspace's own ticket code; None for `inherit` or no code."""
         if self._codes is None:
             self._codes = {}
-            for c in self.contexts:
-                manifest = read_manifest(c.folder)
-                self._codes[c.name] = manifest.ticket_code if manifest else None
-        return self._codes.get(context.name)
+            for w in self.workspaces:
+                manifest = read_manifest(w.folder)
+                self._codes[w.name] = manifest.own_ticket_code if manifest else None
+        return self._codes.get(workspace.name)
 
     # --- shared tail ---
 
@@ -254,40 +257,40 @@ class _Resolver:
         return res
 
     def _unknown_head_message(self, head: str) -> str:
-        candidates = [c.name for c in self.contexts]
+        candidates = [w.name for w in self.workspaces]
         if self.repos_path is not None and self.repos_path.is_dir():
             with os.scandir(self.repos_path) as entries:
                 candidates += [e.name for e in entries if e.is_dir()]
         lowered = head.casefold()
         close = sorted({normalize_path(n) for n in candidates if normalize_path(n).casefold() == lowered})
-        message = (f"`@{head}` is not a business, a repo, or a ticket number. A business "
+        message = (f"`@{head}` is not a workspace, a repo, or a ticket number. A workspace "
                    f"name must match the name Duet registers exactly; a ticket number is "
-                   f"the 3-letter business code followed by 3 characters, e.g. DUE009 "
+                   f"the 3-letter ticket code followed by 3 characters, e.g. DUE009 "
                    f"or DUEX01.")
         if close:
             message += " Did you mean " + ", ".join(f"`@{n}`" for n in close) + "?"
         return message
 
 
-def find_ticket_folders(context_folder: Path, number: str) -> list[tuple[Path, list[str]]]:
-    """Find folders named `<number>` or `<number>_*` in a context's status dirs.
+def find_ticket_folders(workspace_folder: Path, number: str) -> list[tuple[Path, list[str]]]:
+    """Find folders named `<number>` or `<number>_*` in a workspace's status dirs.
 
     Returns `(folder, parts)` pairs, where `parts` is the path from the
-    context folder (`["archive", "2026", "09"]`) without the ticket itself.
+    workspace folder (`["archive", "2026", "09"]`) without the ticket itself.
     Never descends into another ticket's folder: a ticket's materials are not
-    a place where other tickets of the business live.
+    a place where other tickets of the workspace live.
     """
     return [
         (folder, parts)
-        for folder, parts, name in list_ticket_folders(context_folder)
+        for folder, parts, name in list_ticket_folders(workspace_folder)
         if name == number or name.startswith(number + "_")
     ]
 
 
 def list_ticket_folders(
-    context_folder: Path, strict: bool = False
+    workspace_folder: Path, strict: bool = False
 ) -> list[tuple[Path, list[str], str]]:
-    """List every ticket folder in a context's status dirs.
+    """List every ticket folder in a workspace's status dirs.
 
     Returns `(folder, parts, name)` tuples, where `parts` is the same as in
     `find_ticket_folders` and `name` is the NFC-normalized folder name. The
@@ -300,7 +303,7 @@ def list_ticket_folders(
     """
     found: list[tuple[Path, list[str], str]] = []
     for status in STATUS_DIRS:
-        _walk(context_folder / status, [status], 0, found, strict)
+        _walk(workspace_folder / status, [status], 0, found, strict)
     return found
 
 
@@ -325,12 +328,12 @@ def _walk(folder: Path, parts: list[str], depth: int,
             _walk(Path(entry.path), parts + [name], depth + 1, found, strict)
 
 
-def _ticket_info(number: str, business: str, parts: list[str]) -> TicketInfo:
+def _ticket_info(number: str, owner: str, parts: list[str]) -> TicketInfo:
     letter = number[3] if number[3].isalpha() else ""
     status = parts[0]
     month = _archive_month(parts[1:]) if status == "archive" else None
     return TicketInfo(number=number, letter=letter, state=STATE_BY_DIR[status],
-                      business=business, archive_month=month)
+                      owner=owner, archive_month=month)
 
 
 def _archive_month(grouping: list[str]) -> tuple[int, int] | None:
@@ -355,13 +358,13 @@ def _fail(res: Resolution, code: str, message: str) -> Resolution:
 
 
 def describe_ticket(ticket: TicketInfo) -> str:
-    """`Project DUE002, closed (archived September 2026). Business: DuetLab.`"""
-    word = WORK_TYPE_BY_LETTER.get(ticket.letter, UNKNOWN_WORK_TYPE)
+    """`Project DUE002, closed (archived September 2026). Owner workspace: DuetLab.`"""
+    word = TICKET_TYPE_BY_LETTER.get(ticket.letter, UNKNOWN_TICKET_TYPE)
     state = STATE_LABELS[ticket.state]
     if ticket.state == "closed" and ticket.archive_month:
         year, month = ticket.archive_month
         state = f"closed (archived {MONTHS[month - 1]} {year})"
-    return f"{word} {ticket.number}, {state}. Business: {ticket.business}."
+    return f"{word} {ticket.number}, {state}. Owner workspace: {ticket.owner}."
 
 
 def render_markdown(results: list[Resolution]) -> str:

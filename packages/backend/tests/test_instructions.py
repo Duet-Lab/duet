@@ -77,19 +77,20 @@ def test_real_platform_source_has_no_role_dependency(tmp_path):
     assert "INSERT USER CORE" not in (tmp_path / "duet.md").read_text()
     assert not (source.parent / "index.json").exists()
     assert not (source.parent / "bootstrapper.md").exists()
-    assert "## Scripts in Business Folders" in source.read_text()
+    assert "## Workspaces and tickets" in source.read_text()
     assert "@Duet.git/packages/instructions/duet-core.md" in GENERATED_BANNER
 
 
-def test_core_uses_business_vocabulary_and_current_discovery_tool():
+def test_core_uses_workspace_vocabulary_and_current_discovery_tool():
     source = Path(__file__).resolve().parents[2] / "instructions/duet-core.md"
     text = source.read_text()
-    assert "`business_tree()`" in text
-    assert "## Businesses and work" in text
+    assert "`workspace_tree()`" in text
+    assert "## Workspaces and tickets" in text
     assert "`INDEX.md`" in text
     assert "`context.json`" in text  # The actual manifest name is not renamed.
     for obsolete in (
-        "contexts()", "Context — the unit of productive life", "Platform context",
+        "contexts()", "business_tree()", "## Businesses and work",
+        "Context — the unit of productive life", "Platform context",
         "Work context", "work/WIP_", "one operating ritual (next section)",
     ):
         assert obsolete not in text

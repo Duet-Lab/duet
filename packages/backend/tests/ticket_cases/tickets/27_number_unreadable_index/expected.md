@@ -1,6 +1,6 @@
 ### DUE008 CoreProtocols
 
-Project, in work. Business: DuetLab (DUE).
+Project, in work. Owner workspace: DuetLab (DUE).
 
 **Folder:** `{root}/DuetLab/work/DUE008_CoreProtocols`
 

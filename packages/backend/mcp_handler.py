@@ -1,7 +1,7 @@
 """MCP tools handler for Duet backend.
 
 Provides MCP tools via HTTP transport using FastMCP.
-Tools delegate to services for business logic.
+Tools delegate to services for the work itself.
 """
 
 import functools
@@ -22,7 +22,7 @@ from config import get_duet_data_path, get_timezone, get_version
 from services.entities import EntitiesService
 from services.resolve_paths import render_markdown
 from services.tickets import TicketError, check_arguments
-from services.workspace import WorkspaceService
+from services.orientation import OrientationService
 
 
 # Create FastMCP server instance
@@ -31,13 +31,13 @@ mcp = FastMCP("duet", json_response=True, streamable_http_path="/")
 
 
 # Services (initialized by server.py via init_services)
-_workspace_service: WorkspaceService | None = None
+_orientation_service: OrientationService | None = None
 _entities_service: EntitiesService | None = None
 _start_time: float = 0
 
 
 def init_services(
-    workspace_service: WorkspaceService,
+    orientation_service: OrientationService,
     entities_service: EntitiesService,
     start_time: float,
 ) -> None:
@@ -45,24 +45,24 @@ def init_services(
 
     Called by server.py after database initialization.
     """
-    global _workspace_service, _entities_service, _start_time
-    _workspace_service = workspace_service
+    global _orientation_service, _entities_service, _start_time
+    _orientation_service = orientation_service
     _entities_service = entities_service
     _start_time = start_time
 
 
 def reset_services() -> None:
     """Reset services to uninitialized state. Used by test teardown."""
-    global _workspace_service, _entities_service, _start_time
-    _workspace_service = None
+    global _orientation_service, _entities_service, _start_time
+    _orientation_service = None
     _entities_service = None
     _start_time = 0
 
 
-def _get_workspace_service() -> WorkspaceService:
-    if _workspace_service is None:
+def _get_orientation_service() -> OrientationService:
+    if _orientation_service is None:
         raise RuntimeError("Services not initialized. Call init_services() first.")
-    return _workspace_service
+    return _orientation_service
 
 
 def _get_entities_service() -> EntitiesService:
@@ -71,9 +71,9 @@ def _get_entities_service() -> EntitiesService:
     return _entities_service
 
 
-def get_workspace_service() -> WorkspaceService:
-    """Get workspace service. Raises if not initialized."""
-    return _get_workspace_service()
+def get_orientation_service() -> OrientationService:
+    """Get orientation service. Raises if not initialized."""
+    return _get_orientation_service()
 
 
 def get_entities_service() -> EntitiesService:
@@ -264,7 +264,7 @@ def turn_report(report: str) -> str:
 def resolve_paths(paths: list[str]) -> str:
     """Resolve alpha paths to absolute paths. Pass all addresses in one call.
 
-    An alpha path is `@<business>/...`, `@<repo>.git/...` or `@<ticket>/...`
+    An alpha path is `@<workspace>/...`, `@<repo>.git/...` or `@<ticket>/...`
     (`@DUE009`, `@DUEX01/notes.md`): a ticket resolves wherever its folder now
     lies, in work, backlog or archive.
 
@@ -272,14 +272,14 @@ def resolve_paths(paths: list[str]) -> str:
         paths: Alpha paths, e.g. ["@DUE009/INDEX.md", "@DuetLab/INDEX.md"].
 
     Returns Markdown, one `### <path>` section per address: the absolute path;
-    for a ticket, its work type, number and state; for a missing file, the path anyway and
+    for a ticket, its type, number, state and owner workspace; for a missing file, the path anyway and
     the nearest existing folder. An address that does not resolve gets a line
     starting with `Error:` that says why and what to do; the other addresses
     in the call still resolve.
     """
     if not paths:
         raise McpError(ErrorData(code=INVALID_PARAMS, message="paths must not be empty"))
-    return render_markdown(get_workspace_service().resolve_paths(paths))
+    return render_markdown(get_orientation_service().resolve_paths(paths))
 
 
 # === Ticket tools ===
@@ -315,7 +315,7 @@ _READ_TIMEOUT_SECONDS = 30
 
 async def _ticket_tool(action: str, **arguments) -> str | CallToolResult:
     """Run a ticket operation off the event loop and map its result onto an MCP response."""
-    service = _get_workspace_service()
+    service = _get_orientation_service()
     work = functools.partial(service.ticket_action, action, **arguments)
     if action == "tickets":
         try:
@@ -340,46 +340,49 @@ TicketNumbers = str | Annotated[list[str], Field(min_length=1)]
 @mcp.tool(structured_output=False,
           annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
 async def tickets(
-    code: Annotated[str, Field(description='Ticket code of the business, e.g. "DUE".')] = "",
-    business: Annotated[str, Field(
-        description='Business name ("DuetLab") or exact business-area value ("DuetShell"). '
-                    'An area selects only its tickets from the owning business; add `code` '
-                    'if the area occurs in multiple businesses.')] = "",
-    shelf: Annotated[str, Field(
-        description="List only the tickets on this shelf. Combines with `parent`.",
-        json_schema_extra=_one_of("", "work", "backlog", "archive"))] = "",
+    workspace: Annotated[str, Field(
+        description='Workspace name, e.g. "DuetLab". A workspace with `ticket-code: '
+                    'inherit` (e.g. "DuetDev") answers with the tickets it inherits, and '
+                    "the answer says so.")] = "",
+    code: Annotated[str, Field(description='Ticket code of the owner workspace, e.g. "DUE".')] = "",
+    number: Annotated[TicketNumbers, Field(
+        description='Look up one ticket ("DUE028") or several (["DUE028", "DUEX03"]). '
+                    "Can't be combined with `parent` or `shelf`.")] = "",
     parent: Annotated[str, Field(
         description='List the tickets under this program or routine, e.g. "DUEX02". '
                     'Use "unsorted" for projects with no parent. Combines with '
                     "`shelf`.")] = "",
-    number: Annotated[TicketNumbers, Field(
-        description='Look up one ticket ("DUE028") or several (["DUE028", "DUEX03"]). '
-                    "Can't be combined with `parent` or `shelf`.")] = "",
+    shelf: Annotated[str, Field(
+        description="List only the tickets on this shelf. Combines with `parent`.",
+        json_schema_extra=_one_of("", "work", "backlog", "archive"))] = "",
 ) -> str:
-    """List a business's tickets. Use this instead of browsing ticket folders.
+    """List a workspace's tickets. Use this instead of browsing ticket folders.
 
-    `business` accepts a registered ticket owner or an exact `business-area`
-    value from ticket frontmatter. For example, `business="DuetShell"` selects
-    that area's tickets from DuetLab without a separate manifest or ticket code.
-    Area names must identify one ticket owner; add `code` to disambiguate.
-    The area filter applies to counts, shelves, parents, and number lookups.
+    Pass the workspace you work in as `workspace`, or a ticket code as `code`.
+    A workspace with its own `ticket-code` lists its own tickets. A workspace
+    with `ticket-code: inherit` lists the tickets of the nearest workspace
+    above it that has a code, and the first line says so, e.g.
+    `Tickets of DuetLab (DUE), inherited by DuetDev`.
 
     Three ways to call it:
 
-    1. Overview: `tickets(code="DUE")`. One section per program or routine
-       that is in work or has a ticket in work. Each section shows the
-       description, a `Tickets:` line counting the group's tickets on every
-       shelf (not counting the program or routine itself), and every work
-       and backlog ticket as `NUMBER Name "description"`. Projects with no
-       parent are under `Unsorted`. A program that is itself in the backlog
-       is shown with counts only. The archive is summarized by counts.
+    1. Overview: `tickets(workspace="DuetLab")` or `tickets(code="DUE")`. One
+       section per program or routine that is in work or has a ticket in
+       work. Each section shows the description, a `Tickets:` line counting
+       the group's tickets on every shelf (not counting the program or
+       routine itself), and every work and backlog ticket as
+       `NUMBER Name "description"`. Projects with no parent are under
+       `Unsorted`. A program that is itself in the backlog is shown with
+       counts only. The archive is summarized by counts.
     2. Filtered list: `shelf`, `parent`, or both. `shelf` lists every ticket
        on that shelf, grouped by parent; unlike the overview, `shelf="work"`
        leaves backlog tickets out. `parent` lists a group's tickets on every
        shelf. Together they list that group's tickets on that shelf.
     3. Lookup: `number`. Shows where a ticket is, its stable `@NUMBER`
-       address, and its frontmatter. For a program or routine it also lists
-       every ticket under it, so no second call is needed.
+       address, its owner workspace, and its frontmatter, including
+       `default-workspace`, the workspace the ticket opens in. For a program
+       or routine it also lists every ticket under it, so no second call is
+       needed.
 
     A ticket's state is the shelf it's on. `closed` and `reopened` in the
     frontmatter are history: a reopened ticket still has a `closed` date.
@@ -393,8 +396,8 @@ async def tickets(
         `Error:` section, and the first line says how many resolved. The
         call fails as a whole only if no number resolves.
     """
-    return await _ticket_tool("tickets", code=code, business=business, shelf=shelf,
-                              parent=parent, number=number)
+    return await _ticket_tool("tickets", workspace=workspace, code=code, number=number,
+                              parent=parent, shelf=shelf)
 
 
 @mcp.tool(structured_output=False,
@@ -407,33 +410,38 @@ async def new_ticket(
                     "name, so keep it short. Converted to a PascalCase folder name "
                     "(`UiResearch`): only letters and digits are kept, and each word is "
                     'capitalized. "" creates a ticket with just its number.')],
-    parent: Annotated[str | None, Field(
-        description='The program or routine this ticket belongs to, e.g. "DUEX02". It '
-                    "must be open (in work or backlog). The business and business area "
-                    "are inherited from it.")] = None,
-    work_type: Annotated[str, Field(
+    workspace: Annotated[str | None, Field(
+        description='The workspace you work in, e.g. "DuetDev". The ticket goes to its '
+                    "tickets workspace: itself, or for `ticket-code: inherit` the "
+                    "workspace it inherits tickets from. An alternative to `code`.")] = None,
+    code: Annotated[str | None, Field(
+        description='Ticket code of the owner workspace, e.g. "DUE". Required when there '
+                    "is no `parent`, unless `workspace` is given.")] = None,
+    ticket_type: Annotated[str, Field(
         description="A project completes with its deliverable, a program ends when "
                     "its goal is reached, a routine is standing work that never "
                     "completes. Only a project can have a parent.",
         json_schema_extra=_one_of("project", "program", "routine"))] = "project",
+    parent: Annotated[str | None, Field(
+        description='The program or routine this ticket belongs to, e.g. "DUEX02". It '
+                    "must be open (in work or backlog). The owner workspace is the "
+                    "parent's.")] = None,
     shelf: Annotated[str, Field(
         description="Where to create the ticket.",
         json_schema_extra=_one_of("work", "backlog"))] = "work",
     description: Annotated[str | None, Field(
         description="What the ticket is for, shown next to its name in `tickets`, e.g. "
-                    '"Single entry point for businesses". The fewest words that carry '
+                    '"Single entry point for workspaces". The fewest words that carry '
                     "it: 3 when they do, 4 or 5 when they say it better; 6 or 7 pass "
                     "with a warning, 8 or more are rejected. It must add meaning to the "
                     "name, not repeat it. Not a sentence and not a summary of the work: "
                     "that belongs in INDEX.md. No trailing period.")] = None,
     icon: Annotated[str | None, Field(description="An emoji for the ticket.")] = None,
-    area: Annotated[str | None, Field(
-        description="The business area. Only for a ticket without a parent.")] = None,
-    code: Annotated[str | None, Field(
-        description='Ticket code of the business, e.g. "DUE". Required when there is no '
-                    "`parent`, unless `business` is given.")] = None,
-    business: Annotated[str | None, Field(
-        description="Name of the business. An alternative to `code`.")] = None,
+    default_workspace: Annotated[str | None, Field(
+        description='The workspace the ticket opens in by default, e.g. "DuetDev": the '
+                    "owner or a desk inheriting its tickets, nothing else. Omit it to get "
+                    "the `workspace` you passed when that is a desk, and no field "
+                    'otherwise; "" writes no field.')] = None,
 ) -> str:
     """Create a ticket: allocates the next number, creates the folder, writes the frontmatter.
 
@@ -442,14 +450,21 @@ async def new_ticket(
     `INDEX.md` already contains the frontmatter and a title heading; add
     your content below them.
 
+    The ticket lives in its owner workspace: the one `code` or `parent`
+    names, or the tickets workspace of `workspace`. Created from a desk (a
+    workspace with `ticket-code: inherit`), the ticket gets
+    `default-workspace: "@<workspace>"`, so it opens where it was created. A
+    ticket is worked on only in its owner or a desk inheriting its tickets,
+    so `default_workspace` accepts nothing else.
+
     Not idempotent: every successful call creates a new ticket with a new
     number. If a call's outcome is unknown (for example, the response was
     lost), check `tickets` before calling again.
 
     Example: `new_ticket(name="Thesaurus", parent="DUEX02")`.
 
-    Not covered: changing a ticket's work type, moving it to another business,
-    merging tickets, and deleting them. Ask the user how to proceed.
+    Not covered: changing a ticket's type, moving it to another owner
+    workspace, merging tickets, and deleting them. Ask the user how to proceed.
 
     Returns:
         Markdown with the new number, the folder path, the stable `@NUMBER`
@@ -457,10 +472,12 @@ async def new_ticket(
         a message starting with `Error:`; nothing is created unless the
         message says otherwise.
     """
-    return await _ticket_tool(
-        "new_ticket", name=name, parent=parent or "", work_type=work_type, shelf=shelf,
-        description=description or "", icon=icon or "",
-        area=area or "", code=code or "", business=business or "")
+    arguments = dict(
+        name=name, workspace=workspace or "", code=code or "", ticket_type=ticket_type,
+        parent=parent or "", shelf=shelf, description=description or "", icon=icon or "")
+    if default_workspace is not None:
+        arguments["default_workspace"] = default_workspace
+    return await _ticket_tool("new_ticket", **arguments)
 
 
 @mcp.tool(structured_output=False,
@@ -506,8 +523,8 @@ async def move_ticket(
     Safe to retry: moving a ticket to the shelf it's already on succeeds
     with "No changes" and records no date.
 
-    Not covered: moving a ticket to another business. Ask the user how to
-    proceed.
+    Not covered: moving a ticket to another owner workspace. Ask the user how
+    to proceed.
 
     Returns:
         Markdown with the new folder path, the stable `@NUMBER` address,
@@ -534,11 +551,8 @@ async def edit_ticket(
                     "`renamed-from` and the date in `renamed`. "
                     "Can't be empty.")] = None,
     parent: Annotated[str | None, Field(
-        description='The new parent, an open program or routine, e.g. "DUEX02". The '
-                    'business area is updated to match. Pass "" to remove the parent.')] = None,
-    area: Annotated[str | None, Field(
-        description="The business area, for a ticket with no parent. A ticket with a "
-                    'parent inherits it. Pass "" to clear it.')] = None,
+        description='The new parent, an open program or routine, e.g. "DUEX02". '
+                    'Pass "" to remove the parent.')] = None,
     icon: Annotated[str | None, Field(
         description='An emoji. Pass "" to remove it.')] = None,
     description: Annotated[str | None, Field(
@@ -548,11 +562,16 @@ async def edit_ticket(
                     "must add meaning to the name, not repeat it; no trailing period. "
                     'Pass "" to remove it.')] = None,
     routine_type: Annotated[str | None, Field(
-        description='The class of a routine, e.g. "business-curation": lowercase words '
+        description='The class of a routine, e.g. "workspace-curation": lowercase words '
                     "joined by hyphens that name the activity and its subject. Only a "
                     'routine has one. Pass "" to remove it.')] = None,
+    default_workspace: Annotated[str | None, Field(
+        description='The workspace the ticket opens in by default, e.g. "DuetDev": the '
+                    "owner or a desk inheriting its tickets, nothing else. "
+                    'Pass "" to remove the field, so the ticket opens in its owner '
+                    "workspace.")] = None,
 ) -> str:
-    """Change a ticket's name, parent, business area, icon, description, or routine type.
+    """Change a ticket's name, parent, icon, description, routine type, or default workspace.
 
     Always use this to rename a ticket or edit the frontmatter of its
     `INDEX.md`. Renaming changes the name everywhere it is the ticket's name:
@@ -568,7 +587,7 @@ async def edit_ticket(
     Safe to retry: if the ticket already has the requested values, the call
     succeeds with "No changes".
 
-    Not covered: changing a ticket's work type or number, and any other
+    Not covered: changing a ticket's type or number, and any other
     frontmatter field. To close, reopen, or shelve a ticket, use
     `move_ticket`. For anything else, ask the user how to proceed.
 
@@ -579,8 +598,9 @@ async def edit_ticket(
         the message says otherwise.
     """
     return await _ticket_tool("edit_ticket", ticket=ticket, name=name, parent=parent,
-                              area=area, icon=icon, description=description,
-                              routine_type=routine_type)
+                              icon=icon, description=description,
+                              routine_type=routine_type,
+                              default_workspace=default_workspace)
 
 
 @mcp.tool(structured_output=False,
@@ -589,7 +609,7 @@ async def edit_ticket(
 async def add_worktree(
     ticket: Annotated[str, Field(description='The ticket number, e.g. "DUE028".')],
     repo: Annotated[str, Field(
-        description='The repo alias as the business declares it in `git_repos`, e.g. '
+        description='The repo alias as the workspace declares it in `git_repos`, e.g. '
                     '"Duet". One call, one repo.')],
     branch: Annotated[str, Field(
         description="The branch name: the full ticket number, an underscore, and a short "
@@ -667,6 +687,10 @@ _reject_unknown_arguments(_TICKET_TOOLS)
 @mcp.tool(structured_output=False)
 def orientation(
     path: str,
+    additional_folders: Annotated[list[str] | None, Field(
+        description="The other folders of your window, in their order, as you see them: "
+                    "every working directory after the first. Duet finds the window's "
+                    "ticket among them.")] = None,
     key: Annotated[str | None, Field(
         description="Optional. Pass only what your system prompt names for this field.")] = None,
     interpretation: Annotated[str | None, Field(
@@ -674,75 +698,96 @@ def orientation(
                     "The answer returns it as sent.")] = None,
     ticket: Annotated[str | None, Field(
         description='Optional. A ticket number, e.g. "DUE054": the answer adds where the '
-                    "ticket is, its branch, and the paths of its worktrees.")] = None,
+                    "ticket is, its workspaces, its branch, and the paths of its "
+                    "worktrees. Without it, the window's ticket is used.")] = None,
 ) -> str:
-    """Orient a session in the folder it was opened in. Call once, before any work.
+    """Orient a session in the window it was opened in. Call once, before any work.
 
     Args:
-        path: Absolute path of the folder the session was opened in.
+        path: Absolute path of the window's first folder, the session's
+            working directory. It is a Duet workspace only when it is a
+            workspace folder itself; a folder inside one is answered as a
+            folder outside Duet.
+        additional_folders: The window's other folders, in order, as absolute
+            paths. The first ticket folder among them is the window's ticket
+            folder: when its owner is this workspace's tickets workspace, the
+            answer is about that ticket, as with `ticket`; folders after it
+            are not examined.
         key: Optional; only what the session's system prompt names.
         interpretation: Optional; the session's own text, returned as sent.
-        ticket: Optional; a ticket number. Adds the ticket's state, folder,
-            branch, and worktree paths after the plain answer. Repo addresses
-            like `@Duet.git` always mean the main clone, never a worktree.
+        ticket: Optional; a ticket number. Wins over the window's ticket, and
+            the answer says so in one line when they differ. Adds the
+            ticket's state, folder, default workspace, branch, and worktree
+            paths after the plain answer. Repo addresses like `@Duet.git`
+            always mean the main clone, never a worktree.
 
-    Returns Markdown: the user's name, the paths of this machine, the business's ticket code
-    if it has one, and what to read first. A meta venture also gets the
-    folders of the other ventures. When `interpretation` is sent, the answer ends
-    with it, and with more when the system prompt calls for that.
+    A ticket is worked on only in its owner workspace or a desk inheriting its
+    tickets. A ticket of another owner, by `ticket` or as the window's ticket
+    folder, is not given as the ticket of work: the answer orients by the
+    first folder and says in one line where the ticket can be worked on.
+
+    Returns Markdown: the user's name, then the folders to know with their
+    roles — the root workspace, for a desk (`ticket-code: inherit`) its tickets
+    workspace, where the tickets it works on live, and the active workspace —
+    and the repos; the
+    ticket code; and the entry points to read first, in that order. A meta
+    root workspace also gets the folders of the other root workspaces. When
+    `interpretation` is sent, the answer ends with it, and with more when the
+    system prompt calls for that.
     """
     if not Path(path).is_absolute():
         raise McpError(
             ErrorData(code=INVALID_PARAMS, message=f"path must be absolute, got {path!r}")
         )
-    return _get_workspace_service().get_orientation(path, key, interpretation, ticket)
+    return _get_orientation_service().get_orientation(
+        path, additional_folders, key, interpretation, ticket)
 
 
 @mcp.tool()
-def business_tree() -> list[dict]:
-    """Discover registered businesses across all ventures and their products.
+def workspace_tree() -> list[dict]:
+    """Discover registered workspaces across all root workspaces.
 
-    Use this to find a business by name or explore the business hierarchy,
-    rather than searching the filesystem. Areas without their own
-    context.json are described in business entry points, not in this registry.
-    Use resolve_paths for a known alpha path.
+    Use this to find a workspace by name or explore the workspace tree,
+    rather than searching the filesystem. Folders without their own
+    context.json are described in workspace entry points, not in this
+    registry. Use resolve_paths for a known alpha path.
 
-    Returns a flat list linked by id and parent_id, with roots in configured
-    order and other businesses alphabetically by name. Records include name,
-    icon, absolute_path, description, meta, git_repos, and reference_repos.
-    The storage type remains context; repository declarations are fields,
-    not separate tree nodes.
+    Returns a flat list linked by id and parent_id, with root workspaces in
+    configured order and other workspaces alphabetically by name. Records
+    include name, icon, absolute_path, description, meta, git_repos,
+    reference_repos, and ticket_code (a code, "inherit", or null); repository
+    declarations are fields, not separate tree nodes.
     """
     service = _get_entities_service()
-    return service.get_contexts()
+    return service.get_workspaces()
 
 
 @mcp.tool()
 def deploy_instructions(workspace_paths: list[str]) -> dict:
-    """Deploy a business's skills and system prompt from its context.json into its folder.
+    """Deploy a workspace's skills and system prompt from its context.json into its folder.
 
     Call it only when the user or your session's instructions allow it: a deploy replaces
-    the instruction files that every session of that business reads.
+    the instruction files that every session of that workspace reads.
 
     Args:
-        workspace_paths: Paths inside the business, each absolute or an alpha path
-            (`@DuetDev`, `@DUE062/design.md`). The business is the nearest one up the
-            folder tree; when the paths lead to several, the meta business wins,
-            otherwise the first. An alpha path that doesn't resolve is skipped.
+        workspace_paths: The window's folders, first folder first, each absolute or an
+            alpha path (`@DuetDev`). Only the first counts, and it must be a workspace
+            folder itself — the folder that holds `context.json` — not a folder inside one.
 
     Returns the same report as `POST /deploy-instructions`: `{status: "ok", deployed,
-    warnings, errors}`, or `{status: "unknown", reason}` when no path leads to a business
-    (`no_owning_context`) or the business has no manifest (`no_context_manifest`).
+    warnings, errors}`, or `{status: "unknown", reason}` when the first path is not a
+    workspace folder (`not_a_workspace_folder`) or the workspace has no readable manifest
+    (`no_workspace_manifest`).
     """
-    return _get_workspace_service().deploy_instructions(workspace_paths)
+    return _get_orientation_service().deploy_instructions(workspace_paths)
 
 
 @mcp.tool()
 def scan() -> dict:
-    """Rescan configured business folders and rebuild the entity hierarchy.
+    """Rescan the root workspace folders and rebuild the workspace registry.
 
     Use when the file structure has changed (new folders, moved products)
-    and `business_tree` returns stale data.
+    and `workspace_tree` returns stale data.
 
     Returns scan statistics including entities_count.
     """

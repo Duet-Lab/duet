@@ -111,7 +111,7 @@ function App(): React.JSX.Element {
 
   // Migration status — fetched on mount and refreshed via push channel from main.
   // Push covers cases where main triggers a sweep but doesn't ship a fresh AppState
-  // (e.g., scoped sweep on root-contexts:add that updates only migration). Without
+  // (e.g., scoped sweep on root-workspaces:add that updates only migration). Without
   // subscription the renderer would observe stale status (review issue 6).
   useEffect(() => {
     if (!window.api) return

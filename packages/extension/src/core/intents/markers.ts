@@ -6,7 +6,7 @@ import { parseOrder, serializeOrder } from './order';
 /**
  * Window markers: how the windows of one program learn which intents are open.
  *
- * A window Duet opened — on an intent or on a business — writes a marker about
+ * A window Duet opened — on an intent or on a workspace — writes a marker about
  * itself at start and removes it when it closes. The file is per process, not
  * per ticket — `<key>-<pid>.json` — so two windows on one ticket never erase
  * each other's marker. Markers live in
@@ -22,23 +22,23 @@ export type TicketLocation = 'work' | 'backlog' | 'archive' | 'missing';
 export interface WindowMarker {
     /** `window` — a live intent window; `reservation` — a window that is being opened. */
     kind: 'window' | 'reservation';
-    /** What the window is opened on. Absent in markers of the first version, which knew intents only. */
-    subject: 'intent' | 'business';
-    /** Key of the window: the ticket number `DUE017`, or `@DuetLab` for a business window. */
+    /** What the window is opened on. */
+    subject: 'intent' | 'workspace';
+    /** Key of the window: the ticket number `DUE017`, or `@DuetLab` for a workspace window. */
     ticket: string;
-    /** Ticket folder name: `DUE017_IntentSwitcher`. Empty for a business window. */
+    /** Ticket folder name: `DUE017_IntentSwitcher`. Empty for a workspace window. */
     ticketFolder: string;
-    /** Business name and folder. */
-    business: string;
-    businessPath: string;
-    /** Emoji of the business from its `context.json`; empty when it has none. */
+    /** Name and folder of the workspace: the owner of the ticket in an intent window, the window's own otherwise. */
+    workspace: string;
+    workspacePath: string;
+    /** Emoji of that workspace from its `INDEX.md`; empty when it has none. */
     icon: string;
     /**
      * Emoji of the ticket: the `icon` of its `INDEX.md`, else the icon of the nearest ticket up its
      * `parent` chain (`TicketReader.inheritedIcon`); empty when none of them has one.
      */
     ticketIcon: string;
-    /** What opening again brings the window forward: its workspace file, or the folder of a business opened as a folder. */
+    /** What opening again brings the window forward: its workspace file, or the folder of a workspace opened as a folder. */
     workspaceFile: string;
     location: TicketLocation;
     /** Window colour in force, null when the window has none. */
@@ -62,7 +62,12 @@ export function markerFileName(marker: Pick<WindowMarker, 'kind' | 'ticket' | 'p
         : `${marker.ticket}-${marker.pid}.json`;
 }
 
-/** Parse a marker file; null when the text is not a marker. */
+/** The text of a marker file: the marker as it is, as JSON. */
+export function serializeMarker(marker: WindowMarker): string {
+    return JSON.stringify(marker, null, 2) + '\n';
+}
+
+/** Parse a marker file (`serializeMarker`); null when the text is not a marker. */
 export function parseMarker(text: string): WindowMarker | null {
     let data: unknown;
     try {
@@ -89,11 +94,11 @@ export function parseMarker(text: string): WindowMarker | null {
         m.location === 'work' || m.location === 'backlog' || m.location === 'archive' ? m.location : 'missing';
     return {
         kind,
-        subject: m.subject === 'business' ? 'business' : 'intent',
+        subject: m.subject === 'workspace' ? 'workspace' : 'intent',
         ticket: m.ticket,
         ticketFolder: m.ticketFolder,
-        business: typeof m.business === 'string' ? m.business : '',
-        businessPath: typeof m.businessPath === 'string' ? m.businessPath : '',
+        workspace: typeof m.workspace === 'string' ? m.workspace : '',
+        workspacePath: typeof m.workspacePath === 'string' ? m.workspacePath : '',
         icon: typeof m.icon === 'string' ? m.icon : '',
         ticketIcon: typeof m.ticketIcon === 'string' ? m.ticketIcon : '',
         workspaceFile: m.workspaceFile,
@@ -222,7 +227,7 @@ export class MarkerStore {
             ...(marker.kind === 'reservation' ? { expiresAt: now + RESERVATION_MS } : {})
         };
         await this.ensureDirs();
-        await this.fs.atomicWriteFile(this.pathOf(full), JSON.stringify(full, null, 2) + '\n', 'utf8');
+        await this.fs.atomicWriteFile(this.pathOf(full), serializeMarker(full), 'utf8');
         return full;
     }
 

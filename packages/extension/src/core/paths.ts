@@ -39,11 +39,11 @@ export class Paths {
     }
 
     /**
-     * `views/work/tickets/<business folder>/<number>.json` — what is expanded in the
+     * `views/work/tickets/<owner folder>/<number>.json` — what is expanded in the
      * «Рабочая папка» view for a ticket. Kept per machine and shared by the programs.
      */
-    workTicketViewPath(businessPath: string, ticketNumber: string): string {
-        return path.join(this.dataFolder, 'views', 'work', 'tickets', path.basename(businessPath), `${ticketNumber}.json`);
+    workTicketViewPath(ownerPath: string, ticketNumber: string): string {
+        return path.join(this.dataFolder, 'views', 'work', 'tickets', path.basename(ownerPath), `${ticketNumber}.json`);
     }
 
     /** `views/work/windows/<program>/<window key>.json` — the settings of the view that belong to one window. */
@@ -51,8 +51,8 @@ export class Paths {
         return path.join(this.dataFolder, 'views', 'work', 'windows', program, `${windowKey}.json`);
     }
 
-    /** `workspaces/<business>/<ticket folder>.code-workspace` — the workspace file of an intent. */
-    intentWorkspacePath(businessName: string, ticketFolder: string): string {
-        return path.join(this.workspacesPath, businessName, `${ticketFolder}.code-workspace`);
+    /** `workspaces/<owner>/<ticket folder>.code-workspace` — the workspace file of an intent. */
+    intentWorkspacePath(ownerName: string, ticketFolder: string): string {
+        return path.join(this.workspacesPath, ownerName, `${ticketFolder}.code-workspace`);
     }
 }

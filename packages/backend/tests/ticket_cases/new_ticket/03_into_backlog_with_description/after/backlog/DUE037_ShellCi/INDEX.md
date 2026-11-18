@@ -1,9 +1,8 @@
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 description: CI pipeline for every commit
 opened: 2026-10-08
-business-area: DuetShell
 parent: DUEX01
 ---
 

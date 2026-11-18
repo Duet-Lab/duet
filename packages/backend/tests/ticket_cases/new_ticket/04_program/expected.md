@@ -4,17 +4,16 @@
 
 **Index:** `@DUEX07/INDEX.md`
 
-Program in work. No parent. Business area: DuetOrig.
+Program in work of DuetLab. No parent.
 
 Frontmatter written to INDEX.md:
 
 ```yaml
 ---
-folder-type: work
-work-type: program
+folder-type: ticket
+ticket-type: program
 icon: 🧰
 opened: 2026-10-08
-business-area: DuetOrig
 parent: null
 ---
 ```

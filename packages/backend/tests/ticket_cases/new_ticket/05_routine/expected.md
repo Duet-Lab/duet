@@ -4,16 +4,15 @@
 
 **Index:** `@DUEA03/INDEX.md`
 
-Routine in work. No parent. Business area: DuetLab.
+Routine in work of DuetLab. No parent.
 
 Frontmatter written to INDEX.md:
 
 ```yaml
 ---
-folder-type: work
-work-type: routine
+folder-type: ticket
+ticket-type: routine
 opened: 2026-10-08
-business-area: DuetLab
 parent: null
 ---
 ```

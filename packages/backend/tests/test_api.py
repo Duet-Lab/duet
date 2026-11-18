@@ -54,43 +54,44 @@ class TestDuetDataPathEndpoint:
 
 
 @pytest.mark.asyncio
-class TestContextsEndpoint:
-    """Tests for /contexts endpoint."""
+class TestWorkspacesEndpoint:
+    """Tests for /workspaces endpoint."""
 
-    async def test_empty_contexts(self, client: AsyncClient) -> None:
-        response = await client.get("/contexts")
+    async def test_empty_workspaces(self, client: AsyncClient) -> None:
+        response = await client.get("/workspaces")
         assert response.status_code == 200
 
         data = response.json()
-        assert data["contexts"] == []
+        assert data["workspaces"] == []
 
-    async def test_returns_contexts(self, client: AsyncClient, db) -> None:
-        db.insert_entity(EntityFactory.context("Root", "/root"))
-        db.insert_entity(EntityFactory.context(
+    async def test_returns_workspaces(self, client: AsyncClient, db) -> None:
+        db.insert_entity(EntityFactory.workspace("Root", "/root"))
+        db.insert_entity(EntityFactory.workspace(
             "Product", "/root/product",
             git_url="https://example.com/p.git",
         ))
 
-        response = await client.get("/contexts")
+        response = await client.get("/workspaces")
         assert response.status_code == 200
 
         data = response.json()
-        assert len(data["contexts"]) == 2
-        for entry in data["contexts"]:
-            assert entry["type"] == "context"
-            assert "meta" in entry
+        assert len(data["workspaces"]) == 2
+        for entry in data["workspaces"]:
+            assert entry["type"] == "workspace"
+            assert "meta" in entry and "ticket_code" in entry
+            assert "git_url" not in entry
 
-    async def test_contexts_exposes_reference_repos_from_manifest(
+    async def test_workspaces_exposes_reference_repos_from_manifest(
         self, client: AsyncClient, db, duet_data_builder, monkeypatch
     ) -> None:
-        """Entities with reference_repos in manifest carry them in /contexts response."""
+        """Entities with reference_repos in manifest carry them in /workspaces response."""
         builder = duet_data_builder
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
 
-        root_path = builder.get_root_context_path(0)
+        root_path = builder.get_root_workspace_path(0)
         from tests.fixtures import ManifestBuilder
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             root_path, "Root",
             reference_repos={"cookbook": "https://github.com/anthropics/cookbook.git"},
         )
@@ -98,23 +99,23 @@ class TestContextsEndpoint:
         from scanner import Scanner
         Scanner(db, repos_path=builder.get_repos_path()).scan()
 
-        response = await client.get("/contexts")
+        response = await client.get("/workspaces")
         assert response.status_code == 200
 
-        contexts = response.json()["contexts"]
-        ctx = next(c for c in contexts if c["name"] == "Root")
-        assert ctx["reference_repos"] == {
+        workspaces = response.json()["workspaces"]
+        ws = next(c for c in workspaces if c["name"] == "Root")
+        assert ws["reference_repos"] == {
             "cookbook": "https://github.com/anthropics/cookbook.git"
         }
 
-    async def test_contexts_reference_repos_null_when_absent(
+    async def test_workspaces_reference_repos_null_when_absent(
         self, client: AsyncClient, db
     ) -> None:
-        db.insert_entity(EntityFactory.context("Root", "/root"))
-        response = await client.get("/contexts")
+        db.insert_entity(EntityFactory.workspace("Root", "/root"))
+        response = await client.get("/workspaces")
 
-        contexts = response.json()["contexts"]
-        assert contexts[0]["reference_repos"] is None
+        workspaces = response.json()["workspaces"]
+        assert workspaces[0]["reference_repos"] is None
 
 
 @pytest.mark.asyncio
@@ -132,7 +133,7 @@ class TestScanEndpoint:
 
     async def test_scan_returns_stats(self, client: AsyncClient, monkeypatch) -> None:
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: []
         )
 
@@ -146,7 +147,7 @@ class TestScanEndpoint:
 
     async def test_scan_debounce(self, client: AsyncClient, monkeypatch) -> None:
         monkeypatch.setattr(
-            "scanner.get_root_context_folders",
+            "scanner.get_root_workspace_folders",
             lambda: []
         )
 
@@ -166,7 +167,7 @@ class TestResolveAbsolutePath:
 
     def test_drive_entity_root(self) -> None:
         path_lookup = {
-            "root_context_folders": {"MyRoot": Path("/drive/MyRoot")},
+            "root_workspace_folders": {"MyRoot": Path("/drive/MyRoot")},
             "repos_path": None,
         }
         result = EntitiesService._resolve_absolute_path("MyRoot", path_lookup)
@@ -174,7 +175,7 @@ class TestResolveAbsolutePath:
 
     def test_drive_entity_nested(self) -> None:
         path_lookup = {
-            "root_context_folders": {"MyRoot": Path("/drive/MyRoot")},
+            "root_workspace_folders": {"MyRoot": Path("/drive/MyRoot")},
             "repos_path": None,
         }
         result = EntitiesService._resolve_absolute_path(
@@ -184,7 +185,7 @@ class TestResolveAbsolutePath:
 
     def test_repos_subpath(self) -> None:
         path_lookup = {
-            "root_context_folders": {"MyRoot": Path("/drive/MyRoot")},
+            "root_workspace_folders": {"MyRoot": Path("/drive/MyRoot")},
             "repos_path": Path("/data/repos"),
         }
         result = EntitiesService._resolve_absolute_path(
@@ -194,7 +195,7 @@ class TestResolveAbsolutePath:
 
     def test_none_drive_path(self) -> None:
         path_lookup = {
-            "root_context_folders": {},
+            "root_workspace_folders": {},
             "repos_path": None,
         }
         assert EntitiesService._resolve_absolute_path(None, path_lookup) is None
@@ -202,7 +203,7 @@ class TestResolveAbsolutePath:
 
     def test_no_match_no_repos(self) -> None:
         path_lookup = {
-            "root_context_folders": {"Other": Path("/drive/Other")},
+            "root_workspace_folders": {"Other": Path("/drive/Other")},
             "repos_path": None,
         }
         assert EntitiesService._resolve_absolute_path("Unknown/path", path_lookup) is None
@@ -210,39 +211,39 @@ class TestResolveAbsolutePath:
 
 @pytest.mark.asyncio
 class TestAbsolutePathIntegration:
-    """Integration: /contexts returns absolute_path."""
+    """Integration: /workspaces returns absolute_path."""
 
-    async def test_contexts_absolute_path(
+    async def test_workspaces_absolute_path(
         self, client: AsyncClient, db, duet_data_builder, monkeypatch
     ) -> None:
         from scanner import Scanner
         from mcp_handler import init_services
-        from services.workspace import WorkspaceService
+        from services.orientation import OrientationService
 
         builder = duet_data_builder
-        builder.add_root_context("TestRoot")
+        builder.add_root_workspace("TestRoot")
         builder.build(monkeypatch)
 
-        root_path = builder.get_root_context_path(0)
+        root_path = builder.get_root_workspace_path(0)
         mid_path = root_path / "MyMid"
         mid_path.mkdir()
         from tests.fixtures import ManifestBuilder
-        ManifestBuilder.context(mid_path, "MyMid")
+        ManifestBuilder.workspace(mid_path, "MyMid")
 
         Scanner(db).scan()
 
-        workspace_service = WorkspaceService(db)
+        orientation_service = OrientationService(db)
         entities_service = EntitiesService(db)
-        init_services(workspace_service, entities_service, time.time())
+        init_services(orientation_service, entities_service, time.time())
 
-        response = await client.get("/contexts")
+        response = await client.get("/workspaces")
         assert response.status_code == 200
 
-        contexts = response.json()["contexts"]
-        assert len(contexts) == 2
+        workspaces = response.json()["workspaces"]
+        assert len(workspaces) == 2
 
-        root = next(c for c in contexts if c["name"] == "TestRoot")
-        mid = next(c for c in contexts if c["name"] == "MyMid")
+        root = next(c for c in workspaces if c["name"] == "TestRoot")
+        mid = next(c for c in workspaces if c["name"] == "MyMid")
 
         assert root["absolute_path"] == str(root_path)
         assert mid["absolute_path"] == str(mid_path)
@@ -264,41 +265,41 @@ class TestDeployInstructionsEndpoint:
         assert response.status_code == 400
         assert response.json()["code"] == "BAD_REQUEST"
 
-    async def test_unknown_context(self, client: AsyncClient) -> None:
+    async def test_unknown_workspace(self, client: AsyncClient) -> None:
         response = await client.post("/deploy-instructions", json={"workspace_paths": []})
         assert response.status_code == 200
-        assert response.json() == {"status": "unknown", "reason": "no_owning_context"}
+        assert response.json() == {"status": "unknown", "reason": "not_a_workspace_folder"}
 
-    async def test_deploys_resolved_context(
+    async def test_deploys_resolved_workspace(
         self, client: AsyncClient, db, duet_data_builder, monkeypatch
     ) -> None:
         from scanner import Scanner
-        from services.workspace import WorkspaceService
+        from services.orientation import OrientationService
         from mcp_handler import init_services
         from tests.fixtures import ManifestBuilder
 
         builder = duet_data_builder
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
-        root_path = builder.get_root_context_path(0)
-        ctx_path = root_path / "Proj"
-        ctx_path.mkdir()
-        skill = ctx_path / "_src" / "myskill"
+        root_path = builder.get_root_workspace_path(0)
+        ws_path = root_path / "Proj"
+        ws_path.mkdir()
+        skill = ws_path / "_src" / "myskill"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("# myskill", encoding="utf-8")
-        ManifestBuilder.context(ctx_path, "Proj", skills=["@Proj/_src/myskill"])
+        ManifestBuilder.workspace(ws_path, "Proj", skills=["@Proj/_src/myskill"])
         Scanner(db, repos_path=builder.get_repos_path()).scan()
-        init_services(WorkspaceService(db), EntitiesService(db), time.time())
+        init_services(OrientationService(db), EntitiesService(db), time.time())
 
         response = await client.post(
-            "/deploy-instructions", json={"workspace_paths": [str(ctx_path)]}
+            "/deploy-instructions", json={"workspace_paths": [str(ws_path)]}
         )
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "ok"
         assert "myskill" in data["deployed"]["skills_deployed"]
-        assert (ctx_path / ".claude" / "skills" / "myskill" / "SKILL.md").is_file()
-        assert not (ctx_path / ".claude" / "CLAUDE.md").exists()
+        assert (ws_path / ".claude" / "skills" / "myskill" / "SKILL.md").is_file()
+        assert not (ws_path / ".claude" / "CLAUDE.md").exists()
 
 
 @pytest.mark.asyncio
@@ -310,16 +311,16 @@ class TestTicketsEndpoint:
         import shutil
 
         from scanner import Scanner
-        from services.workspace import WorkspaceService
+        from services.orientation import OrientationService
         from mcp_handler import init_services
 
         builder = duet_data_builder
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
-        lab = builder.get_root_context_path(0) / "DuetLab"
+        lab = builder.get_root_workspace_path(0) / "DuetLab"
         shutil.copytree(Path(__file__).parent / "ticket_cases" / "trees" / "lab", lab)
         Scanner(db, repos_path=builder.get_repos_path()).scan()
-        init_services(WorkspaceService(db), EntitiesService(db), time.time())
+        init_services(OrientationService(db), EntitiesService(db), time.time())
         return lab
 
     async def test_unknown_action_returns_404(self, client: AsyncClient) -> None:
@@ -347,6 +348,7 @@ class TestTicketsEndpoint:
         assert body["tickets"] == [{
             "number": "DUE037", "name": "Thesaurus", "shelf": "work",
             "folder": str(lab / "work" / "DUE037_Thesaurus"),
+            "owner": str(lab), "default_workspace": None,
             "branch": None, "worktrees": [], "parked": {},
         }]
         assert (lab / "work" / "DUE037_Thesaurus" / "INDEX.md").is_file()
@@ -361,8 +363,29 @@ class TestTicketsEndpoint:
         assert body["tickets"] == [{
             "number": "DUE008", "name": "CoreProtocols", "shelf": "backlog",
             "folder": str(lab / "backlog" / "DUE008_CoreProtocols"),
+            "owner": str(lab), "default_workspace": None,
             "branch": None, "worktrees": [], "parked": {},
         }]
+
+    async def test_desk_creates_a_ticket_that_opens_in_the_desk(
+        self, client: AsyncClient, lab: Path, db
+    ) -> None:
+        from scanner import Scanner
+        from tests.fixtures import ManifestBuilder
+
+        ManifestBuilder.workspace(lab / "DuetDev", "DuetDev", ticket_code="inherit")
+        Scanner(db).scan()
+        response = await client.post(
+            "/tickets/new_ticket", json={"name": "Desk Probe", "workspace": "DuetDev"})
+        body = response.json()
+        assert body["is_error"] is False, body["text"]
+        assert body["tickets"][0]["default_workspace"] == "DuetDev"
+        assert body["tickets"][0]["owner"] == str(lab)
+        index = lab / "work" / "DUE037_DeskProbe" / "INDEX.md"
+        assert 'default-workspace: "@DuetDev"' in index.read_text(encoding="utf-8")
+        listing = await client.post("/tickets/tickets", json={"workspace": "DuetDev"})
+        assert listing.json()["text"].startswith(
+            "### Tickets of DuetLab (DUE), inherited by DuetDev")
 
     async def test_failed_operation_is_flagged_not_an_http_error(
         self, client: AsyncClient, lab: Path

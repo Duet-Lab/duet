@@ -338,7 +338,7 @@ describe('М2.1, М3.2, М3.14: какой тикет показан', () => {
     const home = nextShown(NOTHING_SHOWN, { kind: 'home', own }).state;
     const other: ShownState = { ticket: { number: 'DUE017', path: '/b/work/DUE017_X', own: false }, trouble: null };
 
-    it('при запуске и по «обновить» — тикет окна; в окне бизнеса — пусто', () => {
+    it('при запуске и по «обновить» — тикет окна; в окне воркспейса — пусто', () => {
         expect(home.ticket).toEqual({ number: 'DUE018', path: '/b/work/DUE018_WorkView', own: true });
         expect(nextShown(other, { kind: 'home', own }).state.ticket?.number).toBe('DUE018');
         expect(nextShown(other, { kind: 'home', own: { state: 'none' } }).state).toEqual(NOTHING_SHOWN);
@@ -348,35 +348,35 @@ describe('М2.1, М3.2, М3.14: какой тикет показан', () => {
         expect(nextShown(home, { kind: 'home', own }).changed).toBe(true);
     });
 
-    it('М3.2/1, М4.2: выбор в «Корзине» показывает тикет — и из пустого окна бизнеса', () => {
-        const select = { kind: 'select' as const, number: 'DUE017', path: '/b/work/DUE017_X', sameBusiness: true, ownNumber: 'DUE018' };
+    it('М3.2/1, М4.2: выбор в «Корзине» показывает тикет — и из пустого окна воркспейса', () => {
+        const select = { kind: 'select' as const, number: 'DUE017', path: '/b/work/DUE017_X', sameOwner: true, ownNumber: 'DUE018' };
         expect(nextShown(home, select)).toMatchObject({ changed: true, state: { ticket: { number: 'DUE017', own: false } } });
         expect(nextShown(NOTHING_SHOWN, { ...select, ownNumber: null }).state.ticket?.number).toBe('DUE017');
     });
 
     it('М3.14/4: выбор уже показанного тикета его вид не перезапускает; после возврата домой щелчок действует снова', () => {
-        const select = { kind: 'select' as const, number: 'DUE017', path: '/b/work/DUE017_X', sameBusiness: true, ownNumber: 'DUE018' };
+        const select = { kind: 'select' as const, number: 'DUE017', path: '/b/work/DUE017_X', sameOwner: true, ownNumber: 'DUE018' };
         expect(nextShown(other, select)).toEqual({ state: other, changed: false });
         expect(nextShown(home, select).changed).toBe(true);
     });
 
     it('выбор своего тикета в «Корзине» показывает его как свой', () => {
-        expect(nextShown(other, { kind: 'select', number: 'DUE018', path: own.path, sameBusiness: true, ownNumber: 'DUE018' }).state.ticket?.own).toBe(true);
+        expect(nextShown(other, { kind: 'select', number: 'DUE018', path: own.path, sameOwner: true, ownNumber: 'DUE018' }).state.ticket?.own).toBe(true);
     });
 
     it('две папки одного номера — два разных показа: назначение задаёт строка', () => {
-        const twin = { kind: 'select' as const, number: 'DUE017', path: '/b/backlog/DUE017_X', sameBusiness: true, ownNumber: 'DUE018' };
+        const twin = { kind: 'select' as const, number: 'DUE017', path: '/b/backlog/DUE017_X', sameOwner: true, ownNumber: 'DUE018' };
         expect(nextShown(other, twin)).toMatchObject({ changed: true, state: { ticket: { path: '/b/backlog/DUE017_X' } } });
     });
 
-    it('DUE019: выбор бизнеса очищает даже собственный тикет; чужой тикет разрешён', () => {
-        expect(nextShown(home, { kind: 'business' }).state).toEqual(NOTHING_SHOWN);
-        const step = nextShown(home, { kind: 'select', number: 'ABC001', path: '/c/work/ABC001', sameBusiness: false, ownNumber: 'DUE018' });
+    it('DUE019: выбор воркспейса очищает даже собственный тикет; чужой тикет разрешён', () => {
+        expect(nextShown(home, { kind: 'workspace' }).state).toEqual(NOTHING_SHOWN);
+        const step = nextShown(home, { kind: 'select', number: 'ABC001', path: '/c/work/ABC001', sameOwner: false, ownNumber: 'DUE018' });
         expect(step.state.ticket).toEqual({ number: 'ABC001', path: '/c/work/ABC001', own: false });
         expect(step.changed).toBe(true);
         expect(step.say).toBeUndefined();
-        // A duplicated number in another business is never marked as the window's own.
-        expect(nextShown(home, { kind: 'select', number: 'DUE018', path: '/c/work/DUE018', sameBusiness: false, ownNumber: 'DUE018' })
+        // A duplicated number in another workspace is never marked as the window's own.
+        expect(nextShown(home, { kind: 'select', number: 'DUE018', path: '/c/work/DUE018', sameOwner: false, ownNumber: 'DUE018' })
             .state.ticket?.own).toBe(false);
     });
 
@@ -456,7 +456,7 @@ describe('поиск папки тикета', () => {
 });
 
 describe('М2.3, М4.6: файлы вида', () => {
-    it('места хранения: порядок — в бизнесе, вид тикета — по машине без программы, настройки окна — по программе и окну', () => {
+    it('места хранения: порядок — в воркспейсе-владельце, вид тикета — по машине без программы, настройки окна — по программе и окну', () => {
         const paths = new Paths('/data');
         expect(workOrderPath('/drive/DuetLab', 'DUE018')).toBe('/drive/DuetLab/.vscode/duet-work-order/DUE018.json');
         expect(paths.workTicketViewPath('/drive/DuetLab', 'DUE018')).toBe('/data/views/work/tickets/DuetLab/DUE018.json');

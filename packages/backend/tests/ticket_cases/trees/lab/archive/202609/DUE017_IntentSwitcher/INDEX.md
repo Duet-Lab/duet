@@ -1,9 +1,8 @@
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 opened: 2026-09-10
 closed: 2026-09-29
-business-area: DuetOrig
 parent: DUEX03
 ---
 

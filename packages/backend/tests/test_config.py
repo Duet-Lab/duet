@@ -2,7 +2,7 @@
 
 New architecture:
 - ~/.org.ve68.duet (pointer) → duetDataPath, duetConfigPath, machine
-- DuetConfig/settings.json → root_context_folders (@aliases), timestampTZ
+- DuetConfig/settings.json → root_workspace_folders (@aliases), timestampTZ
 - DuetConfig/{machine}.json → port, @alias mappings
 """
 
@@ -64,7 +64,7 @@ class TestReadSettings:
     def test_reads_settings(self, duet_data: Path, tmp_path: Path) -> None:
         """read_settings() reads settings.json from DuetConfig."""
         result = config.read_settings()
-        assert "root_context_folders" in result
+        assert "root_workspace_folders" in result
         assert "timestampTZ" in result
 
     def test_raises_if_settings_not_found(
@@ -185,7 +185,7 @@ class TestGetTimezone:
     ) -> None:
         """get_timezone() raises ConfigError if timestampTZ not set."""
         settings_path = tmp_path / "DuetConfig" / "settings.json"
-        settings_path.write_text(json.dumps({"root_context_folders": []}))
+        settings_path.write_text(json.dumps({"root_workspace_folders": []}))
         config.reset_cache()
 
         with pytest.raises(config.ConfigError, match="timestampTZ not set"):
@@ -197,7 +197,7 @@ class TestGetTimezone:
         """get_timezone() raises ConfigError if timestampTZ is not dict."""
         settings_path = tmp_path / "DuetConfig" / "settings.json"
         settings_path.write_text(json.dumps({
-            "root_context_folders": [],
+            "root_workspace_folders": [],
             "timestampTZ": "UTC"  # Should be dict
         }))
         config.reset_cache()
@@ -211,7 +211,7 @@ class TestGetTimezone:
         """get_timezone() raises ConfigError if missing id/value keys."""
         settings_path = tmp_path / "DuetConfig" / "settings.json"
         settings_path.write_text(json.dumps({
-            "root_context_folders": [],
+            "root_workspace_folders": [],
             "timestampTZ": {"id": "M"}  # Missing 'value'
         }))
         config.reset_cache()
@@ -221,83 +221,83 @@ class TestGetTimezone:
 
 
 class TestGetRootContextFolders:
-    """Tests for get_root_context_folders()."""
+    """Tests for get_root_workspace_folders()."""
 
     def test_returns_empty_list(self, duet_data: Path) -> None:
-        """get_root_context_folders() returns empty list by default."""
-        assert config.get_root_context_folders() == []
+        """get_root_workspace_folders() returns empty list by default."""
+        assert config.get_root_workspace_folders() == []
 
     def test_resolves_aliases(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """get_root_context_folders() resolves @aliases to absolute paths."""
+        """get_root_workspace_folders() resolves @aliases to absolute paths."""
         builder = DuetDataBuilder(tmp_path)
         builder.add_alias("@БАЗА", str(tmp_path / "БАЗА"))
         builder.add_alias("@МетаЛаб", str(tmp_path / "МетаЛаб"))
-        builder.with_root_context_folders(["@БАЗА", "@МетаЛаб"])
+        builder.with_root_workspace_folders(["@БАЗА", "@МетаЛаб"])
         builder.build()
         monkeypatch.setenv("DUET_POINTER_FILE", str(builder.pointer_path))
         config.reset_cache()
 
-        result = config.get_root_context_folders()
+        result = config.get_root_workspace_folders()
         assert result == [str(tmp_path / "БАЗА"), str(tmp_path / "МетаЛаб")]
 
     def test_raises_if_not_set(
         self, duet_data: Path, tmp_path: Path
     ) -> None:
-        """get_root_context_folders() raises ConfigError if not set."""
+        """get_root_workspace_folders() raises ConfigError if not set."""
         settings_path = tmp_path / "DuetConfig" / "settings.json"
         settings_path.write_text(json.dumps({
             "timestampTZ": {"id": "Z", "value": "UTC"}
         }))
         config.reset_cache()
 
-        with pytest.raises(config.ConfigError, match="root_context_folders not set"):
-            config.get_root_context_folders()
+        with pytest.raises(config.ConfigError, match="root_workspace_folders not set"):
+            config.get_root_workspace_folders()
 
     def test_raises_if_invalid_type(
         self, duet_data: Path, tmp_path: Path
     ) -> None:
-        """get_root_context_folders() raises ConfigError if not a list."""
+        """get_root_workspace_folders() raises ConfigError if not a list."""
         settings_path = tmp_path / "DuetConfig" / "settings.json"
         settings_path.write_text(json.dumps({
             "timestampTZ": {"id": "Z", "value": "UTC"},
-            "root_context_folders": "@БАЗА"  # Should be list
+            "root_workspace_folders": "@БАЗА"  # Should be list
         }))
         config.reset_cache()
 
         with pytest.raises(config.ConfigError, match="must be a list"):
-            config.get_root_context_folders()
+            config.get_root_workspace_folders()
 
     def test_raises_on_unknown_alias(
         self, duet_data: Path, tmp_path: Path
     ) -> None:
-        """get_root_context_folders() raises ConfigError if alias not found."""
+        """get_root_workspace_folders() raises ConfigError if alias not found."""
         settings_path = tmp_path / "DuetConfig" / "settings.json"
         settings_path.write_text(json.dumps({
             "timestampTZ": {"id": "Z", "value": "UTC"},
-            "root_context_folders": ["@Unknown"]
+            "root_workspace_folders": ["@Unknown"]
         }))
         config.reset_cache()
 
         with pytest.raises(config.ConfigError, match="Failed to resolve"):
-            config.get_root_context_folders()
+            config.get_root_workspace_folders()
 
     def test_picks_up_alias_added_at_runtime(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Regression: Host writes new @alias to {machine}.json when the user
-        # adds a root context in the wizard, then appends it to settings.json.
+        # adds a root workspace in the wizard, then appends it to settings.json.
         # If backend cached AliasResolver at startup, the next /scan blew up
         # with AliasNotFoundError until the process was restarted.
         builder = DuetDataBuilder(tmp_path)
         builder.add_alias("@БАЗА", str(tmp_path / "БАЗА"))
-        builder.with_root_context_folders(["@БАЗА"])
+        builder.with_root_workspace_folders(["@БАЗА"])
         builder.build()
         monkeypatch.setenv("DUET_POINTER_FILE", str(builder.pointer_path))
         config.reset_cache()
 
-        assert config.get_root_context_folders() == [str(tmp_path / "БАЗА")]
+        assert config.get_root_workspace_folders() == [str(tmp_path / "БАЗА")]
 
         machine_config_path = tmp_path / "DuetConfig" / "test_machine.json"
         mc = json.loads(machine_config_path.read_text())
@@ -306,10 +306,10 @@ class TestGetRootContextFolders:
 
         settings_path = tmp_path / "DuetConfig" / "settings.json"
         settings = json.loads(settings_path.read_text())
-        settings["root_context_folders"] = ["@БАЗА", "@Library"]
+        settings["root_workspace_folders"] = ["@БАЗА", "@Library"]
         settings_path.write_text(json.dumps(settings))
 
-        assert config.get_root_context_folders() == [
+        assert config.get_root_workspace_folders() == [
             str(tmp_path / "БАЗА"),
             str(tmp_path / "Library"),
         ]

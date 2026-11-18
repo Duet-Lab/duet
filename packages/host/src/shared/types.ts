@@ -23,6 +23,14 @@ export interface StatusItem {
 export type AppStatus = 'no_config' | 'path_lost' | 'ready'
 export type DeployChannel = 'dev' | 'prod'
 
+/** DEV backend sources: the main clone and the worktrees of ticket branches beside it. */
+export interface BackendSources {
+  /** `devBackendPath` of this machine, or null. */
+  current: string | null
+  /** `main` first, then branches; fewer than two means there is nothing to choose. */
+  sources: { label: string; path: string }[]
+}
+
 export interface AppState {
   status: AppStatus
   duetDataPath: string | null
@@ -155,16 +163,16 @@ export interface InstructionsMergeResult {
 }
 
 // =============================================================================
-// ROOT CONTEXTS (IPC: root-contexts:get, root-contexts:save, root-contexts:scan)
+// ROOT WORKSPACES (IPC: root-workspaces:get, root-workspaces:save, root-workspaces:scan)
 // =============================================================================
 
-/** Entry returned by root-contexts:get — raw alias for storage, resolved path for display. */
-export interface RootContextEntry {
+/** Entry returned by root-workspaces:get — raw alias for storage, resolved path for display. */
+export interface RootWorkspaceEntry {
   /** Raw value from settings.json — @alias, @alias/subpath, or absolute path. Use for save/remove. */
   raw: string
   /** Resolved absolute path (alias looked up in machine config). Use for display. */
   resolved: string
-  /** Whether this context has meta: true in its context.json manifest (e.g. !БАЗА). */
+  /** Whether this is the meta workspace: `meta: true` in its context.json manifest (e.g. !БАЗА). */
   isMeta: boolean
   /**
    * True iff `raw` references an `@alias` that doesn't exist in this machine's config — folder
@@ -189,24 +197,31 @@ export interface ScanResult {
 }
 
 // =============================================================================
-// CONTEXTS (entity tree from DuetData/data/contexts.json)
+// WORKSPACES (registry from DuetData/data/workspaces.json, same payload as GET /workspaces)
 // =============================================================================
 
-export interface ContextEntity {
+export interface WorkspaceEntity {
   id: string
+  /** Always `"workspace"`. */
   type: string
+  /** From the `name` field of the workspace's INDEX.md frontmatter. */
   name: string
-  icon: string
+  /** From the `icon` field of the INDEX.md frontmatter. */
+  icon: string | null
   path: string
   absolute_path: string | null
   parent_id: string | null
-  git_url: string | null
-  /** True for meta-context (e.g. !БАЗА). Sister node `implement-backend-rename` adds this field. */
+  /** True for the meta workspace (e.g. !БАЗА). */
   meta?: boolean
+  description?: string | null
+  git_repos?: Record<string, string> | null
+  reference_repos?: Record<string, string> | null
+  /** `ticket-code` as written in INDEX.md frontmatter (`"DUE"`, `"inherit"`), or null. */
+  ticket_code?: string | null
 }
 
-export interface ContextsCache {
-  contexts: ContextEntity[]
+export interface WorkspacesCache {
+  workspaces: WorkspaceEntity[]
 }
 
 // =============================================================================
@@ -221,16 +236,16 @@ export interface MigrationCriticalError {
   description: string
 }
 
-/** Per-context migration error — all surface as red on DuetPathsPage; backend skips affected contexts but otherwise starts. */
-export interface MigrationContextError {
+/** Per-workspace migration error — all surface as red on DuetPathsPage; backend skips affected workspaces but otherwise starts. */
+export interface MigrationWorkspaceError {
   path: string
-  root_context_path: string
+  root_workspace_path: string
   reason_code: 'future_version' | 'invalid_json' | 'migration_failed' | 'unresolved_alias'
   description: string
 }
 
 export interface MigrationResult {
   critical: MigrationCriticalError | null
-  contextErrors: MigrationContextError[]
+  workspaceErrors: MigrationWorkspaceError[]
   migratedCount: number
 }

@@ -2,8 +2,8 @@
  * Remembered order, kept as one flat list of ticket numbers.
  *
  * Two files use it: the order of active intents of a program
- * (`DuetData/intents/<program>/active.json`) and the order of a business's
- * tickets in the bin (`<business>/.vscode/duet-intents.json`). The order inside
+ * (`DuetData/intents/<program>/active.json`) and the order of a workspace's
+ * tickets in the bin (`<workspace>/.vscode/duet-intents.json`). The order inside
  * any group of rows is the relative order of its numbers in the list; a number
  * the list does not hold stands after the listed ones, by number.
  */

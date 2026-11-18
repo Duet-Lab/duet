@@ -11,7 +11,7 @@ Two callers resolve alpha paths and both stand on this module:
 What an alpha path is, decided once:
 
 - It starts with ``@``, followed by a head. The head is a **repo dir** under
-  ``<DuetData>/repos`` (``@Duet.git``) or a **context name** as registered in
+  ``<DuetData>/repos`` (``@Duet.git``) or a **workspace name** as registered in
   Duet (``@DuetLab``); a repo wins when both exist.
 - ``/`` and ``\\`` both separate segments, so one address means the same on
   every OS. Empty segments (``//``, a trailing ``/``) are dropped. Text is
@@ -84,22 +84,22 @@ def parse_at_path(raw: str) -> AtPath:
 def find_base(
     head: str,
     repos_path: Path | None,
-    context_folders: Mapping[str, str | Path],
+    workspace_folders: Mapping[str, str | Path],
 ) -> Path | None:
     """The folder a head stands for, or ``None``.
 
     Args:
         head: A head already taken from `parse_at_path` (NFC, no separators).
         repos_path: ``<DuetData>/repos`` (or None if unset).
-        context_folders: Context name → absolute Drive folder.
+        workspace_folders: Workspace name → absolute Drive folder.
 
     A directory ``<repos_path>/<head>`` that exists is checked first, then a
-    context named ``<head>``. The folder is returned as configured, with any
+    workspace named ``<head>``. The folder is returned as configured, with any
     symlink in it left in place.
     """
     if repos_path is not None and (repos_path / head).is_dir():
         return repos_path / head
-    for name, folder in context_folders.items():
+    for name, folder in workspace_folders.items():
         if normalize_path(name) == head:
             return Path(folder)
     return None
@@ -120,13 +120,13 @@ def join_under(base: Path, rest: str) -> Path:
 def resolve_at_path(
     at_path: str,
     repos_path: Path | None,
-    context_folders: Mapping[str, str | Path],
+    workspace_folders: Mapping[str, str | Path],
 ) -> Path | None:
     """Resolve ``@<head>/<rest>`` to an absolute path, or ``None`` if it is
     malformed or unresolvable. Deployment declarations use this form."""
     try:
         parsed = parse_at_path(at_path)
-        base = find_base(parsed.head, repos_path, context_folders)
+        base = find_base(parsed.head, repos_path, workspace_folders)
         return None if base is None else join_under(base, parsed.rest)
     except AtPathError:
         return None

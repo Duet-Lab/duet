@@ -62,7 +62,7 @@ function expectedOutputStyleFrontmatter(): string {
   return [
     '---',
     'name: duet-core',
-    "description: 'Duet platform instructions: workspace orientation, business context, tools, and knowledge persistence.'",
+    "description: 'Duet platform instructions: workspace orientation, workspaces and tickets, tools, and knowledge persistence.'",
     'keep-coding-instructions: true',
     '---',
     '',

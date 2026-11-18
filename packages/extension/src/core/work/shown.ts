@@ -1,10 +1,11 @@
 import * as path from 'path';
 import { FileSystem } from '../fs';
 import { parseTicketFolderName } from '../pathUtils';
+import { ARCHIVE_GROUP_DEPTH } from '../workspaces';
 
 /**
  * Which ticket the «Рабочая папка» view shows: the ticket of the window, another
- * ticket of any business picked in the bin, or none.
+ * ticket of any workspace picked in the bin, or none.
  */
 export interface ShownTicket {
     number: string;
@@ -41,10 +42,10 @@ export type OwnPlace =
 export type ShownEvent =
     /** The window started, or «обновить» was pressed. */
     | { kind: 'home'; own: OwnPlace }
-    /** A business was selected: wait for an explicit choice of a ticket. */
-    | { kind: 'business' }
+    /** A workspace was selected: wait for an explicit choice of a ticket. */
+    | { kind: 'workspace' }
     /** A ticket row of the bin was clicked or reached by a key. */
-    | { kind: 'select'; number: string; path: string; sameBusiness: boolean; ownNumber: string | null }
+    | { kind: 'select'; number: string; path: string; sameOwner: boolean; ownNumber: string | null }
     /** The shown folder is gone; `places` are the folders that carry its number now. */
     | { kind: 'gone'; places: string[]; own: OwnPlace };
 
@@ -74,11 +75,11 @@ export function nextShown(before: ShownState, event: ShownEvent): ShownStep {
         const state = home(event.own, before);
         return { state, changed: !sameTicket(before.ticket, state.ticket) || event.own.state === 'found' };
     }
-    if (event.kind === 'business') {
+    if (event.kind === 'workspace') {
         return { state: NOTHING_SHOWN, changed: before.ticket !== null || before.trouble !== null };
     }
     if (event.kind === 'select') {
-        const ticket = { number: event.number, path: event.path, own: event.sameBusiness && event.number === event.ownNumber };
+        const ticket = { number: event.number, path: event.path, own: event.sameOwner && event.number === event.ownNumber };
         // A click on the ticket already shown does not start its view again
         if (sameTicket(before.ticket, ticket)) {
             return { state: before, changed: false };
@@ -146,13 +147,13 @@ export function viewTitle(shown: ShownState, load: LoadState): { title: string; 
     return { title: number ? `${WORK_TITLE} ${number}` : WORK_TITLE, description: marks.join(' · '), message };
 }
 
-/** `<business>/.vscode/duet-work-order/<number>.json` — the order of a ticket's rows, next to the order of the bin. */
-export function workOrderPath(businessPath: string, ticketNumber: string): string {
-    return path.join(businessPath, '.vscode', 'duet-work-order', `${ticketNumber}.json`);
+/** `<owner>/.vscode/duet-work-order/<number>.json` — the order of a ticket's rows, next to the order of the bin. */
+export function workOrderPath(ownerPath: string, ticketNumber: string): string {
+    return path.join(ownerPath, '.vscode', 'duet-work-order', `${ticketNumber}.json`);
 }
 
-/** How deep under `archive/` a ticket is looked for — the depth the bin's reader uses. */
-const ARCHIVE_DEPTH = 3;
+/** How deep under `archive/` a ticket is looked for — the grouping depth the owner rule allows. */
+const ARCHIVE_DEPTH = ARCHIVE_GROUP_DEPTH + 1;
 
 export type TicketPlaces =
     | { state: 'found'; paths: string[] }
@@ -160,11 +161,11 @@ export type TicketPlaces =
     | { state: 'unknown'; reason: string };
 
 /**
- * Every folder of a business that carries the ticket number: in `work/`,
+ * Every folder of a workspace that carries the ticket number: in `work/`,
  * `backlog/` and the archive. Unlike the bin's reader it tells «no such
  * ticket» from «the folder did not answer»: the view shows these differently.
  */
-export async function locateTicket(fs: FileSystem, businessPath: string, ticketNumber: string): Promise<TicketPlaces> {
+export async function locateTicket(fs: FileSystem, ownerPath: string, ticketNumber: string): Promise<TicketPlaces> {
     const paths: string[] = [];
     const scan = async (dir: string, depth: number): Promise<void> => {
         let names: string[];
@@ -189,9 +190,9 @@ export async function locateTicket(fs: FileSystem, businessPath: string, ticketN
         }
     };
     try {
-        await scan(path.join(businessPath, 'work'), 1);
-        await scan(path.join(businessPath, 'backlog'), 1);
-        await scan(path.join(businessPath, 'archive'), ARCHIVE_DEPTH);
+        await scan(path.join(ownerPath, 'work'), 1);
+        await scan(path.join(ownerPath, 'backlog'), 1);
+        await scan(path.join(ownerPath, 'archive'), ARCHIVE_DEPTH);
     } catch (error) {
         return { state: 'unknown', reason: error instanceof Error ? error.message : String(error) };
     }
@@ -208,4 +209,20 @@ export function chooseOwnPlace(ticketNumber: string, ticketFolder: string, place
         return { state: 'found', number: ticketNumber, path: named ?? places.paths[0] };
     }
     return { state: places.paths.length === 0 ? 'missing' : 'ambiguous', number: ticketNumber };
+}
+
+/**
+ * Where the ticket of a ticket window lies now, among the shelves of its owner
+ * — `work/`, `backlog/`, the archive with its grouping folders: the folder
+ * named as the window knows it, or the only one. Null when the ticket is
+ * gone, when two folders carry its number, or when the folders did not
+ * answer: the window's second folder is then left as it is
+ * (`core/intents/worktreeSync.ts`).
+ */
+export async function windowTicketFolder(
+    fs: FileSystem,
+    own: { key: string; ticketFolder: string; ownerPath: string }
+): Promise<string | null> {
+    const place = chooseOwnPlace(own.key, own.ticketFolder, await locateTicket(fs, own.ownerPath, own.key));
+    return place.state === 'found' ? place.path : null;
 }

@@ -1,25 +1,26 @@
-import { intentIcon, intentIdentity, rowText, RowText, BUSINESS_TAG } from './naming';
+import { intentIcon, intentIdentity, rowText, RowText, WORKSPACE_TAG } from './naming';
 import { WindowMarker } from './markers';
 
 /**
- * Active windows as the «Активная Работа» view shows them: the business windows of this
+ * Active windows as the «Активная Работа» view shows them: the workspace windows of this
  * program and its intents — the tickets that have a window open — in one list. One row per
  * key, whatever the number of windows.
  */
 export interface ActiveIntent {
-    subject: 'intent' | 'business';
-    /** Key of the row: the ticket number `DUE017`, or `@DuetLab` for a business window. */
+    subject: 'intent' | 'workspace';
+    /** Key of the row: the ticket number `DUE017`, or `@DuetLab` for a workspace window. */
     ticket: string;
-    /** Ticket folder name the window was opened for; empty for a business window. */
+    /** Ticket folder name the window was opened for; empty for a workspace window. */
     folder: string;
-    /** Readable name: `Intent Switcher`; for a business window, the business name. */
+    /** Readable name: `Intent Switcher`; for a workspace window, the workspace name. */
     name: string;
     /**
      * Emoji shown in the row, by three steps: the ticket's own; else the one of its parent ticket (the
-     * nearest up the `parent` chain that has one); else the one of its business. Empty when none has one.
+     * nearest up the `parent` chain that has one); else the one of the workspace that owns it. Empty when none has one.
      */
     icon: string;
-    business: string;
+    /** The workspace of the row: the owner of the ticket, or the window's workspace. */
+    workspace: string;
     workspaceFile: string;
     /** Colour in force in the window now; null when it has none. */
     color: string | null;
@@ -46,14 +47,14 @@ export function activeFromMarkers(live: WindowMarker[], ownPid: number): ActiveI
         }
     }
     return [...best.values()].map(marker => {
-        const business = marker.subject === 'business';
+        const workspace = marker.subject === 'workspace';
         return {
             subject: marker.subject,
             ticket: marker.ticket,
             folder: marker.ticketFolder,
-            name: business ? marker.business : (intentIdentity(marker.ticketFolder)?.name ?? ''),
-            icon: business ? marker.icon : intentIcon(marker.ticketIcon, marker.icon),
-            business: marker.business,
+            name: workspace ? marker.workspace : (intentIdentity(marker.ticketFolder)?.name ?? ''),
+            icon: workspace ? marker.icon : intentIcon(marker.ticketIcon, marker.icon),
+            workspace: marker.workspace,
             workspaceFile: marker.workspaceFile,
             color: marker.color,
             own: marker.kind === 'window' && marker.pid === ownPid,
@@ -76,7 +77,7 @@ export const NUMBERED_ROWS = 9;
 
 /**
  * The rows that carry a number, in the order of their numbers: the first nine
- * rows as the view shows them — windows of businesses and of intents alike.
+ * rows as the view shows them — windows of workspaces and of intents alike.
  * A number is the place of a row, not a property of its window: it is kept
  * nowhere and counted anew from the shown rows each time, so after a drag, or
  * when a window opens or closes, the rows below take new numbers. The text of
@@ -103,14 +104,14 @@ export function rowByNumber(shown: ActiveIntent[], number: unknown): ActiveInten
 /**
  * Text of a row: the name in the label, with the row's number in front the way
  * the editor numbers its tabs — `2: Intent Switcher`; after it the ticket
- * number, or `biz` for a business window; and the red dot at the very end of
+ * number, or `ws` for a workspace window; and the red dot at the very end of
  * this window's own row. The number is part of the name, so the backdrop of
  * the own row lies under it too.
  *
  * @param number - from `rowNumber`; null for a row without one
  */
 export function activeRowText(row: ActiveIntent, number: number | null = null): RowText {
-    const plain = rowText('', row.name, row.subject === 'business' ? BUSINESS_TAG : row.ticket);
+    const plain = rowText('', row.name, row.subject === 'workspace' ? WORKSPACE_TAG : row.ticket);
     const label = number === null ? plain.label : `${number}: ${plain.label}`;
     const text: RowText = { ...plain, label, name: [0, label.length] };
     if (!row.own) {
@@ -120,7 +121,7 @@ export function activeRowText(row: ActiveIntent, number: number | null = null): 
 }
 
 /**
- * Rows in the order the view shows them: one list of open windows, business
+ * Rows in the order the view shows them: one list of open windows, workspace
  * windows and intents alike, in the remembered order. A row the order does not
  * hold yet stands at the end, in the sequence it came in — `listNewRows` gives
  * that sequence and the caller writes it down, so the place is kept from then on.
@@ -167,7 +168,7 @@ export function listNewRows(
 
 /**
  * Where a dragged row lands among the shown rows. Every row is dragged the
- * same way, a business window or an intent.
+ * same way, a workspace window or an intent.
  *
  * @param shown - rows as the view shows them
  * @param target - key of the row the drop landed on, null for a drop past the rows

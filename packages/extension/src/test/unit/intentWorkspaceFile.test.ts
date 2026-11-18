@@ -16,7 +16,7 @@ import {
     INTENT_COLORS_KEY,
     IntentWorkspaceSpec,
     buildIntentWorkspaceText,
-    planBusinessColor,
+    planWorkspaceColor,
     planIntentWorkspace,
     readIntentWorkspaceState,
     windowColorBlock
@@ -77,8 +77,10 @@ describe('chooseIntentColor', () => {
     });
 });
 
+const LAB = '/Users/test/Drive/!МетаЛаб/DuetLab';
 const spec: IntentWorkspaceSpec = {
-    businessPath: '/Users/test/Drive/!МетаЛаб/DuetLab',
+    workspacePath: LAB,
+    ticketPath: `${LAB}/work/DUE017_IntentSwitcher`,
     aliases: ['duet-work', 'duet-shell', 'Duet'],
     ticketFolder: 'DUE017_IntentSwitcher',
     tabLabel: '🚀 Intent Switcher'
@@ -91,12 +93,15 @@ const LIST_KEYS = [...SELECTION_KEYS, 'list.filterMatchBackground'];
 /**
  * One of the three sample files Andrei saw and accepted
  * (`DuetData/workspaces/DuetLab/DUE017_IntentSwitcher.code-workspace`), with the
- * business path of this test.
+ * workspace path of this test and, since canon 6, the ticket folder second.
  */
 const SAMPLE = `{
   "folders": [
     {
       "path": "/Users/test/Drive/!МетаЛаб/DuetLab"
+    },
+    {
+      "path": "/Users/test/Drive/!МетаЛаб/DuetLab/work/DUE017_IntentSwitcher"
     },
     {
       "path": "../../repos/duet-work.git"
@@ -160,16 +165,17 @@ describe('buildIntentWorkspaceText', () => {
         expect(block['list.filterMatchBorder']).toBeUndefined();
     });
 
-    it('a business without repos gives a file of one folder', () => {
+    it('a workspace without repos gives a file of the workspace and the ticket', () => {
         const built = JSON.parse(buildIntentWorkspaceText({ ...spec, aliases: [] }, '#1f6f43', []));
-        expect(built.folders).toEqual([{ path: '/Users/test/Drive/!МетаЛаб/DuetLab' }]);
+        expect(built.folders).toEqual([{ path: LAB }, { path: spec.ticketPath }]);
     });
 
-    it('a meta business gives its additional folders after its own folder and repos', () => {
+    it('a meta workspace gives its additional folders after its own folder, the ticket and the repos', () => {
         const extraFolders = [{ path: '/Users/test/Drive/!МетаЛаб' }, { path: '/Users/test/DuetData', name: 'DuetData' }];
         const built = JSON.parse(buildIntentWorkspaceText({ ...spec, aliases: ['Duet'], extraFolders }, '#1f6f43', []));
         expect(built.folders).toEqual([
-            { path: spec.businessPath },
+            { path: spec.workspacePath },
+            { path: spec.ticketPath },
             { path: '../../repos/Duet.git' },
             ...extraFolders
         ]);
@@ -295,14 +301,14 @@ describe('intentColorId', () => {
     });
 });
 
-describe('planBusinessColor', () => {
+describe('planWorkspaceColor', () => {
     const FOLDERS_ONLY = JSON.stringify({ folders: [{ path: '/drive/DuetLab' }, { path: '../repos/Duet.git' }] }, null, 2);
     const colourOf = (settings: Record<string, unknown> | undefined) =>
         (settings?.['workbench.colorCustomizations'] as Record<string, string> | undefined)?.['titleBar.activeBackground'];
 
     it('first open, and a file from before colours: a free colour by the same rules, remembered as the main one', () => {
         for (const existing of [null, FOLDERS_ONLY]) {
-            const plan = planBusinessColor(existing, ['#1f6f43'], false, first);
+            const plan = planWorkspaceColor(existing, ['#1f6f43'], false, first);
             expect(plan).toMatchObject({ action: 'write', color: '#1f4f8f' });
             if (plan.action === 'write') {
                 expect(colourOf(plan.settings)).toBe('#1f4f8f');
@@ -315,11 +321,11 @@ describe('planBusinessColor', () => {
 
     it('later opens use the main colour; a taken main colour gives a spare', () => {
         const file = (settings: Record<string, unknown> | undefined) => JSON.stringify({ folders: [], settings }, null, 2);
-        const opened = planBusinessColor(null, [], false, last);
+        const opened = planWorkspaceColor(null, [], false, last);
         const text = file(opened.action === 'write' ? opened.settings : undefined);
 
-        expect(planBusinessColor(text, [], false, first)).toMatchObject({ action: 'write', color: '#8f1f7a' });
-        const spare = planBusinessColor(text, ['#8f1f7a'], false, first);
+        expect(planWorkspaceColor(text, [], false, first)).toMatchObject({ action: 'write', color: '#8f1f7a' });
+        const spare = planWorkspaceColor(text, ['#8f1f7a'], false, first);
         expect(spare).toMatchObject({ action: 'write', color: '#1f6f43' });
         if (spare.action === 'write') {
             expect(spare.settings?.[INTENT_COLORS_KEY]).toEqual(['#8f1f7a', '#1f6f43']);
@@ -327,9 +333,9 @@ describe('planBusinessColor', () => {
     });
 
     it('a window that is open is never recoloured: its colour block is written back as it is', () => {
-        const opened = planBusinessColor(null, [], false, last);
+        const opened = planWorkspaceColor(null, [], false, last);
         const text = JSON.stringify({ folders: [], settings: opened.action === 'write' ? opened.settings : undefined }, null, 2);
-        const again = planBusinessColor(text, ['#8f1f7a', '#1f6f43'], true, first);
+        const again = planWorkspaceColor(text, ['#8f1f7a', '#1f6f43'], true, first);
         expect(again).toMatchObject({ action: 'write', color: '#8f1f7a' });
         if (again.action === 'write' && opened.action === 'write') {
             expect(again.settings).toEqual(opened.settings);
@@ -337,7 +343,7 @@ describe('planBusinessColor', () => {
     });
 
     it('an open window whose file has no colour yet stays without one — folders only, as before', () => {
-        expect(planBusinessColor(FOLDERS_ONLY, [], true, first)).toEqual({ action: 'write', settings: undefined, color: null });
+        expect(planWorkspaceColor(FOLDERS_ONLY, [], true, first)).toEqual({ action: 'write', settings: undefined, color: null });
     });
 
     it('a file written by a newer Duet is left as it is', () => {
@@ -345,11 +351,11 @@ describe('planBusinessColor', () => {
             folders: [],
             settings: { 'workbench.colorCustomizations': windowColorBlock('#6b3fa0'), [INTENT_CANON_KEY]: INTENT_CANON_VERSION + 1 }
         });
-        expect(planBusinessColor(newer, [], false, first)).toEqual({ action: 'as-is', color: '#6b3fa0' });
+        expect(planWorkspaceColor(newer, [], false, first)).toEqual({ action: 'as-is', color: '#6b3fa0' });
     });
 
-    it('an unreadable file is rebuilt with a fresh colour, as the business file always was rebuilt', () => {
-        expect(planBusinessColor('{ broken', [], false, first)).toMatchObject({ action: 'write', color: '#1f6f43' });
+    it('an unreadable file is rebuilt with a fresh colour, as the workspace file always was rebuilt', () => {
+        expect(planWorkspaceColor('{ broken', [], false, first)).toMatchObject({ action: 'write', color: '#1f6f43' });
     });
 });
 

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { ContextEntity } from '../../core/api-client';
+import { WorkspaceEntity } from '../../core/api-client';
 import { normalizePath } from '../../core/pathUtils';
-import { findCurrentBusiness } from '../../core/tree/contextPanel';
+import { binHome, windowWorkspace } from '../../core/workspaces';
 import { BinNode, binTickets, parentOfBinNode } from '../../core/intents/binTree';
 import { TicketBoard } from '../../core/intents/board';
 import { rowText } from '../../core/intents/naming';
@@ -19,12 +19,15 @@ const REDRAW_DEBOUNCE_MS = 25;
 const UNSEEN_READ_MS = 300;
 
 /**
- * «Корзина» view — all tickets of the current business from `work/` and
- * `backlog/`, laid out by `core/intents/binTree.ts`. The view is for managing
+ * «Корзина» view — all tickets of one workspace from `work/` and `backlog/`,
+ * laid out by `core/intents/binTree.ts`. Its home is the tickets workspace of
+ * the first folder (`core/workspaces.ts:binHome`) — in a ticket window, the
+ * owner of the ticket; a workspace picked in «Все воркспейсы» is shown for a
+ * while instead. The view is for managing
  * the backlog and the order: a click on a row only selects it, and switching
  * to a window is the job of the «Активная Работа» view alone.
  *
- * The view holds no tickets of its own: it shows the board of the business
+ * The view holds no tickets of its own: it shows the board of the workspace
  * (`core/intents/board.ts`), which alone decides when the disk is read, and
  * draws its rows again when the board says they changed. It tells the board
  * whose tickets to hold and whether its rows are shown.
@@ -35,9 +38,10 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
     /** Carries out a drop; set by the commands that own the disk operations. */
     onDrop: BinDropHandler | null = null;
 
-    private ownBusiness: ContextEntity | null = null;
+    private home: WorkspaceEntity | null = null;
+    private problem: string | null = null;
     private previewId: string | null = null;
-    private business: ContextEntity | null;
+    private shown: WorkspaceEntity | null = null;
     private requested = false;
     private visibilityKnown = false;
     private redrawTimer: ReturnType<typeof setTimeout> | undefined;
@@ -56,17 +60,18 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
     private readonly disposables: vscode.Disposable[] = [this.emitter];
 
     constructor(
-        private contexts: ContextEntity[],
+        private workspaces: WorkspaceEntity[],
         private readonly runtime: IntentsRuntime,
         private readonly board: TicketBoard
     ) {
-        this.ownBusiness = this.business = findCurrentBusiness(contexts, openPaths());
-        board.setBusiness(this.business?.absolute_path ?? null);
+        this.findHome();
+        this.shown = this.home;
+        board.setWorkspace(this.shown?.absolute_path ?? null);
         this.disposables.push(
             board.onDidChange(() => this.redraw()),
             // A window opened or closed: the colours and the buttons change, the disk is not read
             runtime.onDidChange(() => this.redraw()),
-            vscode.workspace.onDidChangeWorkspaceFolders(() => { this.previewId = null; this.updateBusiness(); })
+            vscode.workspace.onDidChangeWorkspaceFolders(() => { this.previewId = null; this.updateHome(); })
         );
     }
 
@@ -76,10 +81,10 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
         this.disposables.forEach(d => d.dispose());
     }
 
-    /** Replace the list of businesses (after `duet.refresh`). */
-    updateContexts(contexts: ContextEntity[]): void {
-        this.contexts = contexts;
-        this.updateBusiness();
+    /** Replace the list of workspaces (after `duet.refresh`). */
+    updateWorkspaces(workspaces: WorkspaceEntity[]): void {
+        this.workspaces = workspaces;
+        this.updateHome();
     }
 
     /**
@@ -111,22 +116,32 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
         this.redrawTimer = setTimeout(() => this.emitter.fire(), REDRAW_DEBOUNCE_MS);
     }
 
-    windowBusiness(): ContextEntity | null { return this.ownBusiness; }
+    /** The workspaces of the registry the bin knows. */
+    registry(): readonly WorkspaceEntity[] { return this.workspaces; }
 
-    isForeignBusiness(): boolean { return this.business?.id !== this.ownBusiness?.id; }
+    /** The workspace whose tickets the bin of this window shows when nothing else is picked. */
+    homeWorkspace(): WorkspaceEntity | null { return this.home; }
 
-    /** Preview a real business, without changing the workspace or reading a hidden board. */
-    showBusiness(entityId: number): boolean {
-        const next = this.contexts.find(b => b.id === String(entityId) && !!b.absolute_path);
+    /** Why the window has no home of tickets — `inherit` without an ancestor with a code; null otherwise. */
+    homeProblem(): string | null { return this.problem; }
+
+    /** The workspace of the window — its first folder; null when it is not a registered workspace. */
+    windowWorkspace(): WorkspaceEntity | null { return windowWorkspace(this.workspaces, openPaths()); }
+
+    isForeignWorkspace(): boolean { return this.shown?.id !== this.home?.id; }
+
+    /** Preview a real workspace, without changing the window or reading a hidden board. */
+    showWorkspace(entityId: number): boolean {
+        const next = this.workspaces.find(b => b.id === String(entityId) && !!b.absolute_path);
         if (!next) { return false; }
         this.previewId = next.id;
-        this.setBusiness(next);
+        this.setWorkspace(next);
         return true;
     }
 
     async goHome(): Promise<void> {
         this.previewId = null;
-        this.setBusiness(this.ownBusiness);
+        this.setWorkspace(this.home);
         if (this.board.isShown()) { await this.board.reload(); }
     }
 
@@ -135,9 +150,9 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
         return row?.kind === 'ticket' && binTickets(this.board.getTree()).includes(row);
     }
 
-    /** The business shown — it may differ from the stable business of the window. */
-    currentBusiness(): ContextEntity | null {
-        return this.business;
+    /** The workspace shown — it may differ from the home of the window. */
+    shownWorkspace(): WorkspaceEntity | null {
+        return this.shown;
     }
 
     getTreeItem(node: BinNode): vscode.TreeItem {
@@ -151,7 +166,7 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
             item.id = this.rowId(node);
             item.iconPath = rowIcon('');
             item.contextValue = 'bin-group';
-            // A click on the name does nothing; the node is toggled by its arrow, as in «Все Бизнесы»
+            // A click on the name does nothing; the node is toggled by its arrow, as in «Все воркспейсы»
             item.command = { command: 'duet.selectNode', title: 'Select' };
             return item;
         }
@@ -174,7 +189,7 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
         // Menu when-clauses stand on these: the buttons differ by shelf and vanish for an open ticket
         item.contextValue = open ? 'ticket-open' : `ticket-${ticket.shelf}`;
         item.tooltip = ticket.path;
-        // A click selects the row and does not toggle the node — that is the arrow's job, as in «Все Бизнесы».
+        // A click selects the row and does not toggle the node — that is the arrow's job, as in «Все воркспейсы».
         // The command also shows the ticket in «Рабочая папка»; it never switches windows
         item.command = { command: 'duet.bin.select', title: 'Select', arguments: [node] };
         return item;
@@ -186,7 +201,7 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
         }
         // The view asks for rows only while it is shown, and is told it became visible right
         // after — that is what reads the folders. Should that word never come, read anyway.
-        if (this.board.getTickets() === null && this.business && !this.requested && !this.visibilityKnown) {
+        if (this.board.getTickets() === null && this.shown && !this.requested && !this.visibilityKnown) {
             this.requested = true;
             this.unseenTimer = setTimeout(() => {
                 if (this.board.getTickets() === null) {
@@ -210,7 +225,7 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
     async handleDrop(target: BinNode | undefined, dataTransfer: vscode.DataTransfer): Promise<void> {
         const data = dataTransfer.get(BIN_MIME)?.value as { key?: unknown; generation?: unknown; owner?: unknown } | undefined;
         if (typeof data?.key !== 'string' || data.owner !== this.dragId || data.generation !== this.board.getGeneration()) { return; }
-        // Old rows cannot be dropped into a newly selected business (including A → B → A).
+        // Old rows cannot be dropped into a newly selected workspace (including A → B → A).
         if (target && !this.contains(target)) { return; }
         if (this.onDrop) { await this.onDrop(data.key, target?.key ?? null); }
     }
@@ -224,21 +239,28 @@ export class BinProvider implements vscode.TreeDataProvider<BinNode>, vscode.Tre
         return `${this.generation}|${node.key}`;
     }
 
-    private updateBusiness(): void {
-        this.ownBusiness = findCurrentBusiness(this.contexts, openPaths());
-        const preview = this.contexts.find(b => b.id === this.previewId && !!b.absolute_path);
-        if (!preview) { this.previewId = null; }
-        this.setBusiness(preview ?? this.ownBusiness);
+    private findHome(): void {
+        const own = this.runtime.own;
+        const found = binHome(this.workspaces, openPaths(), own?.subject === 'intent' ? own.ownerPath : null);
+        this.home = found.workspace;
+        this.problem = found.problem;
     }
 
-    private setBusiness(next: ContextEntity | null): void {
-        if (pathKey(next) !== pathKey(this.business)) {
+    private updateHome(): void {
+        this.findHome();
+        const preview = this.workspaces.find(b => b.id === this.previewId && !!b.absolute_path);
+        if (!preview) { this.previewId = null; }
+        this.setWorkspace(preview ?? this.home);
+    }
+
+    private setWorkspace(next: WorkspaceEntity | null): void {
+        if (pathKey(next) !== pathKey(this.shown)) {
             this.requested = false;
             clearTimeout(this.unseenTimer);
             this.generation++;
         }
-        this.business = next;
-        this.board.setBusiness(next?.absolute_path ?? null);
+        this.shown = next;
+        this.board.setWorkspace(next?.absolute_path ?? null);
         this.redraw();
     }
 
@@ -248,6 +270,6 @@ function openPaths(): string[] {
     return (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
 }
 
-function pathKey(business: ContextEntity | null): string | null {
-    return business?.absolute_path ? normalizePath(business.absolute_path) : null;
+function pathKey(workspace: WorkspaceEntity | null): string | null {
+    return workspace?.absolute_path ? normalizePath(workspace.absolute_path) : null;
 }

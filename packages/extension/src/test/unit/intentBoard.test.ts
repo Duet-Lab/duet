@@ -10,10 +10,10 @@ const B = '/drive/DuetLab';
 const OTHER = '/drive/Other';
 
 function index(parent: string | null = null): string {
-    return ['---', 'work-type: project', `parent: ${parent ?? 'null'}`, '---', '', '# Ticket'].join('\n');
+    return ['---', 'ticket-type: project', `parent: ${parent ?? 'null'}`, '---', '', '# Ticket'].join('\n');
 }
 
-function business(): MemFs {
+function workspaceDisk(): MemFs {
     return createMemFs({
         [`${B}/work/DUE001_First/INDEX.md`]: index(),
         [`${B}/work/DUE002_Second/INDEX.md`]: index(),
@@ -26,7 +26,7 @@ function boardOf(mem: MemFs): { board: TicketBoard; changes: () => number } {
     const board = new TicketBoard(new TicketReader(mem.fs), mem.fs);
     let count = 0;
     board.onDidChange(() => { count++; });
-    board.setBusiness(B);
+    board.setWorkspace(B);
     return { board, changes: () => count };
 }
 
@@ -34,7 +34,7 @@ const numbers = (board: TicketBoard): string[] => binTickets(board.getTree()).ma
 
 describe('DUE019: a read belongs to a particular source generation', () => {
     it('A → B → A never publishes the first A reading into the revisited A', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const reader = new TicketReader(mem.fs);
         const old = await reader.readShelves(B);
         let releaseFirst!: () => void;
@@ -49,11 +49,11 @@ describe('DUE019: a read belongs to a particular source generation', () => {
             return [];
         });
         const board = new TicketBoard(reader, mem.fs);
-        board.setBusiness(B);
+        board.setWorkspace(B);
         const reading = board.setShown(true);
         await vi.waitFor(() => expect(releaseFirst).toBeDefined());
-        board.setBusiness(OTHER);
-        board.setBusiness(B);
+        board.setWorkspace(OTHER);
+        board.setWorkspace(B);
         releaseFirst();
         await vi.waitFor(() => expect(releaseNext).toBeDefined());
         expect(board.getTickets()).toBeNull();
@@ -104,7 +104,7 @@ describe('TicketBoard', () => {
     afterEach(() => { vi.useRealTimers(); });
 
     it('reads nothing until its rows are shown', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board } = boardOf(mem);
         expect(board.getTickets()).toBeNull();
         expect(mem.calls.readdir).toBe(0);
@@ -113,7 +113,7 @@ describe('TicketBoard', () => {
     });
 
     it('shows a ticket an agent made past the extension', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board, changes } = boardOf(mem);
         await board.setShown(true);
         const before = changes();
@@ -128,7 +128,7 @@ describe('TicketBoard', () => {
     });
 
     it('drops a ticket that went to the archive', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board } = boardOf(mem);
         await board.setShown(true);
 
@@ -140,7 +140,7 @@ describe('TicketBoard', () => {
     });
 
     it('takes the order another window wrote', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board } = boardOf(mem);
         await board.setShown(true);
         expect(board.getOrder()).toEqual([]);
@@ -153,7 +153,7 @@ describe('TicketBoard', () => {
     });
 
     it('gathers the events of one burst into one reading', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board } = boardOf(mem);
         await board.setShown(true);
         await mem.fs.mkdir(`${B}/work/DUE004_Fourth`);
@@ -170,7 +170,7 @@ describe('TicketBoard', () => {
     });
 
     it('does not read the folders twice after a move it has already read', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board, changes } = boardOf(mem);
         await board.setShown(true);
 
@@ -189,7 +189,7 @@ describe('TicketBoard', () => {
     });
 
     it('reads the folders when an INDEX.md changed, which the stamps do not see', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board } = boardOf(mem);
         await board.setShown(true);
         const first = binTickets(board.getTree()).find(n => n.ticket.number === 'DUE001');
@@ -203,7 +203,7 @@ describe('TicketBoard', () => {
     });
 
     it('tells no one when a reading finds what it had', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board, changes } = boardOf(mem);
         await board.setShown(true);
         const told = changes();
@@ -214,7 +214,7 @@ describe('TicketBoard', () => {
     });
 
     it('costs nothing while its rows are hidden, and reads when they are shown again', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board } = boardOf(mem);
         await board.setShown(true);
         await board.setShown(false);
@@ -233,7 +233,7 @@ describe('TicketBoard', () => {
     });
 
     it('finds on a check a change whose event never came', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         const { board } = boardOf(mem);
         await board.setShown(true);
 
@@ -247,25 +247,25 @@ describe('TicketBoard', () => {
         expect(numbers(board)).toEqual(['DUE001', 'DUE002']);
     });
 
-    it('drops what it read when the business changes', async () => {
-        const mem = business();
+    it('drops what it read when the workspace changes', async () => {
+        const mem = workspaceDisk();
         const { board, changes } = boardOf(mem);
         await board.setShown(true);
         const told = changes();
 
-        board.setBusiness(OTHER);
+        board.setWorkspace(OTHER);
         expect(board.getTickets()).toBeNull();
         expect(board.getTree()).toEqual([]);
         expect(changes()).toBe(told + 1);
         await board.reload();
         expect(numbers(board)).toEqual(['OTH001']);
 
-        board.setBusiness(OTHER);
+        board.setWorkspace(OTHER);
         expect(numbers(board)).toEqual(['OTH001']);
     });
 
     it('keeps the last order and refuses to call it known when the order file cannot be read', async () => {
-        const mem = business();
+        const mem = workspaceDisk();
         await mem.fs.writeFile(binOrderPath(B), JSON.stringify(['DUE002', 'DUE001']), 'utf8');
         const { board } = boardOf(mem);
         await board.setShown(true);

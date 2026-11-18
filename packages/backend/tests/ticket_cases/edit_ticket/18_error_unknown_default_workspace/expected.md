@@ -1,0 +1,1 @@
+Error: `default_workspace` names Genesis, which is not a registered workspace. A ticket of DuetLab is worked on only in DuetLab or a desk inheriting its tickets: DuetLab, DuetDev. Nothing was changed.

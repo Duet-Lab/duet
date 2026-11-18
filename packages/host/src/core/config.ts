@@ -229,9 +229,9 @@ export const setSettingsConfigKey = (key: string, value: unknown): void => {
 // =============================================================================
 
 const DEFAULT_SETTINGS = {
-  version: 2,
+  version: 3,
   user_name: 'Human',
-  root_context_folders: [] as string[],
+  root_workspace_folders: [] as string[],
   timestampTZ: { id: 'Z', value: 'UTC' }
 }
 

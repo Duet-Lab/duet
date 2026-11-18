@@ -1,16 +1,17 @@
 """Ticket operations shared by the MCP tools and the extension.
 
-A ticket is a folder named `<number>_<Name>` under a business's `work/`,
-`backlog/`, or `archive/` directory. Its metadata (work type, parent, dates) lives
+A ticket is a folder named `<number>_<Name>` under a workspace's `work/`,
+`backlog/`, or `archive/` directory. Its metadata (ticket type, parent, dates) lives
 in the YAML frontmatter of its `INDEX.md`.
 
 Five operations are exposed, each a single call:
 
-- `tickets`: list a business's tickets.
+- `tickets`: list a workspace's tickets.
 - `new_ticket`: allocate a number, create the folder, write the frontmatter.
 - `move_ticket`: move a ticket between work, backlog, and archive; a ticket
   with a branch is closed or shelved only once the branch is ready.
-- `edit_ticket`: change a ticket's name, parent, icon, or description.
+- `edit_ticket`: change a ticket's name, parent, icon, description, routine type,
+  or default workspace.
 - `add_worktree`: give a ticket in work its branch and worktree in one repo.
 
 These operations own the ticket's name and its frontmatter. The name lives
@@ -19,7 +20,7 @@ changes both. Everything else below the frontmatter belongs to whoever writes
 the ticket and is never modified.
 
 The operations take a `TicketEnv` as their first argument: the registered
-contexts, the current date, and `DuetData/repos`. They have no hidden
+workspaces, the current date, and `DuetData/repos`. They have no hidden
 dependencies. Each returns Markdown for the
 caller to display and raises `TicketError` when it can't proceed. `run` wraps
 both outcomes in a `Result`, so callers never infer failure from the text.
@@ -42,7 +43,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from services.resolve_paths import ContextRef
+from services.resolve_paths import WorkspaceRef
 from services.tickets.branches import add_worktree, move_ticket
 from services.tickets.model import TicketEnv, TicketError, collect_affected
 from services.tickets.views import tickets
@@ -78,7 +79,9 @@ class Result:
     text: str
     is_error: bool = False
     # The tickets the operation looked up, created, moved, or edited, as data:
-    # `{number, name, shelf, folder, branch, worktrees, parked}` each, where
+    # `{number, name, shelf, folder, owner, default_workspace, branch, worktrees,
+    # parked}` each, where `owner` is the owner workspace's folder,
+    # `default_workspace` the name in `default-workspace` without `@` (or None),
     # `worktrees` is `[{repo, path}]` and `parked` is `{repo: branch}`. Empty
     # for listings and for failures.
     tickets: list[dict] = field(default_factory=list)
@@ -146,7 +149,7 @@ def _describe_type(hint) -> str:
     return {str: "a string", bool: "true or false"}.get(hint, hint.__name__)
 
 
-def run(action: str, contexts: list[ContextRef], today: date, *,
+def run(action: str, workspaces: list[WorkspaceRef], today: date, *,
         repos: Path | None = None, **arguments) -> Result:
     """Run an operation. Failures are returned as an error `Result`, not raised.
 
@@ -156,7 +159,7 @@ def run(action: str, contexts: list[ContextRef], today: date, *,
     try:
         check_arguments(action, arguments)
         with collect_affected() as affected:
-            text = ACTIONS[action](TicketEnv(contexts, today, repos), **arguments)
+            text = ACTIONS[action](TicketEnv(workspaces, today, repos), **arguments)
         return Result(text, tickets=affected)
     except TicketError as error:
         return Result(f"Error: {error}", is_error=True)

@@ -30,7 +30,7 @@ from db import DatabaseManager
 from mcp_handler import init_services, reset_services
 from server import create_app
 from services.entities import EntitiesService
-from services.workspace import WorkspaceService
+from services.orientation import OrientationService
 
 from tests.fixtures import DuetDataBuilder, EntityFactory
 
@@ -47,7 +47,7 @@ def duet_data_builder(tmp_path: Path) -> DuetDataBuilder:
         def test_something(duet_data_builder):
             builder = duet_data_builder
             builder.with_version("2.0.0")
-            builder.add_root_context("MyContext")
+            builder.add_root_workspace("MyWorkspace")
             path = builder.build()
     """
     return DuetDataBuilder(tmp_path)
@@ -102,9 +102,9 @@ def db_with_services(db: DatabaseManager) -> DatabaseManager:
     """
     import time
 
-    workspace_service = WorkspaceService(db)
+    orientation_service = OrientationService(db)
     entities_service = EntitiesService(db)
-    init_services(workspace_service, entities_service, time.time())
+    init_services(orientation_service, entities_service, time.time())
     yield db
     reset_services()
 
@@ -127,7 +127,7 @@ def entity_factory() -> type[EntityFactory]:
 
     Usage in tests:
         def test_something(entity_factory, db):
-            entity = entity_factory.context("MyContext", "/path")
+            entity = entity_factory.workspace("MyWorkspace", "/path")
             db.insert_entity(entity)
     """
     return EntityFactory

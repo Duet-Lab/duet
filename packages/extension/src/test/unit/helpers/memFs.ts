@@ -161,3 +161,26 @@ export function createMemFs(initialFiles: Record<string, string> = {}, initialDi
         touch: (filePath) => { mtimes.set(filePath, ++clock); }
     };
 }
+
+/**
+ * The files of a workspace folder as they lie on disk since DUE063: a
+ * `context.json` with its `version`, and an `INDEX.md` whose frontmatter
+ * carries `name`, `icon` and `ticket-code`.
+ */
+export function workspaceFiles(
+    folder: string,
+    fields: { name: string; icon?: string; ticketCode?: string; meta?: boolean }
+): Record<string, string> {
+    const front = ['---', 'folder-type: workspace', `name: ${fields.name}`];
+    if (fields.icon) {
+        front.push(`icon: ${fields.icon}`);
+    }
+    if (fields.ticketCode) {
+        front.push(`ticket-code: ${fields.ticketCode}`);
+    }
+    front.push('---', `# ${fields.name}`, '');
+    return {
+        [path.join(folder, 'context.json')]: JSON.stringify(fields.meta ? { version: 4, meta: true } : { version: 4 }),
+        [path.join(folder, 'INDEX.md')]: front.join('\n')
+    };
+}

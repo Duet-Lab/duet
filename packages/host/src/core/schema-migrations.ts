@@ -1,41 +1,47 @@
 /*
  * ЧТО: Schema migrations для всех Duet-конфигов и manifest'ов.
  * ЗАЧЕМ: Host — единственный owner авто-апгрейда форматов на диске. Backend читает только v4 context.json.
- * КТО ИСПОЛЬЗУЕТ: main/index.ts (startup sweep), main/ipc-handlers.ts (scoped sweep при изменении путей и добавлении root-context).
+ * КТО ИСПОЛЬЗУЕТ: main/index.ts (startup sweep), main/ipc-handlers.ts (sweep при изменении путей и добавлении root workspace).
  *
  * НЕТ Electron imports — тестируемо с plain Node.js.
  *
  * Контракт (см. unification-design §6):
- * - Три schema spec: settings, machine, context.
+ * - Три schema spec: settings, machine, manifest (context.json).
  * - Каждая миграция — pure function (data, ctx) → data.
  * - Запись через .tmp + rename, чтобы сбой не оставил битый файл.
  * - Future-version (`version > maxSupported`) — не трогаем, помечаем как ошибку.
  * - Settings/machine future-version → critical (Backend не запускается).
- * - Context future-version → per-context warning (Backend запускается, конкретный контекст пропускается).
+ * - Manifest future-version → per-workspace error (Backend запускается, конкретный workspace пропускается).
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'fs'
 import { basename, join } from 'path'
 import type {
-  MigrationContextError,
+  MigrationWorkspaceError,
   MigrationCriticalError,
   MigrationResult
 } from '../shared/types'
 import { atomicWriteJson } from './json-io'
+import {
+  MOVED_MANIFEST_FIELDS,
+  createWorkspaceFiles,
+  ensureWorkspaceIndex,
+  type FrontmatterField
+} from './workspace-index'
 
 // Re-export shared types so callers can keep a single import.
 export type {
-  MigrationContextError,
+  MigrationWorkspaceError,
   MigrationCriticalError,
   MigrationResult
 } from '../shared/types'
 
-// Re-export atomic write so existing callers (root-contexts.ts) keep working with one import.
+// Re-export atomic write so existing callers keep working with one import.
 export { atomicWriteJson } from './json-io'
 
 /** Empty (clean) migration result — used as initial value before any sweep ran. */
 export const EMPTY_MIGRATION_RESULT: MigrationResult = {
   critical: null,
-  contextErrors: [],
+  workspaceErrors: [],
   migratedCount: 0
 }
 
@@ -67,10 +73,16 @@ interface SchemaSpec {
  * settings.json schema:
  * - v1 (implicit): { business_folders: [...], timestampTZ: ... }  — no `version` field.
  * - v2: { version: 2, root_context_folders: [...], timestampTZ: ... }
+ * - v3: { version: 3, root_workspace_folders: [...], timestampTZ: ... } — key renamed (DUE063).
+ *
+ * There is no v2 → v3 step: the DUE063 data migration (`migrate.py`, run while Host is stopped)
+ * renames the key and sets `version: 3`. Host has no migration code for it, so a v2 file (and a
+ * v1 file, which the v1 step only brings to v2) gets the generic `no_migration` outcome — a
+ * critical error, file untouched, backend not started.
  */
 export const SETTINGS_SCHEMA: SchemaSpec = {
-  targetVersion: 2,
-  maxSupportedVersion: 2,
+  targetVersion: 3,
+  maxSupportedVersion: 3,
   migrations: {
     1: (data) => {
       const next: Record<string, unknown> = { version: 2 }
@@ -110,7 +122,7 @@ export const MACHINE_SCHEMA: SchemaSpec = {
 }
 
 /**
- * context.json schema:
+ * context.json (workspace manifest) schema:
  * - v1 (implicit): legacy `business.json` / `stream.json` / `product.json` files without `version`.
  * - v2: { version: 2, name, ... } in `context.json`. Field rename `root → meta` (only for legacy
  *   `business.json` with `root: true` — others did not have this field). Single-repo via
@@ -119,13 +131,20 @@ export const MACHINE_SCHEMA: SchemaSpec = {
  *   migration moves a single `git_url` into `git_repos: { [name]: git_url }` and drops the
  *   `git_url` field.
  * - v4: { version: 4, ... } — drops `workspace_config` (workspace assembly is now always
- *   context-first, the option is gone). New optional fields `skills` / `system_prompt`
- *   / `ticket_code` are additive (no migration needed — absent is valid). Backend reads only v4.
+ *   workspace-first, the option is gone). Optional fields `skills` / `system_prompt` are
+ *   additive (no migration needed — absent is valid). Backend reads only v4.
+ *
+ * Since DUE063 a manifest no longer carries `name` / `icon` / `ticket_code`: they live in the
+ * workspace's INDEX.md frontmatter (`name`, `icon`, `ticket-code`), version stays 4. Host does
+ * not touch those fields in a v4 file (moving them is the one-off data migration's job). The
+ * chain below still reads `name` of an old file (v2 → v3 uses it as the `git_repos` alias), and
+ * the caller moves the fields of a manifest it upgrades from below v4 into INDEX.md
+ * (`moveFieldsToIndex`) instead of writing them back.
  *
  * Caller is responsible for the file rename + delete-of-legacy: this migration only transforms
  * the JSON payload.
  */
-export const CONTEXT_SCHEMA: SchemaSpec = {
+export const MANIFEST_SCHEMA: SchemaSpec = {
   targetVersion: 4,
   maxSupportedVersion: 4,
   migrations: {
@@ -147,15 +166,21 @@ export const CONTEXT_SCHEMA: SchemaSpec = {
       }
       return next
     },
-    2: (data) => {
+    2: (data, ctx) => {
       // v2 → v3: collapse single-repo `git_url` into multi-repo `git_repos: { [name]: git_url }`.
       // Edge cases:
       //   - no git_url            → bump version only.
-      //   - git_url without name  → drop git_url, do not invent an alias (malformed v2 anyway).
+      //   - git_url without name  → the folder name is the alias (the name it would get in
+      //                             INDEX.md); without a known folder, drop git_url.
       //   - empty git_url string  → drop, no git_repos created.
       const next: Record<string, unknown> = { ...data, version: 3 }
       const url = data.git_url
-      const name = data.name
+      const name =
+        typeof data.name === 'string' && data.name.length > 0
+          ? data.name
+          : ctx.folderPath
+            ? basename(ctx.folderPath)
+            : undefined
       if (
         typeof url === 'string' &&
         url.length > 0 &&
@@ -169,9 +194,8 @@ export const CONTEXT_SCHEMA: SchemaSpec = {
     },
     3: (data) => {
       // v3 → v4: drop `workspace_config` (the primary_folder option is removed;
-      // workspace assembly is now always context-first). All other keys —
-      // including the new additive `skills` / `system_prompt` /
-      // `ticket_code` — pass through untouched.
+      // workspace assembly is now always workspace-first). All other keys —
+      // including the additive `skills` / `system_prompt` — pass through untouched.
       const next: Record<string, unknown> = { ...data, version: 4 }
       delete next.workspace_config
       return next
@@ -366,49 +390,52 @@ const LEGACY_MANIFEST_NAMES = ['business.json', 'stream.json', 'product.json'] a
 const TARGET_MANIFEST_NAME = 'context.json'
 
 /**
- * Рекурсивно проходит по rootContextFolders и поднимает все manifest'ы до v4.
+ * Рекурсивно проходит по rootWorkspaceFolders и поднимает все manifest'ы до v4.
  *
  * Правила обхода (зеркалят backend scanner):
  * - Пропускаем dotted-папки (`.git`, `.venv`, etc.).
  * - Рекурсируем и внутрь папок с непустым `git_repos`: git-репозитории
- *   живут в `DuetData/repos`, а Drive-иерархия контекстов остаётся вложенной.
+ *   живут в `DuetData/repos`, а Drive-иерархия воркспейсов остаётся вложенной.
  *
  * Действия в каждой папке:
  * - `context.json` v4 валидный → leave alone, затем рекурсируем в children.
- * - `context.json` v1/v2/v3 → миграция up to v4 (chain), запись через atomic write.
- * - `context.json` future-version (`> maxSupported`) → context-error, файл не трогаем.
- * - `context.json` невалидный JSON → context-error, файл не трогаем.
+ * - `context.json` v1/v2/v3 → миграция up to v4 (chain); `name`/`icon`/`ticket_code` уходят
+ *   во frontmatter `INDEX.md` (только недостающие поля), затем atomic write манифеста.
+ * - `context.json` future-version (`> maxSupported`) → per-workspace error, файл не трогаем.
+ * - `context.json` невалидный JSON → per-workspace error, файл не трогаем.
  * - Legacy file (`business.json` / `stream.json` / `product.json`) без `context.json` →
- *   atomic-upgrade в `context.json` v4, удалить legacy.
+ *   atomic-upgrade в `context.json` v4 (поля имени — в `INDEX.md`, как выше), удалить legacy.
  * - И `context.json`, и legacy → `context.json` побеждает, legacy удаляется без сравнения
  *   (по дизайну §7: «context.json wins, legacy silently removed» — equivalence-aware
  *   resolution был оверинжинирингом для одной машины и убран по решению пользователя).
- * - Ничего нет на root-папке (depth 0) → self-heal: создать `context.json` v4 без `meta`.
+ * - Ничего нет на root-папке (depth 0) → self-heal: создать `INDEX.md` (`folder-type: workspace`,
+ *   `name` = имя папки; в существующий — только недостающие поля) и `context.json` v4 без `name`
+ *   и `meta`.
  * - Ничего нет внутри chain → пропуск, рекурсия в children.
  */
-export function loadOrUpgradeManifests(rootContextFolders: string[]): {
-  contextErrors: MigrationContextError[]
+export function loadOrUpgradeManifests(rootWorkspaceFolders: string[]): {
+  workspaceErrors: MigrationWorkspaceError[]
   migratedCount: number
 } {
-  const contextErrors: MigrationContextError[] = []
+  const workspaceErrors: MigrationWorkspaceError[] = []
   let migratedCount = 0
 
-  for (const rootPath of rootContextFolders) {
+  for (const rootPath of rootWorkspaceFolders) {
     if (!existsSync(rootPath)) {
       // Folder no longer on disk — caller (UI) handles "path lost" elsewhere; not our concern.
       continue
     }
-    walkContext(rootPath, rootPath, /*isRoot*/ true, contextErrors, (n) => (migratedCount += n))
+    walkWorkspace(rootPath, rootPath, /*isRoot*/ true, workspaceErrors, (n) => (migratedCount += n))
   }
 
-  return { contextErrors, migratedCount }
+  return { workspaceErrors, migratedCount }
 }
 
-function walkContext(
+function walkWorkspace(
   folderPath: string,
-  rootContextPath: string,
+  rootWorkspacePath: string,
   isRoot: boolean,
-  errors: MigrationContextError[],
+  errors: MigrationWorkspaceError[],
   bumpMigrated: (n: number) => void
 ): void {
   const targetPath = join(folderPath, TARGET_MANIFEST_NAME)
@@ -420,11 +447,11 @@ function walkContext(
   if (existsSync(targetPath)) {
     // context.json exists — migrate it (no-op for valid v4). Coexisting legacy files lose:
     // context.json wins, legacy removed without comparison (design §7).
-    const result = upgradeContextFile(targetPath, /*sourceFilename*/ undefined, folderPath)
+    const result = upgradeManifestFile(targetPath, /*sourceFilename*/ undefined, folderPath)
     if (result.kind === 'error') {
       errors.push({
         path: folderPath,
-        root_context_path: rootContextPath,
+        root_workspace_path: rootWorkspacePath,
         reason_code: result.reason,
         description: result.description
       })
@@ -449,7 +476,7 @@ function walkContext(
     if (result.kind === 'error') {
       errors.push({
         path: folderPath,
-        root_context_path: rootContextPath,
+        root_workspace_path: rootWorkspacePath,
         reason_code: result.reason,
         description: result.description
       })
@@ -465,17 +492,17 @@ function walkContext(
       }
     }
   } else if (isRoot) {
-    // Self-heal: create context.json v4 with name = basename(folder), without meta.
-    const manifestData = { version: 4, name: basename(folderPath) }
+    // Self-heal: a root without a manifest becomes a new workspace — INDEX.md with
+    // `folder-type: workspace` and `name` first, then context.json v4 without name and meta.
     try {
-      atomicWriteJson(targetPath, manifestData)
+      createWorkspaceFiles(folderPath)
       bumpMigrated(1)
     } catch (e) {
       errors.push({
         path: folderPath,
-        root_context_path: rootContextPath,
+        root_workspace_path: rootWorkspacePath,
         reason_code: 'migration_failed',
-        description: `Не удалось создать context.json: ${e instanceof Error ? e.message : String(e)}`
+        description: `Не удалось создать воркспейс: ${e instanceof Error ? e.message : String(e)}`
       })
       return
     }
@@ -498,19 +525,56 @@ function walkContext(
     } catch {
       continue
     }
-    walkContext(child.path, rootContextPath, /*isRoot*/ false, errors, bumpMigrated)
+    walkWorkspace(child.path, rootWorkspacePath, /*isRoot*/ false, errors, bumpMigrated)
   }
 }
 
-type ContextUpgradeResult =
+type ManifestUpgradeResult =
   | { kind: 'ok'; data: Record<string, unknown>; migrated: boolean }
-  | { kind: 'error'; reason: MigrationContextError['reason_code']; description: string }
+  | { kind: 'error'; reason: MigrationWorkspaceError['reason_code']; description: string }
 
-function upgradeContextFile(
+/**
+ * A manifest Host upgrades from below v4 must not keep `name` / `icon` / `ticket_code`: they live
+ * in the workspace's INDEX.md frontmatter now. Moves them there (only fields INDEX.md lacks; the
+ * body is untouched) together with `folder-type: workspace`; `name` falls back to the folder
+ * name, so the scanner finds the workspace. Returns the manifest without those fields.
+ *
+ * Throws when INDEX.md cannot be updated — the caller must then leave the manifest as it was.
+ */
+function moveFieldsToIndex(
+  folderPath: string,
+  data: Record<string, unknown>
+): Record<string, unknown> {
+  const next = { ...data }
+  const fields: FrontmatterField[] = [['folder-type', 'workspace']]
+  for (const [manifestKey, yamlKey] of MOVED_MANIFEST_FIELDS) {
+    const value = next[manifestKey]
+    delete next[manifestKey]
+    if (typeof value === 'string' && value.trim().length > 0) fields.push([yamlKey, value])
+  }
+  if (!fields.some(([k]) => k === 'name')) fields.splice(1, 0, ['name', basename(folderPath)])
+  ensureWorkspaceIndex(folderPath, fields)
+  return next
+}
+
+/** `moveFieldsToIndex` for a manifest that went through the chain; no-op for one already at v4. */
+function withFieldsMoved(
+  folderPath: string,
+  result: { data: Record<string, unknown>; fromVersion: number }
+): { kind: 'ok'; data: Record<string, unknown> } | { kind: 'error'; description: string } {
+  if (result.fromVersion >= MANIFEST_SCHEMA.targetVersion) return { kind: 'ok', data: result.data }
+  try {
+    return { kind: 'ok', data: moveFieldsToIndex(folderPath, result.data) }
+  } catch (e) {
+    return { kind: 'error', description: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+function upgradeManifestFile(
   filePath: string,
   sourceFilename: string | undefined,
   folderPath: string
-): ContextUpgradeResult {
+): ManifestUpgradeResult {
   let raw: string
   try {
     raw = readFileSync(filePath, 'utf-8')
@@ -553,7 +617,7 @@ function upgradeContextFile(
         'чтобы Host пересоздал его при следующем запуске.'
     }
   }
-  const result = applyMigrations(CONTEXT_SCHEMA, data, { sourceFilename, folderPath })
+  const result = applyMigrations(MANIFEST_SCHEMA, data, { sourceFilename, folderPath })
   if (!result.ok) {
     if (result.reason === 'future_version') {
       return {
@@ -568,12 +632,16 @@ function upgradeContextFile(
       description: `Не удалось мигрировать ${basename(filePath)} с версии ${result.fromVersion}.`
     }
   }
-  const upgraded = JSON.stringify(result.data, null, 2) + '\n'
+  const moved = withFieldsMoved(folderPath, result)
+  if (moved.kind === 'error') {
+    return { kind: 'error', reason: 'migration_failed', description: moved.description }
+  }
+  const upgraded = JSON.stringify(moved.data, null, 2) + '\n'
   if (upgraded === raw) {
-    return { kind: 'ok', data: result.data, migrated: false }
+    return { kind: 'ok', data: moved.data, migrated: false }
   }
   try {
-    atomicWriteJson(filePath, result.data)
+    atomicWriteJson(filePath, moved.data)
   } catch (e) {
     return {
       kind: 'error',
@@ -581,13 +649,13 @@ function upgradeContextFile(
       description: `Не удалось записать ${basename(filePath)}: ${e instanceof Error ? e.message : String(e)}`
     }
   }
-  return { kind: 'ok', data: result.data, migrated: true }
+  return { kind: 'ok', data: moved.data, migrated: true }
 }
 
 /**
  * Migrate a legacy *.json file (business/stream/product) to context.json:
  * 1. Parse legacy.
- * 2. Apply v1→v4 migration chain.
+ * 2. Apply v1→v4 migration chain; move `name` / `icon` / `ticket_code` into INDEX.md.
  * 3. Atomic-write context.json.
  * 4. Delete legacy file.
  *
@@ -600,7 +668,7 @@ function upgradeLegacyFile(
   legacyFilename: string,
   folderPath: string,
   targetPath: string
-): ContextUpgradeResult {
+): ManifestUpgradeResult {
   let raw: string
   try {
     raw = readFileSync(legacyPath, 'utf-8')
@@ -630,7 +698,7 @@ function upgradeLegacyFile(
   }
   // Legacy files have no `version` field → treat as v1.
   delete data.version
-  const result = applyMigrations(CONTEXT_SCHEMA, data, {
+  const result = applyMigrations(MANIFEST_SCHEMA, data, {
     sourceFilename: legacyFilename,
     folderPath
   })
@@ -641,8 +709,12 @@ function upgradeLegacyFile(
       description: `Не удалось мигрировать ${legacyFilename} с версии ${result.fromVersion}.`
     }
   }
+  const moved = withFieldsMoved(folderPath, result)
+  if (moved.kind === 'error') {
+    return { kind: 'error', reason: 'migration_failed', description: moved.description }
+  }
   try {
-    atomicWriteJson(targetPath, result.data)
+    atomicWriteJson(targetPath, moved.data)
   } catch (e) {
     return {
       kind: 'error',
@@ -655,7 +727,7 @@ function upgradeLegacyFile(
   } catch {
     // legacy still present — orphan resolution will fix next sweep
   }
-  return { kind: 'ok', data: result.data, migrated: true }
+  return { kind: 'ok', data: moved.data, migrated: true }
 }
 
 // =============================================================================
@@ -666,18 +738,18 @@ function upgradeLegacyFile(
  * Полный startup-sweep:
  * 1. settings.json
  * 2. {machine}.json
- * 3. (only if 1 & 2 had no critical) — manifests under each root context folder.
+ * 3. (only if 1 & 2 had no critical) — manifests under each root workspace folder.
  *
  * Если settings или machine — critical, manifests НЕ обходятся (мы не знаем валидный
- * `root_context_folders`). Caller передаёт rootContextFolders уже в новом ключе — он отвечает
+ * `root_workspace_folders`). Caller передаёт rootWorkspaceFolders уже в новом ключе — он отвечает
  * за то, чтобы settings уже был upgraded ДО передачи списка.
  */
 export function runStartupMigration(input: {
   duetConfigPath: string | null
   machineName: string | null
-  rootContextFolders: string[]
+  rootWorkspaceFolders: string[]
 }): MigrationResult {
-  const { duetConfigPath, machineName, rootContextFolders } = input
+  const { duetConfigPath, machineName, rootWorkspaceFolders } = input
 
   if (!duetConfigPath) {
     return { ...EMPTY_MIGRATION_RESULT }
@@ -687,35 +759,35 @@ export function runStartupMigration(input: {
 
   const settings = loadOrUpgradeSettings(duetConfigPath)
   if (settings.critical) {
-    return { critical: settings.critical, contextErrors: [], migratedCount: 0 }
+    return { critical: settings.critical, workspaceErrors: [], migratedCount: 0 }
   }
   if (settings.migrated) migratedCount += 1
 
   if (machineName) {
     const machine = loadOrUpgradeMachineConfig(duetConfigPath, machineName)
     if (machine.critical) {
-      return { critical: machine.critical, contextErrors: [], migratedCount }
+      return { critical: machine.critical, workspaceErrors: [], migratedCount }
     }
     if (machine.migrated) migratedCount += 1
   }
 
-  const manifests = loadOrUpgradeManifests(rootContextFolders)
+  const manifests = loadOrUpgradeManifests(rootWorkspaceFolders)
   return {
     critical: null,
-    contextErrors: manifests.contextErrors,
+    workspaceErrors: manifests.workspaceErrors,
     migratedCount: migratedCount + manifests.migratedCount
   }
 }
 
 /**
- * Scoped sweep для одной root-context папки: используется при добавлении папки через UI.
+ * Scoped sweep для одной root workspace папки: используется при добавлении папки через UI.
  *
  * Settings/machine уже валидны (мы только что их прочитали). Manifest-walk по новой папке
  * подберёт legacy/future файлы и self-heal'ит manifest на root, если папка пустая.
  */
-export function runScopedManifestMigration(rootContextPath: string): {
-  contextErrors: MigrationContextError[]
+export function runScopedManifestMigration(rootWorkspacePath: string): {
+  workspaceErrors: MigrationWorkspaceError[]
   migratedCount: number
 } {
-  return loadOrUpgradeManifests([rootContextPath])
+  return loadOrUpgradeManifests([rootWorkspacePath])
 }

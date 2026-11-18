@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
-import { ContextEntity } from '../../core/api-client';
+import { WorkspaceEntity } from '../../core/api-client';
 import { ChatChooserController } from '../../core/chats/controller';
 import { CodexRpc, codexConversationPath } from '../../core/chats/codex';
 import { ChatStore } from '../../core/chats/storage';
@@ -15,7 +15,7 @@ import { ChatScopeReader } from '../../core/chats/context';
 export class ChatChooser implements vscode.Disposable {
     private panel?: vscode.WebviewPanel;
     private controller?: ChatChooserController;
-    private contexts: ContextEntity[] = [];
+    private workspaces: WorkspaceEntity[] = [];
     private registryComplete = false;
     private readonly catalog = new SessionCatalog(os.homedir(), undefined, process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
     private readonly store: ChatStore;
@@ -29,7 +29,7 @@ export class ChatChooser implements vscode.Disposable {
             vscode.workspace.onDidChangeWorkspaceFolders(() => this.controller?.contextChanged())
         ];
     }
-    setContexts(contexts: ContextEntity[]): void { this.contexts = contexts; this.registryComplete = true; this.controller?.registryChanged(); }
+    setWorkspaces(workspaces: WorkspaceEntity[]): void { this.workspaces = workspaces; this.registryComplete = true; this.controller?.registryChanged(); }
     show(): void {
         if (this.panel) { this.panel.reveal(); return; }
         const panel = vscode.window.createWebviewPanel('duet.chatChooser', 'Новый чат', vscode.ViewColumn.Active,
@@ -38,14 +38,14 @@ export class ChatChooser implements vscode.Disposable {
         const controller = new ChatChooserController({
             scope: () => {
                 const folders = vscode.workspace.workspaceFolders ?? [];
-                if (vscode.env.remoteName || folders.some(folder => folder.uri.scheme !== 'file')) { throw new Error('Локальная история чатов недоступна в удалённом или виртуальном рабочем пространстве.'); }
-                return this.scopeReader.read(this.runtime()?.own ?? null, folders.map(folder => folder.uri.fsPath), this.contexts.map(context => context.absolute_path), this.registryComplete);
+                if (vscode.env.remoteName || folders.some(folder => folder.uri.scheme !== 'file')) { throw new Error('Локальная история чатов недоступна в удалённом или виртуальном окне.'); }
+                return this.scopeReader.read(this.runtime()?.own ?? null, folders.map(folder => folder.uri.fsPath), this.workspaces, this.registryComplete);
             },
             providers: () => [
                 ...(vscode.extensions.getExtension('anthropic.claude-code') ? ['claude' as const] : []),
                 ...(vscode.extensions.getExtension('openai.chatgpt') ? ['codex' as const] : [])
             ],
-            rpc: async signal => CodexRpc.connect(await codexExecutable(), this.runtime()?.own?.businessPath ?? os.homedir(), signal),
+            rpc: async signal => CodexRpc.connect(await codexExecutable(), this.runtime()?.own?.workspacePath ?? os.homedir(), signal),
             state: state => { void panel.webview.postMessage({ type: 'state', state }); },
             progress: async (title, task) => vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title, cancellable: true },
                 async (progress, token) => {

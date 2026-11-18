@@ -1,6 +1,6 @@
 /*
- * Воркспейсы — сканирование корневых контекстов и дерево сущностей.
- * Показывает результаты scan (entity tree + ошибки).
+ * Воркспейсы — сканирование корневых воркспейсов и дерево воркспейсов.
+ * Показывает результаты scan (дерево воркспейсов + ошибки).
  * Список папок настраивается на странице "Duet: пути".
  */
 import { useState, useEffect } from 'react'
@@ -11,11 +11,11 @@ import type {
   AppState,
   ScanResult,
   ScanError,
-  ContextEntity,
-  ContextsCache
+  WorkspaceEntity,
+  WorkspacesCache
 } from '../../../../preload/index.d'
 import type { PageStatus } from '../../../../core/wizard-status'
-import { scanResultToPageStatus } from '../../../../core/wizard-status'
+import { scanResultToPageStatus, SCAN_WARNING_CODES } from '../../../../core/wizard-status'
 
 interface WorkspacesPageProps {
   appState: AppState
@@ -29,22 +29,22 @@ export function WorkspacesPage({
   const isReady = appState.status === 'ready'
   const [hasFolders, setHasFolders] = useState(false)
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
-  const [contextsCache, setContextsCache] = useState<ContextsCache | null>(null)
+  const [workspacesCache, setWorkspacesCache] = useState<WorkspacesCache | null>(null)
   const [scanning, setScanning] = useState(false)
   const [loading, setLoading] = useState(true)
 
-  // Load cached scan and contexts on mount
+  // Load cached scan and workspaces on mount
   useEffect(() => {
     if (!window.api) return
     const load = async (): Promise<void> => {
       try {
-        const [folders, cached, contexts] = await Promise.all([
-          window.api.getRootContextFolders(),
+        const [folders, cached, workspaces] = await Promise.all([
+          window.api.getRootWorkspaceFolders(),
           window.api.getCachedScan(),
-          window.api.getCachedContexts()
+          window.api.getCachedWorkspaces()
         ])
         setHasFolders(folders.length > 0)
-        if (contexts) setContextsCache(contexts)
+        if (workspaces) setWorkspacesCache(workspaces)
         if (cached) {
           setScanResult(cached)
           onStatusChange(scanResultToPageStatus(cached))
@@ -61,12 +61,12 @@ export function WorkspacesPage({
   const handleScan = async (): Promise<void> => {
     setScanning(true)
     try {
-      const result = await window.api.scanContexts()
+      const result = await window.api.scanWorkspaces()
       setScanResult(result)
       onStatusChange(scanResultToPageStatus(result))
-      // Contexts cache is updated by scan -- read fresh
-      const contexts = await window.api.getCachedContexts()
-      if (contexts) setContextsCache(contexts)
+      // Workspaces cache is updated by scan -- read fresh
+      const workspaces = await window.api.getCachedWorkspaces()
+      if (workspaces) setWorkspacesCache(workspaces)
     } catch (e) {
       console.error('Scan failed:', e)
     } finally {
@@ -90,7 +90,9 @@ export function WorkspacesPage({
           <Globe size={24} />
           Воркспейсы
         </h2>
-        <p className="text-muted-foreground mt-1">Сканирование корневых контекстов и дерево сущностей</p>
+        <p className="text-muted-foreground mt-1">
+          Сканирование корневых воркспейсов и дерево воркспейсов
+        </p>
       </div>
 
       {/* Scan controls */}
@@ -99,7 +101,7 @@ export function WorkspacesPage({
 
         {!hasFolders && (
           <p className="text-sm text-muted-foreground">
-            Корневые контексты не настроены. Добавьте их на шаге &laquo;Duet: пути&raquo;.
+            Корневые воркспейсы не настроены. Добавьте их на шаге &laquo;Duet: пути&raquo;.
           </p>
         )}
 
@@ -148,13 +150,8 @@ export function WorkspacesPage({
           </div>
 
           {/* Entity tree */}
-          {contextsCache && contextsCache.contexts.length > 0 && (
-            <EntityTree entities={contextsCache.contexts} />
-          )}
-          {(!contextsCache || contextsCache.contexts.length === 0) && (
-            <p className="text-sm text-muted-foreground">
-              Найдено сущностей: <strong>{scanResult.entities_count}</strong>
-            </p>
+          {workspacesCache && workspacesCache.workspaces.length > 0 && (
+            <EntityTree entities={workspacesCache.workspaces} />
           )}
 
           {/* Errors */}
@@ -177,8 +174,8 @@ export function WorkspacesPage({
 // =============================================================================
 
 /** Build tree from flat entity list using parent_id. */
-function buildTree(entities: ContextEntity[]): Map<string | null, ContextEntity[]> {
-  const children = new Map<string | null, ContextEntity[]>()
+function buildTree(entities: WorkspaceEntity[]): Map<string | null, WorkspaceEntity[]> {
+  const children = new Map<string | null, WorkspaceEntity[]>()
   for (const e of entities) {
     const key = e.parent_id
     const list = children.get(key) ?? []
@@ -188,15 +185,12 @@ function buildTree(entities: ContextEntity[]): Map<string | null, ContextEntity[
   return children
 }
 
-function EntityTree({ entities }: { entities: ContextEntity[] }): React.ReactElement {
+function EntityTree({ entities }: { entities: WorkspaceEntity[] }): React.ReactElement {
   const tree = buildTree(entities)
   const roots = tree.get(null) ?? []
 
   return (
     <div className="space-y-0.5">
-      <p className="text-xs text-muted-foreground mb-1">
-        Найдено сущностей: <strong>{entities.length}</strong>
-      </p>
       {roots.map((root) => (
         <TreeNode key={root.id} entity={root} tree={tree} depth={0} />
       ))}
@@ -209,8 +203,8 @@ function TreeNode({
   tree,
   depth
 }: {
-  entity: ContextEntity
-  tree: Map<string | null, ContextEntity[]>
+  entity: WorkspaceEntity
+  tree: Map<string | null, WorkspaceEntity[]>
   depth: number
 }): React.ReactElement {
   const children = tree.get(entity.id) ?? []
@@ -225,7 +219,7 @@ function TreeNode({
         )}
         <span>{entity.icon}</span>
         <span>{entity.name}</span>
-        <span className="text-[10px] text-muted-foreground">{entity.type}</span>
+        {entity.meta && <span className="text-[10px] text-amber-600">мета-воркспейс</span>}
       </div>
       {children.map((child) => (
         <TreeNode key={child.id} entity={child} tree={tree} depth={depth + 1} />
@@ -234,17 +228,9 @@ function TreeNode({
   )
 }
 
-/** Severity by scan error reason code. Collisions are warnings, invalid manifests are errors. */
-const SCAN_ERROR_SEVERITY: Record<string, 'error' | 'warning'> = {
-  name_collision: 'warning',
-  repo_collision: 'warning',
-  missing_manifest: 'warning',
-  invalid_manifest: 'error'
-}
-
 function scanErrorsToItems(errors: ScanError[]): StatusTableItem[] {
   return errors.map((e) => ({
-    severity: SCAN_ERROR_SEVERITY[e.reason_code] ?? 'error',
+    severity: SCAN_WARNING_CODES.has(e.reason_code) ? 'warning' : 'error',
     message: e.description,
     detail: e.path || undefined
   }))

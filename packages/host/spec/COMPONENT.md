@@ -2,13 +2,13 @@
 
 Electron tray app that writes the pointer file, deploys backend to DuetData, and configures AI clients.
 
-> Domain model (contexts, manifests, invariants), pointer file, file ownership, cross-component contracts (backend spawn, schema migration policy): see [/spec/PRODUCT.md](/spec/PRODUCT.md). UI navigation and per-page contracts: see [UI.md](UI.md). This file documents what Host itself owns.
+> Domain model (workspaces, manifests, invariants), pointer file, file ownership, cross-component contracts (backend spawn, schema migration policy): see [/spec/PRODUCT.md](/spec/PRODUCT.md). UI navigation and per-page contracts: see [UI.md](UI.md). This file documents what Host itself owns.
 
 ## Purpose
 
 Host is the **single writer** of system configuration and the **owner of backend lifecycle**. Three responsibilities:
 
-1. **Pointer + config.** Writes `~/.org.ve68.duet`. Writes and migrates `DuetConfig/settings.json` and `{machine}.json`. Writes and migrates context manifests on disk. Enforces structural invariants (meta-context at position 0).
+1. **Pointer + config.** Writes `~/.org.ve68.duet`. Writes and migrates `DuetConfig/settings.json` and `{machine}.json`. Writes and migrates workspace manifests (`context.json`) on disk and creates the `INDEX.md` frontmatter of a new workspace. Enforces structural invariants (meta workspace at position 0).
 2. **Deployment.** Deploys backend Python code from bundled `extraResources` to `DuetData/backend/`, manages venv + dependencies, writes `VERSION`, owns process spawn / stop / health monitoring.
 3. **AI client integration.** Reads the platform session prompt (`DuetData/duet.md`) and writes them into Claude Code / Codex / Antigravity / Kimi Code config locations; registers the Duet MCP server in all of them and in Claude Desktop.
 
@@ -21,7 +21,7 @@ Everything in this file describes how Host fulfils these three roles. UI surface
 | Layer | Responsibility | Files |
 |-------|----------------|-------|
 | `shared/` | Types crossing process boundary (IPC) + pure mappers | `types.ts` (single source of truth), `mappers.ts` |
-| `core/` | Config, app state, deploy, backend, AI clients, instructions, root contexts, schema migrations, atomic JSON IO, wizard status, app registry | `config.ts`, `app-state.ts`, `deploy.ts`, `backend.ts`, `ai-clients.ts`, `instructions.ts`, `root-contexts.ts`, `schema-migrations.ts`, `json-io.ts`, `wizard-status.ts`, `apps.ts` |
+| `core/` | Config, app state, deploy, backend, AI clients, instructions, root workspaces, workspace files (manifest + `INDEX.md`), schema migrations, atomic JSON IO, wizard status, app registry | `config.ts`, `app-state.ts`, `deploy.ts`, `backend.ts`, `ai-clients.ts`, `instructions.ts`, `root-workspaces.ts`, `workspace-index.ts`, `schema-migrations.ts`, `json-io.ts`, `wizard-status.ts`, `apps.ts` |
 | `platform/` | Tray, autolaunch | `tray.ts`, `autolaunch.ts` |
 | `main/` | Window, IPC handlers, lifecycle | `index.ts`, `window.ts`, `ipc-handlers.ts` |
 | `preload/` | Bridge main ↔ renderer | `index.ts`, `index.d.ts` |
@@ -104,6 +104,8 @@ Host uses Electron `requestSingleInstanceLock()`. Second instance shows window o
 | `shell:open-path` | renderer → main | Open path in Finder/Explorer |
 | `config:set-user-name` | renderer → main | Validate and save shared `user_name`; reject a critical migration state; update AppState and return it |
 | `config:set-deploy-channel` | renderer → main | Set deploy channel (dev/prod) in machine config; calls `updateAppState()`, returns new AppState |
+| `config:get-backend-sources` | renderer → main | DEV backend sources: `{ current, sources }` — the main clone `devBackendPath` belongs to (`main`) and the worktrees of ticket branches beside it (`<alias>.wt-<ticket>`, labelled by branch), each by its `packages/backend` (`core/backend-sources.ts`) |
+| `config:set-dev-backend-path` | renderer → main | Set `devBackendPath` in machine config to one of the listed sources (anything else is refused); calls `updateAppState()`, returns new AppState |
 | `deploy:get-status` | renderer → main | Get deploy status |
 | `deploy:start` | renderer → main | Start deploy (async). Broadcasts status + log events |
 | `deploy:status-changed` | main → renderer | Push deploy status updates |
@@ -120,21 +122,21 @@ Host uses Electron `requestSingleInstanceLock()`. Second instance shows window o
 | `agents:status-changed` | main → renderer | Push the stored agent status when it changed |
 | `agents:configure` | renderer → main | Configure all AI clients |
 | `agents:fix-issue` | renderer → main | Fix specific agent issue (by `agentId` + `reasonCode`) |
-| `root-contexts:get` | renderer → main | Get resolved root contexts (raw alias + absolute path + isMeta) |
-| `root-contexts:save` | renderer → main | Overwrite `root_context_folders` array in `settings.json` (used by remove/reorder); after save, enforces meta-required invariant |
-| `root-contexts:add` | renderer → main | Alias-aware add: creates `@<basename>` in `{machine}.json`, appends to `root_context_folders`, runs scoped schema migration, enforces meta-required invariant |
-| `root-contexts:scan` | renderer → main | Trigger `POST /scan` |
-| `root-contexts:get-cached-scan` | renderer → main | Read cached `scan.json` from `DuetData/data/` |
-| `root-contexts:scan-changed` | main → renderer | Push the cached scan of the current DuetData (`null` when none) when it changed |
-| `root-contexts:get-cached-contexts` | renderer → main | Read cached `contexts.json` (entity tree) from `DuetData/data/` |
+| `root-workspaces:get` | renderer → main | Get resolved root workspaces (raw alias + absolute path + isMeta) |
+| `root-workspaces:save` | renderer → main | Overwrite `root_workspace_folders` array in `settings.json` (used by remove/reorder); after save, enforces meta-required invariant |
+| `root-workspaces:add` | renderer → main | Alias-aware add: in a folder without a manifest creates the new workspace's `INDEX.md` + `context.json` first (failure → error, root not added), creates `@<basename>` in `{machine}.json`, appends to `root_workspace_folders`, enforces meta-required invariant, runs the schema-migration sweep |
+| `root-workspaces:scan` | renderer → main | Trigger `POST /scan` |
+| `root-workspaces:get-cached-scan` | renderer → main | Read cached `scan.json` from `DuetData/data/` |
+| `root-workspaces:scan-changed` | main → renderer | Push the cached scan of the current DuetData (`null` when none) when it changed |
+| `root-workspaces:get-cached-workspaces` | renderer → main | Read cached `workspaces.json` (workspace registry) from `DuetData/data/` |
 | `migrations:get-status` | renderer → main | Get cached `MigrationResult` from last sweep |
 | `migrations:status-changed` | main → renderer | Push `MigrationResult` after a sweep when it changed |
 
 **Mutation contract:** `agents:configure`, `agents:fix-issue`, `agents:refresh` and config writers call `updateAppState()` after mutations to refresh the tray and publish changed state. Reads (`*:get*`, `agents:get`) never call `updateAppState()` and never publish (see Behaviors → Idle). `deploy:start` runs async deploy, broadcasts status + log events.
 
-**Config defaults** (`ensureConfigDefaults(duetConfigPath, machine)`): creates `settings.json` (`{ version: 2, user_name: "Human", root_context_folders: [], timestampTZ: { id: "Z", value: "UTC" } }`) and `{machine}.json` (`{ version: 2, port: 19680 }`) only if files don't exist. Never overwrites. Implementation: `core/config.ts`.
+**Config defaults** (`ensureConfigDefaults(duetConfigPath, machine)`): creates `settings.json` (`{ version: 3, user_name: "Human", root_workspace_folders: [], timestampTZ: { id: "Z", value: "UTC" } }`) and `{machine}.json` (`{ version: 2, port: 19680 }`) only if files don't exist. Never overwrites. Implementation: `core/config.ts`.
 
-**User name:** `readUserNameState()` exposes `settings.json.user_name` as `AppState.userName` plus `AppState.userNameError`: an absent field is the normal default (`Human`, no error), while a present value that breaks the rule is shown as `Human` with the violation in `userNameError`, because Backend refuses such a value and only Host can repair it. A `settings.json` whose root is not an object (a JSON primitive or an array) reads as absent settings (`readSettingsConfig()` returns `null`), so state reading never throws. Its repair is not this reader's job: a primitive or unparsable root is reported by the critical-migration banner, while an array root is rewritten into a v2 object by the schema migration itself. `saveUserName(unknown)` applies the shared user-name rule (`normalizeUserName`; the rule itself is in [/spec/PRODUCT.md → Orientation](/spec/PRODUCT.md#orientation)) and uses `setSettingsConfigKey` to preserve other settings. The IPC handler refuses to write while schema migration is in a critical state, like backend spawn. The renderer uses typed `setUserName` IPC and shows save errors; the existing settings watcher refreshes AppState after external edits. This is a shared personal preference, not a machine identifier or a new required setup step.
+**User name:** `readUserNameState()` exposes `settings.json.user_name` as `AppState.userName` plus `AppState.userNameError`: an absent field is the normal default (`Human`, no error), while a present value that breaks the rule is shown as `Human` with the violation in `userNameError`, because Backend refuses such a value and only Host can repair it. A `settings.json` whose root is not an object (a JSON primitive or an array) reads as absent settings (`readSettingsConfig()` returns `null`), so state reading never throws. Its repair is not this reader's job: the critical-migration banner reports it (a primitive or unparsable root as invalid JSON; an array root is read as a v1 file, which the schema migration cannot bring to v3). `saveUserName(unknown)` applies the shared user-name rule (`normalizeUserName`; the rule itself is in [/spec/PRODUCT.md → Orientation](/spec/PRODUCT.md#orientation)) and uses `setSettingsConfigKey` to preserve other settings. The IPC handler refuses to write while schema migration is in a critical state, like backend spawn. The renderer uses typed `setUserName` IPC and shows save errors; the existing settings watcher refreshes AppState after external edits. This is a shared personal preference, not a machine identifier or a new required setup step.
 
 **Machine config write** (`setMachineConfigKey(key, value)`): read-modify-write single field in `{machine}.json`. Throws if pointer incomplete, machine name invalid, or file missing/invalid JSON. `setSettingsConfigKey(key, value)` mirrors this for `settings.json`. Silent-recreate-from-`{}` paths are gone — they used to lose sibling fields (`timestampTZ`, `port`). Failures now surface to the UI so the user can re-run wizard step 1 (`ensureConfigDefaults`) to recover.
 
@@ -172,7 +174,7 @@ Full icon table and behavior: see [UI.md](UI.md). Severity-driven: tray icon ref
 
 **How it is kept.**
 
-- State channels (`app-state-changed`, `agents:status-changed`, `root-contexts:scan-changed`, `migrations:status-changed`) are published only when the payload differs from the last one published (`createChangeGate` in `core/host-sync.ts`). `showWindow()` sends the full AppState on show, because a new window has no state.
+- State channels (`app-state-changed`, `agents:status-changed`, `root-workspaces:scan-changed`, `migrations:status-changed`) are published only when the payload differs from the last one published (`createChangeGate` in `core/host-sync.ts`). `showWindow()` sends the full AppState on show, because a new window has no state.
 - `updateTrayIcon()` skips an update whose icon and tooltip are what the tray already shows.
 - Read handlers never call `updateAppState()` and never publish. Otherwise a renderer that re-reads on a push and a handler that pushes on a read form a loop.
 - The renderer does not re-request data on every AppState update: an effect keyed on the whole `appState` object re-runs on each push. Each value is read once on mount and then followed through its own push channel. A targeted reaction to a specific input that changed (for example `BackendPage` re-reading the deploy status when `appState.deployChannel` changes) is fine: it ends after one read.
@@ -204,7 +206,7 @@ Platform instructions (`duet-core.md`) are product-bundled — they live inside 
 
 **Deploy filter:** copy operations exclude dev artifact directories (`.venv`, `__pycache__`, `.pytest_cache`, `node_modules`, `.git`). Prevents copying dev environment when deploying from source (`devBackendPath`).
 
-**Deploy channel:** when `deployChannel === 'dev'` in `{machine}.json`, deploy uses `devBackendPath` from machine config instead of bundled resources. Toggle via IPC `config:set-deploy-channel`.
+**Deploy channel:** when `deployChannel === 'dev'` in `{machine}.json`, deploy uses `devBackendPath` from machine config instead of bundled resources. Toggle via IPC `config:set-deploy-channel`. When the main clone has worktrees of ticket branches, the Backend page shows a «Ветка» dropdown under the DEV banner: `main` and the branches; choosing one sets `devBackendPath` to its `packages/backend`, and the next deploy takes the backend from there. If the chosen worktree has since been removed, the dropdown stays, shows «выбранная ветка удалена» and lets you pick an existing source (`shared/backend-source-choice.ts:showSourceChoice`).
 
 **Version comparison:** uses `compareSemver(appVersion, deployed)` — strips build metadata per semver spec before comparing. Deploy only when app version is newer (not on downgrade or same version).
 
@@ -255,11 +257,11 @@ Host is the single owner of backend process lifecycle (start, stop, health monit
 
 **Status:** `getBackendStatus(duetDataPath, port)` → `BackendStatus` (stopped | starting | running | stopping | error).
 
-**File watcher:** `main/index.ts` watches `DuetData/data/` via `fs.watch` (debounce 500ms). Detects external changes (Backend scan/merge) and triggers `updateAppState()`, which refreshes the tray and publishes the cached scan when it changed (`root-contexts:scan-changed`). Lifecycle managed by `updateAppState()`: starts when `duetDataPath` appears, restarts on path change, retries when `data/` directory appears after deploy. Stopped on quit. Non-critical: silently handles missing directory or watch errors.
+**File watcher:** `main/index.ts` watches `DuetData/data/` via `fs.watch` (debounce 500ms). Detects external changes (Backend scan/merge) and triggers `updateAppState()`, which refreshes the tray and publishes the cached scan when it changed (`root-workspaces:scan-changed`). Lifecycle managed by `updateAppState()`: starts when `duetDataPath` appears, restarts on path change, retries when `data/` directory appears after deploy. Stopped on quit. Non-critical: silently handles missing directory or watch errors.
 
 **Auto-start on startup:** when `status === 'ready'` and VERSION file exists (`readDeployedVersion() !== null`) → `ensureBackendRunning()`. Deploy warnings (channel mismatch, stale version) do NOT block auto-start — backend is functional with warnings.
 
-**Auto-scan on startup:** after backend auto-start succeeds, if `root_context_folders` is non-empty and `readCachedScan()` returns `null` (scan never ran) → `triggerScan(port)`. Populates sidebar status for wizard step 4 without manual visit.
+**Auto-scan on startup:** after backend auto-start succeeds, if `root_workspace_folders` is non-empty and `readCachedScan()` returns `null` (scan never ran) → `triggerScan(port)`. Populates sidebar status for wizard step 4 without manual visit.
 
 **Auto-configure agents on startup:** after backend auto-start and auto-scan, if `readCachedErrors()` returns `null` (merge never ran) → `await configureAllAgents()`. The merge runs inside `configureAllAgents()` (it calls `triggerMerge()` first, then deploys). Its result becomes the stored agent status (see Agent Status). Both auto-scan and auto-configure finish with a single `updateAppState()` call.
 
@@ -321,34 +323,49 @@ The `duet-core.md` platform prompt ships in `packages/instructions/`. Backend bu
 
 Implementation: `core/instructions.ts`.
 
-### Root Contexts
+### Root Workspaces
 
-Manages root-context folder configuration in `DuetConfig/settings.json` under `root_context_folders`. Domain semantics (order is load-bearing, position 0 = meta-context) — see /spec/PRODUCT.md → Invariants. This section documents Host's implementation.
+Manages root workspace folder configuration in `DuetConfig/settings.json` under `root_workspace_folders`. Domain semantics (order is load-bearing, position 0 = meta workspace) — see /spec/PRODUCT.md → Invariants. This section documents Host's implementation.
 
 **Operations:**
-- `getRootContextFolders()` — read raw `root_context_folders` (list of `@aliases`) from `settings.json`.
-- `getResolvedRootContextFolders()` — same, but each entry is `{raw, resolved, isMeta}` (resolves `@alias` via `{machine}.json` and reads `context.json/meta` flag for each folder).
-- `addRootContextFolder(absolutePath)` — alias-aware add. Validates pointer (`duetConfigPath`, valid `machine`) and throws if missing. Creates `@<basename>` alias in `{machine}.json` (suffix `_2`, `_3` on collision; reuses if path already aliased). Appends alias to `root_context_folders` in `settings.json`. Calls `enforceMetaInvariant` after the append — when the list was empty, the new folder becomes meta automatically; otherwise the existing first stays meta. The IPC handler runs a scoped schema-migration sweep on the new folder to upgrade legacy `business.json/stream.json/product.json` and self-heal a missing manifest.
-- `resolveAliasPath(raw, machineConfig)` — resolves a `root_context_folders` entry: passes absolute paths through; looks up bare `@alias`; for `@alias/sub/path` splits, resolves alias, joins the rest via `path.join`. Returns `null` when alias is missing.
-- `saveRootContextFolders(folders)` — overwrite full `root_context_folders` array (used by reorder/remove). Throws if `settings.json` missing or invalid (no silent recreate that would lose `timestampTZ`). Calls `enforceMetaInvariant` afterwards so drag-to-position-0 and removing the current meta both atomically swap the meta flag on disk.
-- `enforceMetaInvariant(folders)` — restores the invariant «position 0 = meta-context». Idempotent on already-correct state. Tolerant: folders whose `context.json` is unparseable are skipped (migration sweep surfaces them as per-context errors). For atomicity when two manifests need to flip simultaneously, stages both `.tmp` files first and then renames in sequence; on a rename failure, earlier renames are rolled back from a backup of previous content, so the disk never settles with «two metas» or «no metas».
+- `getRootWorkspaceFolders()` — read raw `root_workspace_folders` (list of `@aliases`) from `settings.json`.
+- `getResolvedRootWorkspaceFolders()` — same, but each entry is `{raw, resolved, isMeta}` (resolves `@alias` via `{machine}.json` and reads `context.json/meta` flag for each folder).
+- `addRootWorkspaceFolder(absolutePath)` — alias-aware add. Validates pointer (`duetConfigPath`, valid `machine`) and throws if missing. If the folder has no manifest (neither `context.json` nor a legacy `business.json/stream.json/product.json`), first creates the new workspace's files (see **New workspace files** below); a failed write throws before anything else is written, so the root is not added and the wizard shows the error. Then creates `@<basename>` alias in `{machine}.json` (suffix `_2`, `_3` on collision; reuses if path already aliased) and appends it to `root_workspace_folders` in `settings.json`. Calls `enforceMetaInvariant` after the append — when the list was empty, the new folder becomes meta automatically; otherwise the existing first stays meta. The IPC handler then runs the schema-migration sweep, which upgrades a legacy manifest in the new folder.
+- `resolveAliasPath(raw, machineConfig)` — resolves a `root_workspace_folders` entry: passes absolute paths through; looks up bare `@alias`; for `@alias/sub/path` splits, resolves alias, joins the rest via `path.join`. Returns `null` when alias is missing.
+- `saveRootWorkspaceFolders(folders)` — overwrite full `root_workspace_folders` array (used by reorder/remove). Throws if `settings.json` missing or invalid (no silent recreate that would lose `timestampTZ`). Calls `enforceMetaInvariant` afterwards so drag-to-position-0 and removing the current meta both atomically swap the meta flag on disk.
+- `enforceMetaInvariant(folders)` — restores the invariant «position 0 = meta workspace». Idempotent on already-correct state. Tolerant: folders whose `context.json` is unparseable are skipped (migration sweep surfaces them as per-workspace errors), and so are folders holding only a legacy manifest (the sweep upgrades them). A folder with no manifest at all is self-healed as a new workspace: `INDEX.md` first (throws on failure, before any manifest is touched), then `context.json` `{version: 4}`. For atomicity when two manifests need to flip simultaneously, stages both `.tmp` files first and then renames in sequence; on a rename failure, earlier renames are rolled back from a backup of previous content, so the disk never settles with «two metas» or «no metas».
 - `normalizePath(p)` — NFC + strip trailing separators. Cross-platform: NFC fixes macOS NFD from native dialogs, on Windows is a no-op. All path comparisons (alias reuse, dedup) and stored paths in `{machine}.json` go through this helper.
 - `triggerScan(port)` — calls Backend `POST /scan`, returns `ScanResult` with errors.
 - `readCachedScan(duetDataPath)` — reads cached `DuetData/data/scan.json`. Used by main process for wizard status without IPC.
-- `readCachedContexts(duetDataPath)` — reads entity tree from `DuetData/data/contexts.json`. Returns `ContextsCache` with flat entity list (build tree via `parent_id`).
+- `readCachedWorkspaces(duetDataPath)` — reads the workspace registry from `DuetData/data/workspaces.json` (written by every Backend scan; same payload as `GET /workspaces`). Returns `WorkspacesCache` (`{ workspaces: WorkspaceEntity[] }`, flat list — build the tree via `parent_id`), or `null` when the file is missing, unparseable or has no `workspaces` list. `WorkspaceEntity`: `id`, `type: "workspace"`, `name`, `icon`, `path`, `absolute_path`, `parent_id`, `meta`, `description`, `git_repos`, `reference_repos`, `ticket_code` (`ticket-code` as written, e.g. `"DUE"` / `"inherit"`, or `null`).
 
 **Three mechanisms maintain the meta invariant** (see /spec/PRODUCT.md → Invariants):
-1. `addRootContextFolder` — adding the first folder auto-promotes to meta. Adding to a non-empty list keeps the existing first as meta.
-2. `saveRootContextFolders` — after reorder, drag-to-position-0 swaps meta to the new first; after delete of the current meta, the new first inherits meta.
-3. Startup migration — `runMigrationsNow` calls `enforceMetaInvariant` after the manifest walk. Skipped when per-context errors are present (user fixes those first).
+1. `addRootWorkspaceFolder` — adding the first folder auto-promotes to meta. Adding to a non-empty list keeps the existing first as meta.
+2. `saveRootWorkspaceFolders` — after reorder, drag-to-position-0 swaps meta to the new first; after delete of the current meta, the new first inherits meta.
+3. Startup migration — `runMigrationsNow` calls `enforceMetaInvariant` after the manifest walk. Skipped when per-workspace errors are present (user fixes those first).
 
-Drag-to-position-0 is the only UX mechanism for switching meta. The crown icon on `DuetPathsPage` is a read-only indicator of position 0 — not toggleable, no click handler, no `root-contexts:set-meta` IPC. Direct re-meta would create rule-bypass paths that disagreed with the saved order.
+Drag-to-position-0 is the only UX mechanism for switching meta. The crown icon on `DuetPathsPage` is a read-only indicator of position 0 — not toggleable, no click handler, no `root-workspaces:set-meta` IPC. Direct re-meta would create rule-bypass paths that disagreed with the saved order.
 
-**Other invariants on `root_context_folders`:**
+**Other invariants on `root_workspace_folders`:**
 - Always contains `@aliases` (never absolute paths) — required for cross-machine sync via Drive.
 - All path comparisons go through `normalizePath` so NFC/NFD and trailing-separator differences never produce false-distinct paths.
 
-Implementation: `core/root-contexts.ts`.
+Implementation: `core/root-workspaces.ts`.
+
+### New Workspace Files
+
+A workspace's `name` (and `icon`, `ticket-code`) lives in the frontmatter of its `INDEX.md`, not in `context.json`; the scanner reports a folder whose `INDEX.md` has no `name` as a scan error. So wherever Host creates a manifest for a root — `addRootWorkspaceFolder`, the `enforceMetaInvariant` self-heal and the schema-migration self-heal of an empty root — it writes two files, `INDEX.md` first and `context.json` second (`createWorkspaceFiles`), so a failure never leaves a manifest without a name:
+
+1. `INDEX.md` gets `folder-type: workspace` and `name: <folder name>`:
+   - no file → `---` block with both fields, then `# <folder name>`;
+   - file with frontmatter → each missing field is added as one line before the closing `---`; a field counts as present when a top-level `key:` line exists, whatever its value (an existing `folder-type: business` or another `name` is left as is);
+   - file without frontmatter → the block is prepended; the body stays byte-for-byte;
+   - frontmatter opened by `---` but never closed → error, the file is not touched.
+
+   Frontmatter is recognised the way the Backend scanner reads it (optional BOM, `---` on the first line, closed by the next `---` line). The BOM and the file's line endings (LF or CRLF) are kept. A value YAML would misread — `!БАЗА` (a tag), a leading `@`, `: `, `yes`, a number — is written double-quoted. The write is atomic (`.tmp` + rename).
+2. `context.json` is `{ "version": 4 }` — no `name`; `meta` is set by `enforceMetaInvariant`.
+
+Implementation: `core/workspace-index.ts` (`createWorkspaceFiles`, `ensureWorkspaceIndex`, pure `mergeWorkspaceFrontmatter`).
 
 ### Schema Migrations
 
@@ -360,14 +377,14 @@ Host owns auto-upgrade of all on-disk Duet schemas. Policy and migration chain s
 
 | Schema | File(s) | Target | Migration chain |
 |--------|---------|--------|-----------------|
-| `settings` | `settings.json` | v2 | v1 → v2: rename key `business_folders → root_context_folders`, add `version: 2`. Other keys preserved |
+| `settings` | `settings.json` | v3 | v1 → v2: rename key `business_folders → root_context_folders`, add `version: 2`. Other keys preserved. **No v2 → v3 step:** the DUE063 data migration (`migrate.py`, run while Host is stopped) renames `root_context_folders → root_workspace_folders` and sets `version: 3`; Host has no code for it. A v2 file — or a v1 file, which stops at v2 — has no migration path, so it is a critical error (`invalid_json`, «Не удалось мигрировать settings.json с версии 2.»), left untouched, and the backend does not start |
 | `machine` | `{machine}.json` | v2 | v1 → v2: add `version: 2`. No field renames |
-| `context` | `business.json` / `stream.json` / `product.json` → `context.json` | v4 | v1 → v2: rename file to `context.json`; rename field `root → meta` (only when `root: true`); add `version: 2`. Legacy file deleted after successful write. Other fields (`name`, `icon`, `git_url`, `reference_repos`, `description`, unknown keys) preserved. v2 → v3: when `git_url` is a non-empty string **and** `name` is a non-empty string, set `git_repos: { [name]: git_url }`; always delete `git_url`; bump `version: 3`. v3 → v4: delete `workspace_config` (the `primary_folder` option is removed — workspace assembly is now always context-first); bump `version: 4`. The v4 `skills`/`system_prompt` fields are additive (absent is valid, no migration). All other fields preserved |
+| `manifest` (`MANIFEST_SCHEMA`) | `business.json` / `stream.json` / `product.json` → `context.json` | v4 | v1 → v2: rename file to `context.json`; rename field `root → meta` (only when `root: true`); add `version: 2`. Legacy file deleted after successful write. Other fields (`name`, `icon`, `git_url`, `reference_repos`, `description`, unknown keys) carried along. v2 → v3: when `git_url` is a non-empty string, set `git_repos: { [alias]: git_url }` where the alias is `name` when it is a non-empty string, else the folder name; always delete `git_url`; bump `version: 3`. v3 → v4: delete `workspace_config` (the `primary_folder` option is removed — workspace assembly is now always workspace-first); bump `version: 4`. The v4 `skills`/`system_prompt` fields are additive (absent is valid, no migration). All other fields preserved. **After the chain** (only for a file that started below v4): `name`, `icon`, `ticket_code` are removed from the manifest and written into `INDEX.md` frontmatter as `name`, `icon`, `ticket-code` together with `folder-type: workspace` — only fields `INDEX.md` lacks, `name` defaulting to the folder name, same line-by-line rules as **New Workspace Files**. If `INDEX.md` cannot be updated, the manifest is left untouched and the folder gets `migration_failed`. A v4 file is never rewritten by Host, even one still carrying `name`: moving those fields out of existing v4 manifests is the one-off DUE063 data migration, not Host's |
 
 **Triggers:**
-1. **Host startup** — full sweep before backend spawn. Order: settings → machine → manifests under each root context. If settings or machine produces a critical error, the manifest walk is skipped and backend does not spawn.
+1. **Host startup** — full sweep before backend spawn. Order: settings → machine → manifests under each root workspace. If settings or machine produces a critical error, the manifest walk is skipped and backend does not spawn.
 2. **`config:save-pointer`** with `duetConfigPath` or `machine` change → full sweep (settings/machine of new path may be legacy or future-version).
-3. **`root-contexts:add`** → full sweep (idempotent on already-current settings/machine/context manifests; manifest walk picks up legacy/future files inside the new folder, self-heals on empty folder).
+3. **`root-workspaces:add`** → full sweep (idempotent on already-current settings/machine/manifests; manifest walk picks up legacy/future files inside the new folder). An empty folder already got its workspace files from `addRootWorkspaceFolder`; the sweep's own root self-heal (same `createWorkspaceFiles`) covers a root whose manifest vanished later.
 4. **DuetConfig file watcher** — `main/index.ts` watches `duetConfigPath` for changes to `settings.json` and `{machine}.json` (debounce 500ms). On any change, runs the full sweep so a runtime corruption (user edit, Drive sync overwrite) escalates to the same critical-banner mechanism that protects startup.
 
 **Critical gate:** `MigrationResult.critical` is non-null iff the pointer file, `settings.json`, or `{machine}.json` is corrupted (`invalid_json`/`read_failed`) or future-version (`version > MAX_SUPPORTED`). While critical:
@@ -376,18 +393,18 @@ Host owns auto-upgrade of all on-disk Duet schemas. Policy and migration chain s
 - `DuetPathsPage` renders a blocking error banner with the file path. Title and recovery hint branch on `reason_code` and `file`: "Update Duet" for `future_version`; "Restore from backup or delete" for `invalid_json` on pointer; "Repair manually" for `invalid_json` on settings/machine.
 - Auto-start on `whenReady` is skipped.
 
-**Per-context errors:** all rendered red on `DuetPathsPage` — every per-context code marks data corruption (affected context is unreachable until the user repairs it). Backend still spawns; the offending context's manifest is silently ignored by Backend (`unrecognized_manifest_version` log entry). All reason codes share severity `error`:
+**Per-workspace errors** (`MigrationResult.workspaceErrors`, each `MigrationWorkspaceError { path, root_workspace_path, reason_code, description }`): all rendered red on `DuetPathsPage` under «Ошибки по воркспейсам» — every code marks data corruption (the affected workspace is unreachable until the user repairs it). Backend still spawns; the offending workspace's manifest is silently ignored by Backend (`unrecognized_manifest_version` log entry). All reason codes share severity `error`:
 
 | reason_code | Meaning |
 |-------------|---------|
-| `future_version` | `context.json` is `version > MAX_SUPPORTED`. Backend will skip this context |
+| `future_version` | `context.json` is `version > MAX_SUPPORTED`. Backend will skip this workspace |
 | `invalid_json` | `context.json` is broken JSON or has missing/non-int `version`. File untouched |
-| `migration_failed` | v1 → v2 → v3 → v4 migration chain could not complete (rare; usually IO error mid-write) |
-| `unresolved_alias` | `root_context_folders` entry references an `@alias` not registered in this machine's `{machine}.json` |
+| `migration_failed` | v1 → v2 → v3 → v4 migration chain could not complete, or the new workspace's `INDEX.md` / `context.json` could not be written (IO error, unterminated frontmatter) |
+| `unresolved_alias` | `root_workspace_folders` entry references an `@alias` not registered in this machine's `{machine}.json` |
 
-**Atomic write:** `atomicWriteJson(path, data)` (in `core/json-io.ts`) writes `{path}.tmp` then `rename()`. On POSIX `rename(2)` is atomic on the same filesystem; a crash mid-write leaves either the original file or the new one — never a half-written file. For legacy → context migration the order is: write `context.json` → delete legacy. A crash between leaves both files; orphan resolution on the next sweep handles them.
+**Atomic write:** `atomicWriteJson(path, data)` (in `core/json-io.ts`) writes `{path}.tmp` then `rename()`. On POSIX `rename(2)` is atomic on the same filesystem; a crash mid-write leaves either the original file or the new one — never a half-written file. For legacy → `context.json` migration the order is: update `INDEX.md` → write `context.json` → delete legacy. A crash between leaves both files; orphan resolution on the next sweep handles them.
 
-**All Host-owned JSON writes go through `atomicWriteJson`:** pointer file (`writeConfig`), `settings.json` (`setSettingsConfigKey`, `ensureConfigDefaults`), `{machine}.json` (`setMachineConfigKey`, `ensureConfigDefaults`), context manifests (migration + self-heal). `enforceMetaInvariant` adds a two-phase commit on top — both manifests staged as `.tmp` first, then renamed in sequence with rollback-on-failure. Same crash-safety contract whether the write originates in startup migration, a wizard click, or the runtime config watcher.
+**All Host-owned JSON writes go through `atomicWriteJson`:** pointer file (`writeConfig`), `settings.json` (`setSettingsConfigKey`, `ensureConfigDefaults`), `{machine}.json` (`setMachineConfigKey`, `ensureConfigDefaults`), workspace manifests (migration + self-heal). `INDEX.md` frontmatter writes use the same `.tmp` + rename pattern for text. `enforceMetaInvariant` adds a two-phase commit on top — both manifests staged as `.tmp` first, then renamed in sequence with rollback-on-failure. Same crash-safety contract whether the write originates in startup migration, a wizard click, or the runtime config watcher.
 
 **Pointer integrity:** `readPointerStrict()` distinguishes `missing` (legitimate first-run) from `invalid_json` / `read_failed` (recoverable corruption). Startup migration calls it before `readConfig()`'s graceful `{}` fallback would mask a corrupt pointer as no-config. A corrupt pointer surfaces as a `MigrationCriticalError { file: 'pointer' }` and blocks backend spawn until the user either restores the file or deletes it.
 
@@ -395,7 +412,7 @@ Host owns auto-upgrade of all on-disk Duet schemas. Policy and migration chain s
 
 **Recursion rules** (mirror backend scanner):
 - Skip directories starting with `.` (`.git`, `.venv`, etc.).
-- Continue recursion through folders whose post-migration `context.json` has a non-empty `git_repos` map. `git_repos` declares product clones under `DuetData/repos`; it does not make the Drive folder a leaf in the context hierarchy.
+- Continue recursion through folders whose post-migration `context.json` has a non-empty `git_repos` map. `git_repos` declares product clones under `DuetData/repos`; it does not make the Drive folder a leaf in the workspace hierarchy.
 
 **Forward-incompatibility** is documented at the policy level in /spec/PRODUCT.md → Schema Migration Policy. No rollback: first Host startup on an upgraded machine rewrites every legacy manifest in place.
 
@@ -451,14 +468,14 @@ Each page produces `StatusItem[]` — single source of truth for all levels abov
 |------|-----------|----------|---------|
 | 1. Duet paths | DuetData / DuetConfig / machine not set | error | "Выберите папку…" / "Укажите имя машины" |
 | 1. Duet paths | Schema migration critical | error | `{description}` — backend blocked until resolved |
-| 1. Duet paths | Schema migration per-context error | error | `{description}` (one per offending context) |
+| 1. Duet paths | Schema migration per-workspace error | error | `{description}` (one per offending workspace) |
 | 2. Python | Not found / version < 3.10 | error | "Python 3.10+ не найден" / "Python {version} — нужен 3.10+" |
 | 3. Backend | Not deployed | error | "Backend не установлен" |
 | 3. Backend | Deploy error | error | `{error message}` |
 | 3. Backend | Channel mismatch | warning | "Установлена DEV-версия — переустановите для PROD" |
 | 3. Backend | Stale version | warning | "Версия устарела — переустановите" |
-| 4. Workspaces | Scan error — `invalid_manifest`, `unrecognized_manifest_version`, other unknown codes | error | `{description}` (per scan error) |
-| 4. Workspaces | Scan error — `name_collision`, `repo_collision`, `missing_manifest` | warning | `{description}` (scanner auto-heals; informational). Code: `SCAN_WARNING_CODES` in `core/wizard-status.ts` |
+| 4. Workspaces | Scan error — `invalid_manifest`, `unrecognized_manifest_version`, `missing_workspace_name`, `invalid_workspace_index`, other unknown codes | error | `{description}` (per scan error): the folder is not registered |
+| 4. Workspaces | Scan error — `name_collision`, `repo_collision`, `ticket_code_collision`, `invalid_ticket_code` | warning | `{description}`: the workspace stays registered, one name, repo or ticket code is set aside. Code: `SCAN_WARNING_CODES` in `core/wizard-status.ts`, also used by the Workspaces page |
 | 5. AI Agents | needs_setup | warning | "{agent}: не сконфигурирован" |
 | 5. AI Agents | Issue | warning | `{description}` (fixable issues) |
 
@@ -562,7 +579,7 @@ npm run typecheck    # tsc
 
 | Suite | Files | What |
 |-------|-------|------|
-| Unit | `__tests__/unit/core/`, `__tests__/unit/main/`, `__tests__/unit/platform/`, `__tests__/unit/shared/`, `__tests__/unit/renderer/` | core-flow, config, app-state, deploy, backend, backend start, apps, ai-clients, agent-status, host-sync, instructions, root-contexts, schema-migrations, wizard-status, agents IPC, user-name IPC, preload channels, Idle structure, tray updates, App idle (jsdom), mappers, navigation |
+| Unit | `__tests__/unit/core/`, `__tests__/unit/main/`, `__tests__/unit/platform/`, `__tests__/unit/shared/`, `__tests__/unit/renderer/` | core-flow, config, app-state, deploy, backend, backend start, apps, ai-clients, agent-status, host-sync, instructions, root-workspaces, workspace-index, schema-migrations, wizard-status, agents IPC, user-name IPC, preload channels, Idle structure, tray updates, App idle (jsdom), mappers, navigation |
 | E2E | Disabled (CI) | WebdriverIO, monorepo symlink issues |
 
 **Testability:**

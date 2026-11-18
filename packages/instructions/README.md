@@ -4,15 +4,15 @@ This package supplies the shared Duet session prompt. These are product sources,
 
 ## Contents
 
-- `duet-core.md`: orientation, businesses and work, Duet tools, alpha paths, memory policy, and writing rules.
+- `duet-core.md`: the workspace tree, orientation, workspaces and tickets, Duet tools, alpha paths, memory policy, writing rules, and the ontology section that maps the user's words (business, venture, area, desk) onto the platform.
 
 ## Usage
 
-`duet-core` is the public default and works without the private `duet-work` repository. An experimental work session adds the `duet-work` skill on top of that same foundation, invoked by the user, or uses a business system prompt that carries the foundation whole and reads the references of a skill of its own, such as `duet-vizier` in the `duet-work` repository. A business using the default core omits `system_prompt` from its manifest; Backend withdraws any previous generated business-level override on the next instruction deployment, leaving Host's global style in place.
+`duet-core` is the public default and works without the private `duet-work` repository. An experimental work session adds the `duet-work` skill on top of that same foundation, invoked by the user, or uses a workspace system prompt that carries the foundation whole and reads the references of a skill of its own, such as `duet-vizier` in the `duet-work` repository. A workspace using the default core omits `system_prompt` from its manifest; Backend withdraws any previous generated workspace-level override on the next instruction deployment, leaving Host's global style in place.
 
 ## Delivery
 
-Backend's `instructions.py` builds `DuetData/duet.md` from `duet-core.md`. Host deploys that single platform prompt to supported AI clients; Claude Code uses the `duet-core` output style. Backend separately deploys skills and optional system-prompt overrides from `context.json`. Business rules and knowledge stay in `INDEX.md` and its linked files; `orientation` tells the agent to read them. There are no business-level instruction templates or generated `CLAUDE.md`, `AGENTS.md`, or `gemini.md` files.
+Backend's `instructions.py` builds `DuetData/duet.md` from `duet-core.md`. Host deploys that single platform prompt to supported AI clients; Claude Code uses the `duet-core` output style. Backend separately deploys skills and optional system-prompt overrides from `context.json`. Workspace rules and knowledge stay in `INDEX.md` and its linked files; `orientation` tells the agent to read them. There are no workspace-level instruction templates or generated `CLAUDE.md`, `AGENTS.md`, or `gemini.md` files.
 
 Production packaging and DEV deployment copy the Markdown sources next to Backend, excluding this README. There is no agent registry, core insertion marker, or role-specific prompt generation.
 

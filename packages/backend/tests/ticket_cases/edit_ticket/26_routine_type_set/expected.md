@@ -4,17 +4,16 @@
 
 **Index:** `@DUEA01/INDEX.md`
 
-* Routine type set to business-curation
+* Routine type set to workspace-curation
 
 Updated frontmatter:
 
 ```yaml
 ---
-folder-type: work
-work-type: routine
-routine-type: business-curation
+folder-type: ticket
+ticket-type: routine
+routine-type: workspace-curation
 opened: 2026-10-01
-business-area: DuetLab
 parent: null
 ---
 ```

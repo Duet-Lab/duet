@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import unicodedata
 
-# The character after the business code determines the ticket's work type.
-WORK_TYPE_BY_LETTER = {"": "project", "X": "program", "A": "routine"}
-LETTER_BY_WORK_TYPE = {work_type: letter for letter, work_type in WORK_TYPE_BY_LETTER.items()}
+# The character after the ticket code determines the ticket type.
+TICKET_TYPE_BY_LETTER = {"": "project", "X": "program", "A": "routine"}
+LETTER_BY_TICKET_TYPE = {ticket_type: letter for letter, ticket_type in TICKET_TYPE_BY_LETTER.items()}
 
 
 def humanize_name(raw: str) -> str:
@@ -72,14 +72,14 @@ def _category(char: str) -> str:
     return unicodedata.category(char)
 
 
-def next_number(code: str, work_type: str, taken: list[str]) -> str | None:
-    """Return the next free number for a work type, or None if none are left.
+def next_number(code: str, ticket_type: str, taken: list[str]) -> str | None:
+    """Return the next free number for a ticket type, or None if none are left.
 
-    Each work type has its own sequence: projects use `DUE001`-`DUE999`, programs
+    Each ticket type has its own sequence: projects use `DUE001`-`DUE999`, programs
     `DUEX01`-`DUEX99`, routines `DUEA01`-`DUEA99`. The result is always one
     past the highest number in use; gaps are never reused.
     """
-    letter = LETTER_BY_WORK_TYPE[work_type]
+    letter = LETTER_BY_TICKET_TYPE[ticket_type]
     width = 3 - len(letter)
     prefix = code + letter
     highest = 0

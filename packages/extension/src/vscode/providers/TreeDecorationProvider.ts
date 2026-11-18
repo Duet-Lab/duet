@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
  * Provides visual decorations for Duet tree items, by the address a row names
  * as its `resourceUri` (scheme `duet-tree`):
  *
- * - `/separator/<index>` — separator rows of «Все Бизнесы», greyed so they read as gaps;
+ * - `/separator/<index>` — separator rows of «Все воркспейсы», greyed so they read as gaps;
  * - `/intent-color/<colour id>/<key>` — rows of active intents in «Активная Работа» and
  *   Корзина: the text takes the colour of the intent's window. The colour id
  *   is one of the theme colours the extension declares (`duet.intent.color1`…),

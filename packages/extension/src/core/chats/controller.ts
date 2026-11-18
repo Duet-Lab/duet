@@ -56,7 +56,7 @@ export class ChatChooserController {
             if (!providers.length) { return; }
             const scope = await this.ports.scope(); this.scope = scope;
             if (loading.signal.aborted || epoch !== this.epoch) { return; }
-            this.view.context = scope.ticket ? `${scope.business} / ${scope.ticket}` : scope.business;
+            this.view.context = scope.ticket ? `${scope.workspace} / ${scope.ticket}` : scope.workspace;
             try {
                 this.view.pending = (await this.store.records()).filter(record => record.key === chatScopeKey(scope, 'codex')).map(record => ({ operation: record.operation, name: record.name, phase: record.phase, canOpen: !!record.id }));
             } catch (error) {
@@ -114,7 +114,7 @@ export class ChatChooserController {
         if (!['new', 'open', 'recover', 'discard'].includes(String(message.action))) { return; }
         if (!this.ports.providers().includes('codex')) { this.ports.notice('Расширение Codex больше недоступно в этом окне.', true); return; }
         this.view.busy = true; this.view.error = ''; this.transferred = false;
-        this.view.status = message.action === 'new' ? `Создаём чат Codex для ${this.scope?.ticket ?? this.scope?.business ?? 'текущего рабочего пространства'}…` : 'Открываем сохранённый чат…';
+        this.view.status = message.action === 'new' ? `Создаём чат Codex для ${this.scope?.ticket ?? this.scope?.workspace ?? 'текущего рабочего пространства'}…` : 'Открываем сохранённый чат…';
         this.loading?.abort(); this.operation = new AbortController(); const signal = this.operation.signal; this.emit();
         this.running = this.ports.progress('Чат Codex', async (report, onCancel) => {
             report(this.view.status);

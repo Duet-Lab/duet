@@ -1,5 +1,5 @@
 ---
-folder-type: work
+folder-type: ticket
 parent: DUEX02
 ---
 

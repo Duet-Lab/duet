@@ -52,7 +52,7 @@ describe('agents IPC', () => {
       updateAppState: vi.fn(),
       setDeployStatus: vi.fn(),
       runMigrations: vi.fn(),
-      getMigrationStatus: () => ({ critical: null, contextErrors: [], migratedCount: 0 }),
+      getMigrationStatus: () => ({ critical: null, workspaceErrors: [], migratedCount: 0 }),
       agents
     }
     setupIpcHandlers(context)

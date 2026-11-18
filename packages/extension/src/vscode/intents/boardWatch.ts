@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { DiskChange, TicketBoard } from '../../core/intents/board';
 
 /**
- * Where a change of the business folder matters to the board. A pattern ends
+ * Where a change of the workspace folder matters to the board. A pattern ends
  * at the depth it names: `*` does not cross a folder, so the files inside a
  * ticket other than its `INDEX.md` are no one's event.
  */
@@ -11,12 +11,12 @@ const WATCHED: ReadonlyArray<{ pattern: string; change: DiskChange }> = [
     { pattern: '{work,backlog}/*', change: 'shelves' },
     // The order of the bin was written by another window or program
     { pattern: '.vscode/duet-intents.json', change: 'shelves' },
-    // `parent`, `work-type` and `icon` of a ticket decide where and how its row stands
+    // `parent`, `ticket-type` and `icon` of a ticket decide where and how its row stands
     { pattern: '{work,backlog}/*/INDEX.md', change: 'ticket' }
 ];
 
 /**
- * Tell the board that the business folder changed. The folder is the first
+ * Tell the board that the workspace folder changed. The folder is the first
  * folder of the window, which the program watches already: these watchers read
  * nothing and only pick their events out of that stream. The kind of an event
  * is not passed on — a file written again may come as a create.
@@ -30,19 +30,19 @@ export function watchBoard(board: TicketBoard): vscode.Disposable {
     let watchers: vscode.Disposable[] = [];
 
     const rewatch = () => {
-        const businessPath = board.getBusinessPath();
-        if (businessPath === watched) {
+        const workspacePath = board.getWorkspacePath();
+        if (workspacePath === watched) {
             return;
         }
-        watched = businessPath;
+        watched = workspacePath;
         watchers.forEach(w => w.dispose());
         watchers = [];
-        if (!businessPath) {
+        if (!workspacePath) {
             return;
         }
         for (const { pattern, change } of WATCHED) {
             const watcher = vscode.workspace.createFileSystemWatcher(
-                new vscode.RelativePattern(vscode.Uri.file(businessPath), pattern)
+                new vscode.RelativePattern(vscode.Uri.file(workspacePath), pattern)
             );
             const changed = () => board.diskChanged(change);
             watchers.push(
@@ -55,7 +55,7 @@ export function watchBoard(board: TicketBoard): vscode.Disposable {
     };
     rewatch();
 
-    // The board changes its business through this very event
+    // The board changes its workspace through this very event
     const subscription = board.onDidChange(rewatch);
     return {
         dispose: () => {

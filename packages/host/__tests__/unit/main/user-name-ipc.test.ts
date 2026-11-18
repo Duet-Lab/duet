@@ -34,7 +34,7 @@ describe('user-name IPC', () => {
       updateAppState: vi.fn(),
       setDeployStatus: vi.fn(),
       runMigrations: vi.fn(),
-      getMigrationStatus: () => ({ critical: null, contextErrors: [], migratedCount: 0 }),
+      getMigrationStatus: () => ({ critical: null, workspaceErrors: [], migratedCount: 0 }),
       agents: {
         getAgents: () => null,
         refreshAgents: () => null,
@@ -72,7 +72,7 @@ describe('user-name IPC', () => {
     expect(state.userNameError).toBeNull()
     const saved = JSON.parse(readFileSync(path, 'utf-8'))
     expect(saved.user_name).toBe('Human')
-    expect(saved.root_context_folders).toEqual(settings.root_context_folders)
+    expect(saved.root_workspace_folders).toEqual(settings.root_workspace_folders)
     expect(saved.timestampTZ).toEqual(settings.timestampTZ)
   })
 
@@ -84,7 +84,7 @@ describe('user-name IPC', () => {
         path: '/settings.json',
         reason_code: 'future_version'
       },
-      contextErrors: [],
+      workspaceErrors: [],
       migratedCount: 0
     })
     const path = join(ctx.duetConfigDir, 'settings.json')

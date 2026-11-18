@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseTicketFolderName } from '../../core/pathUtils';
 import {
-    BUSINESS_TAG,
+    WORKSPACE_TAG,
     spaceIntentName,
     intentIdentity,
     rowText,
@@ -10,7 +10,7 @@ import {
     intentTabLabel,
     notepadHeading
 } from '../../core/intents/naming';
-import { businessKey, businessWindowOf, intentWindowOf, programFolderName } from '../../core/intents/window';
+import { workspaceKey, workspaceWindowOf, intentWindowOf, programFolderName } from '../../core/intents/window';
 import { rowIconDataUri, rowIconSvg } from '../../core/intents/rowIcon';
 import { parseJsonc } from '../../core/jsonc';
 
@@ -65,8 +65,8 @@ describe('intent texts', () => {
             .toEqual({ label: 'Intent Switcher', description: 'DUE017', name: [0, 15] });
     });
 
-    it('row of a business window: `biz` stands where the number would', () => {
-        expect(rowText('', 'DuetLab', BUSINESS_TAG)).toEqual({ label: 'DuetLab', description: 'biz', name: [0, 7] });
+    it('row of a workspace window: `ws` stands where the number would', () => {
+        expect(rowText('', 'DuetLab', WORKSPACE_TAG)).toEqual({ label: 'DuetLab', description: 'ws', name: [0, 7] });
     });
 
     it('row with the icon in the text: the icon leads and the name range skips it', () => {
@@ -79,7 +79,7 @@ describe('intent texts', () => {
         expect(rowText('', '', 'DUE009')).toEqual({ label: 'DUE009', description: undefined, name: [0, 6] });
     });
 
-    it('tab label: emoji and name, no emoji when the business has no icon', () => {
+    it('tab label: emoji and name, no emoji when nothing has an icon', () => {
         expect(intentTabLabel('🚀', intent)).toBe('🚀 Intent Switcher');
         expect(intentTabLabel('', intent)).toBe('Intent Switcher');
         expect(intentTabLabel('🚀', intentIdentity('DUE009')!)).toBe('🚀 DUE009');
@@ -98,11 +98,11 @@ describe('intentWindowOf', () => {
         expect(intentWindowOf(`${workspaces}/DuetLab/DUE017_IntentSwitcher.code-workspace`, workspaces)).toEqual({
             ticket: 'DUE017',
             ticketFolder: 'DUE017_IntentSwitcher',
-            businessDir: 'DuetLab'
+            ownerDir: 'DuetLab'
         });
     });
 
-    it('is null for a business window, a foreign file and a window without a workspace file', () => {
+    it('is null for a workspace window, a foreign file and a window without a workspace file', () => {
         expect(intentWindowOf(`${workspaces}/DuetLab.code-workspace`, workspaces)).toBeNull();
         expect(intentWindowOf(`${workspaces}/DuetLab/notes.code-workspace`, workspaces)).toBeNull();
         expect(intentWindowOf('/elsewhere/DuetLab/DUE017_X.code-workspace', workspaces)).toBeNull();
@@ -111,26 +111,26 @@ describe('intentWindowOf', () => {
     });
 });
 
-describe('business windows', () => {
+describe('workspace windows', () => {
     const workspaces = '/data/DuetData/workspaces';
 
-    it('a workspace file right in workspaces/ is the window of a business', () => {
-        expect(businessWindowOf(`${workspaces}/DuetLab.code-workspace`, workspaces)).toBe('DuetLab');
-        expect(businessWindowOf(`${workspaces}/Duet Instructions.code-workspace`, workspaces)).toBe('Duet Instructions');
+    it('a workspace file right in workspaces/ is the window of a workspace', () => {
+        expect(workspaceWindowOf(`${workspaces}/DuetLab.code-workspace`, workspaces)).toBe('DuetLab');
+        expect(workspaceWindowOf(`${workspaces}/Duet Instructions.code-workspace`, workspaces)).toBe('Duet Instructions');
     });
 
     it('the file of an intent, a file in the DuetData root and a foreign file are not', () => {
-        expect(businessWindowOf(`${workspaces}/DuetLab/DUE017_IntentSwitcher.code-workspace`, workspaces)).toBeNull();
-        expect(businessWindowOf('/data/DuetData/other.code-workspace', workspaces)).toBeNull();
-        expect(businessWindowOf('/drive/DuetLab/work/DUE017_X/DUE017_X.code-workspace', workspaces)).toBeNull();
-        expect(businessWindowOf(undefined, workspaces)).toBeNull();
+        expect(workspaceWindowOf(`${workspaces}/DuetLab/DUE017_IntentSwitcher.code-workspace`, workspaces)).toBeNull();
+        expect(workspaceWindowOf('/data/DuetData/other.code-workspace', workspaces)).toBeNull();
+        expect(workspaceWindowOf('/drive/DuetLab/work/DUE017_X/DUE017_X.code-workspace', workspaces)).toBeNull();
+        expect(workspaceWindowOf(undefined, workspaces)).toBeNull();
     });
 
-    it('the key of a business never meets a ticket number and is safe as a file name', () => {
-        expect(businessKey('DuetLab')).toBe('@DuetLab');
-        expect(businessKey('МетаЛаб')).toBe('@МетаЛаб');
-        expect(businessKey('a/b:c')).toBe('@a_b_c');
-        expect(intentIdentity(businessKey('DUE017_X'))).toBeNull();
+    it('the key of a workspace never meets a ticket number and is safe as a file name', () => {
+        expect(workspaceKey('DuetLab')).toBe('@DuetLab');
+        expect(workspaceKey('МетаЛаб')).toBe('@МетаЛаб');
+        expect(workspaceKey('a/b:c')).toBe('@a_b_c');
+        expect(intentIdentity(workspaceKey('DUE017_X'))).toBeNull();
     });
 });
 
@@ -195,7 +195,7 @@ describe('parseJsonc', () => {
 });
 
 describe('binTitle', () => {
-    it('names the business whose tickets the bin shows; the bare word without one', () => {
+    it('names the workspace whose tickets the bin shows; the bare word without one', () => {
         expect(binTitle('DuetLab')).toBe('Корзина DuetLab');
         expect(binTitle('МетаЛаб')).toBe('Корзина МетаЛаб');
         expect(binTitle(null)).toBe('Корзина');
@@ -205,7 +205,7 @@ describe('binTitle', () => {
 });
 
 describe('intentIcon — one emoji for the row of an intent and the tab of its notepad', () => {
-    it("the ticket's own or inherited emoji wins; the business's is the last resort", () => {
+    it("the ticket's own or inherited emoji wins; the owner's is the last resort", () => {
         expect(intentIcon('🧰', '🚀')).toBe('🧰');
         expect(intentIcon('', '🚀')).toBe('🚀');
         expect(intentIcon('', '')).toBe('');

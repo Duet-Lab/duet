@@ -2,7 +2,7 @@
 
 The data-driven cases in `ticket_cases/` can't run git, so branch behavior
 lives here. Each test builds, in a temporary folder, a bare repository as
-`origin`, main clones in `repos/`, and a business with one ticket in work.
+`origin`, main clones in `repos/`, and a workspace with one ticket in work.
 Git runs with an empty global config, so the user's hooks and signing
 settings never reach these repositories.
 """
@@ -21,25 +21,33 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import services.tickets.branches as branches
 import services.tickets.git as git
 import services.tickets.writes as writes
-from services.resolve_paths import ContextRef, render_markdown, resolve_paths
+from services.resolve_paths import WorkspaceRef, render_markdown, resolve_paths
 from services.tickets import run
 from services.tickets.frontmatter import Frontmatter
-from services.tickets.views import ticket_orientation
+from services.tickets.views import find_for_orientation, ticket_orientation
 from services.tickets.model import TicketEnv
 
 TODAY = date(2026, 11, 13)
 NUMBER = "DUE001"
 BRANCH = "DUE001_TicketBranches"
 INDEX = """---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 opened: 2026-11-01
-business-area:
 parent: null
 ---
 
 # DUE001 — Probe
 """
+
+
+def write_workspace(folder: Path, name: str, manifest: str, ticket_code: str = "") -> None:
+    """A workspace: `context.json` as given, and `INDEX.md` naming it."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "context.json").write_text(manifest, encoding="utf-8")
+    code = f"ticket-code: {ticket_code}\n" if ticket_code else ""
+    (folder / "INDEX.md").write_text(f"---\nfolder-type: workspace\nname: {name}\n{code}---\n",
+                                     encoding="utf-8")
 
 
 def sh(folder: Path, *args: str) -> str:
@@ -61,7 +69,7 @@ class World:
         self.repos = root / "DuetData" / "repos"
         self.repos.mkdir(parents=True)
         self.lab = root / "Lab"
-        self.contexts = [ContextRef("Lab", self.lab)]
+        self.workspaces = [WorkspaceRef("Lab", self.lab)]
         self.origins: dict[str, Path] = {}
 
     def add_repo(self, alias: str) -> Path:
@@ -100,7 +108,7 @@ class World:
         return Frontmatter.parse((self.ticket(number) / "INDEX.md").read_text(encoding="utf-8"))
 
     def call(self, action: str, **arguments):
-        return run(action, self.contexts, TODAY, repos=self.repos, **arguments)
+        return run(action, self.workspaces, TODAY, repos=self.repos, **arguments)
 
     def ok(self, action: str, **arguments) -> str:
         result = self.call(action, **arguments)
@@ -125,11 +133,10 @@ def world(tmp_path: Path, monkeypatch) -> World:
     w = World(tmp_path.resolve())
     w.add_repo("Duet")
     w.add_repo("Tool")
-    w.lab.mkdir()
-    (w.lab / "context.json").write_text(
-        '{"version": 4, "name": "Lab", "ticket_code": "DUE", "git_repos": '
-        '{"Duet": "https://example.com/duet", "Tool": "https://example.com/tool"}}',
-        encoding="utf-8")
+    write_workspace(
+        w.lab, "Lab",
+        '{"version": 4, "git_repos": '
+        '{"Duet": "https://example.com/duet", "Tool": "https://example.com/tool"}}', "DUE")
     ticket = w.lab / "work" / "DUE001_Probe"
     ticket.mkdir(parents=True)
     (ticket / "INDEX.md").write_text(INDEX, encoding="utf-8")
@@ -238,21 +245,40 @@ class TestAddWorktree:
         assert "`Other` is not declared in `git_repos` of Lab" in text
         assert not world.worktree("Other").exists()
 
-    def test_repo_of_a_business_inside_the_owner_is_allowed(self, world: World) -> None:
+    def test_repo_of_a_desk_is_allowed(self, world: World) -> None:
+        """A desk works on the owner's tickets, so a ticket may branch in its repos."""
+        world.add_repo("DeskRepo")
+        desk = world.lab / "Desk"
+        write_workspace(desk, "Desk",
+                        '{"version": 4, "git_repos": {"DeskRepo": "https://example.com/d"}}',
+                        "inherit")
+        world.workspaces.append(WorkspaceRef("Desk", desk, parent="Lab"))
+        world.ok("add_worktree", ticket=NUMBER, repo="DeskRepo", branch=BRANCH)
+        assert world.worktree("DeskRepo").is_dir()
+
+    @pytest.mark.parametrize("code", [None, "GEN"])
+    def test_repo_of_a_nested_workspace_that_is_no_desk_is_refused(
+            self, world: World, code) -> None:
+        """Nested without a code, or with a code of its own (an owner itself): not a desk.
+
+        DUE knows nothing of Genesis: its tickets can't mark branches there.
+        """
         world.add_repo("Genesis")
         inner = world.lab / "Research" / "Genesis"
-        inner.mkdir(parents=True)
-        (inner / "context.json").write_text(
-            '{"version": 4, "name": "Genesis", "git_repos": '
-            '{"Genesis": "https://example.com/genesis"}}', encoding="utf-8")
-        world.contexts.append(ContextRef("Genesis", inner))
-        world.ok("add_worktree", ticket=NUMBER, repo="Genesis", branch=BRANCH)
-        assert world.worktree("Genesis").is_dir()
+        write_workspace(inner, "Genesis",
+                        '{"version": 4, "git_repos": {"Genesis": "https://example.com/genesis"}}',
+                        code or "")
+        world.workspaces.append(WorkspaceRef("Genesis", inner, parent="Lab"))
+        before = snapshot(world)
+        text = world.error("add_worktree", ticket=NUMBER, repo="Genesis", branch=BRANCH)
+        assert ("`Genesis` is not declared in `git_repos` of Lab or of a desk inheriting its "
+                "tickets") in text
+        assert snapshot(world) == before
 
     def test_missing_clone_is_refused(self, world: World) -> None:
-        (world.lab / "context.json").write_text(
-            '{"version": 4, "name": "Lab", "ticket_code": "DUE", "git_repos": '
-            '{"Absent": "https://example.com/absent"}}', encoding="utf-8")
+        write_workspace(world.lab, "Lab",
+                        '{"version": 4, "git_repos": {"Absent": "https://example.com/absent"}}',
+                        "DUE")
         assert "doesn't exist or isn't a git repository" in world.error(
             "add_worktree", ticket=NUMBER, repo="Absent", branch=BRANCH)
 
@@ -541,10 +567,11 @@ class TestShelveWithBranch:
     def test_alias_with_a_dot_or_a_leading_digit_keeps_its_parked_branch(
             self, world: World, alias: str) -> None:
         world.add_repo(alias)
-        (world.lab / "context.json").write_text(
-            '{"version": 4, "name": "Lab", "ticket_code": "DUE", "git_repos": '
+        write_workspace(
+            world.lab, "Lab",
+            '{"version": 4, "git_repos": '
             f'{{"Duet": "https://example.com/duet", "{alias}": "https://example.com/x"}}}}',
-            encoding="utf-8")
+            "DUE")
         world.ok("add_worktree", ticket=NUMBER, repo=alias, branch=BRANCH)
         work = commit(world.worktree(alias), "feature.txt")
         sh(world.clone(alias), "branch", "DUE001_parked-saved", work)
@@ -702,7 +729,7 @@ class TestAnswers:
         program = world.lab / "work" / "DUEX01_Program"
         program.mkdir()
         (program / "INDEX.md").write_text(
-            "---\nfolder-type: work\nwork-type: program\n---\n\n# DUEX01 — Program\n",
+            "---\nfolder-type: ticket\nticket-type: program\n---\n\n# DUEX01 — Program\n",
             encoding="utf-8")
         index = world.ticket() / "INDEX.md"
         index.write_text(index.read_text(encoding="utf-8").replace("parent: null", "parent: DUEX01"),
@@ -723,22 +750,25 @@ class TestAnswers:
         assert record["parked"] == {"Tool": "DUE001_parked-tool"}
 
     def test_resolve_paths(self, branched: World) -> None:
-        text = render_markdown(resolve_paths([f"@{NUMBER}"], branched.repos, branched.contexts))
-        assert text.endswith("Project DUE001, in work. Business: Lab.\n\n" + self.block(branched))
+        text = render_markdown(resolve_paths([f"@{NUMBER}"], branched.repos, branched.workspaces))
+        assert text.endswith("Project DUE001, in work. Owner workspace: Lab.\n\n"
+                             + self.block(branched))
 
     def test_ticket_without_branch_shows_nothing_new(self, world: World) -> None:
-        text = render_markdown(resolve_paths([f"@{NUMBER}"], world.repos, world.contexts))
+        text = render_markdown(resolve_paths([f"@{NUMBER}"], world.repos, world.workspaces))
         assert "**Branch:**" not in text
         assert "**Branch:**" not in world.ok("tickets", number=NUMBER)
 
     def test_orientation_section(self, branched: World) -> None:
-        env = TicketEnv(branched.contexts, TODAY, branched.repos)
-        text = ticket_orientation(env, "due001")
-        assert text.startswith("**Ticket:** `@DUE001` Probe — project, in work. Business: Lab.")
+        env = TicketEnv(branched.workspaces, TODAY, branched.repos)
+        text = ticket_orientation(env, *find_for_orientation(env, "due001"))
+        assert text.startswith(
+            "**Ticket:** `@DUE001` Probe — project, in work. Owner workspace: Lab.")
         assert text.endswith(self.block(branched))
 
     def test_orientation_section_without_branch(self, world: World) -> None:
-        text = ticket_orientation(TicketEnv(world.contexts, TODAY, world.repos), NUMBER)
+        env = TicketEnv(world.workspaces, TODAY, world.repos)
+        text = ticket_orientation(env, *find_for_orientation(env, NUMBER))
         assert "No branch: work on this ticket goes to `main`" in text
 
 

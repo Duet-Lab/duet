@@ -11,13 +11,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
   AppState,
-  RootContextEntry,
+  BackendSources,
+  RootWorkspaceEntry,
   DeployStatus,
   BackendStatus,
   PythonStatus,
   AgentInfo,
   ScanResult,
-  ContextsCache,
+  WorkspacesCache,
   MigrationResult
 } from '../shared/types'
 
@@ -58,6 +59,12 @@ const api = {
 
   setDeployChannel: (channel: 'dev' | 'prod'): Promise<AppState> =>
     ipcRenderer.invoke('config:set-deploy-channel', channel),
+
+  getBackendSources: (): Promise<BackendSources> =>
+    ipcRenderer.invoke('config:get-backend-sources'),
+
+  setDevBackendPath: (path: string): Promise<AppState> =>
+    ipcRenderer.invoke('config:set-dev-backend-path', path),
 
   // === Deploy ===
 
@@ -137,33 +144,34 @@ const api = {
   fixAgentIssue: (agentId: string, reasonCode: string): Promise<boolean> =>
     ipcRenderer.invoke('agents:fix-issue', agentId, reasonCode),
 
-  // === Root Contexts ===
+  // === Root Workspaces ===
 
-  getRootContextFolders: (): Promise<RootContextEntry[]> => ipcRenderer.invoke('root-contexts:get'),
+  getRootWorkspaceFolders: (): Promise<RootWorkspaceEntry[]> =>
+    ipcRenderer.invoke('root-workspaces:get'),
 
-  saveRootContextFolders: (folders: string[]): Promise<void> =>
-    ipcRenderer.invoke('root-contexts:save', folders),
+  saveRootWorkspaceFolders: (folders: string[]): Promise<void> =>
+    ipcRenderer.invoke('root-workspaces:save', folders),
 
-  addRootContextFolder: (absolutePath: string): Promise<RootContextEntry[]> =>
-    ipcRenderer.invoke('root-contexts:add', absolutePath),
+  addRootWorkspaceFolder: (absolutePath: string): Promise<RootWorkspaceEntry[]> =>
+    ipcRenderer.invoke('root-workspaces:add', absolutePath),
 
-  scanContexts: (): Promise<ScanResult> => ipcRenderer.invoke('root-contexts:scan'),
+  scanWorkspaces: (): Promise<ScanResult> => ipcRenderer.invoke('root-workspaces:scan'),
 
   getCachedScan: (): Promise<ScanResult | null> =>
-    ipcRenderer.invoke('root-contexts:get-cached-scan'),
+    ipcRenderer.invoke('root-workspaces:get-cached-scan'),
 
   onScanChanged: (callback: (scan: ScanResult | null) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, scan: ScanResult | null): void => {
       callback(scan)
     }
-    ipcRenderer.on('root-contexts:scan-changed', handler)
+    ipcRenderer.on('root-workspaces:scan-changed', handler)
     return () => {
-      ipcRenderer.removeListener('root-contexts:scan-changed', handler)
+      ipcRenderer.removeListener('root-workspaces:scan-changed', handler)
     }
   },
 
-  getCachedContexts: (): Promise<ContextsCache | null> =>
-    ipcRenderer.invoke('root-contexts:get-cached-contexts'),
+  getCachedWorkspaces: (): Promise<WorkspacesCache | null> =>
+    ipcRenderer.invoke('root-workspaces:get-cached-workspaces'),
 
   // === Schema migrations ===
 

@@ -4,17 +4,16 @@
 
 **Index:** `@DUE037/INDEX.md`
 
-Project in work. Parent: DUEX02 WorkDoctrine. Business area: DuetWork.
+Project in work of DuetLab. Parent: DUEX02 WorkDoctrine.
 
 Frontmatter written to INDEX.md:
 
 ```yaml
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 description: "First line second parent: DUEX04"
 opened: 2026-10-08
-business-area: DuetWork
 parent: DUEX02
 ---
 ```

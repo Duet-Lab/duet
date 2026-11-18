@@ -23,24 +23,27 @@ from pathlib import Path
 from services.resolve_paths import TICKET_NUMBER_RE
 from services.tickets.frontmatter import Frontmatter, format_scalar
 from services.tickets.model import (
+    DEFAULT_WORKSPACE_FIELD,
     INDEX_FILENAME,
-    Business,
     Ticket,
     TicketEnv,
     TicketError,
+    TicketOwner,
     available_codes_hint,
-    check_same_business,
+    check_default_workspace,
+    check_same_owner,
     disk_lock,
     find_ticket,
+    find_workspace,
     group_numbers,
     location_lines,
     parse_number,
     pluralize,
     record,
-    resolve_business,
+    resolve_owner,
 )
 from services.tickets.naming import (
-    LETTER_BY_WORK_TYPE, count_words, humanize_name, next_number, to_pascal_case,
+    LETTER_BY_TICKET_TYPE, count_words, humanize_name, next_number, to_pascal_case,
 )
 
 # The folder name is also used as a workspace file name, so keep it short.
@@ -106,13 +109,13 @@ def _clean_routine_type(value: str) -> str:
     """Normalize a routine's class name: one line, lower case, words joined by hyphens.
 
     The value is a key that work skills and the extension match exactly
-    (`business-curation`), so its shape is checked and its case is not left
+    (`workspace-curation`), so its shape is checked and its case is not left
     to the caller. An empty value clears the field.
     """
     text = _one_line(value).lower()
     if text and not _ROUTINE_TYPE_RE.fullmatch(text):
         raise TicketError(f'`routine_type` "{text}" is not a class name. Write lowercase '
-                          f'words joined by hyphens, e.g. "business-curation".')
+                          f'words joined by hyphens, e.g. "workspace-curation".')
     return text
 
 
@@ -141,46 +144,43 @@ def _clean_description(value: str) -> tuple[str, str]:
     return text, ""
 
 
-def _available_parents(biz: Business) -> str:
+def _available_parents(owner: TicketOwner) -> str:
     """A sentence listing the tickets that can be a parent right now."""
-    available = ", ".join(t.title for n in group_numbers(biz) for t in biz.find(n)
+    available = ", ".join(t.title for n in group_numbers(owner) for t in owner.find(n)
                           if t.is_group and t.shelf != "archive")
     if available:
-        return f"Available parents in {biz.name}: {available}."
-    return (f"{biz.name} has no programs or routines yet; create one with "
-            f'`new_ticket(name="...", work_type="program", code="{biz.code}")`.')
+        return f"Available parents in {owner.name}: {available}."
+    return (f"{owner.name} has no programs or routines yet; create one with "
+            f'`new_ticket(name="...", ticket_type="program", code="{owner.code}")`.')
 
 
-def _validate_parent(biz: Business, raw: str, child_work_type: str, child: str = "") -> Ticket:
+def _validate_parent(owner: TicketOwner, raw: str, child_ticket_type: str,
+                     child: str = "") -> Ticket:
     """Return the parent ticket, or raise if it can't be a parent.
 
-    A parent must be an open program or routine in the same business, and
-    only projects can have one, so nesting is never more than one level deep.
+    A parent must be an open program or routine of the same owner, and only
+    projects can have one, so nesting is never more than one level deep.
     """
-    if child_work_type in ("program", "routine"):
-        raise TicketError(f"a {child_work_type} can't have a parent. Only projects can, and "
+    if child_ticket_type in ("program", "routine"):
+        raise TicketError(f"a {child_ticket_type} can't have a parent. Only projects can, and "
                           f"the parent must be a program or a routine.")
     number = parse_number(raw)
-    if number[:3] != biz.code:
-        raise TicketError(f"{number} is not a {biz.name} ticket: its code is {number[:3]}, "
-                          f"not {biz.code}. {_available_parents(biz)}")
+    if number[:3] != owner.code:
+        raise TicketError(f"{number} is not a {owner.name} ticket: its code is {number[:3]}, "
+                          f"not {owner.code}. {_available_parents(owner)}")
     if number == child:
         raise TicketError(f"{number} can't be its own parent.")
-    if not biz.find(number):
-        raise TicketError(f"ticket {number} not found in {biz.name} (checked work, backlog, "
-                          f"and archive). {_available_parents(biz)}")
-    parent = find_ticket(biz, number)
+    if not owner.find(number):
+        raise TicketError(f"ticket {number} not found in {owner.name} (checked work, backlog, "
+                          f"and archive). {_available_parents(owner)}")
+    parent = find_ticket(owner, number)
     if not parent.is_group:
         raise TicketError(f"{parent.title} is a project. A parent must be a program or "
-                          f"a routine. {_available_parents(biz)}")
+                          f"a routine. {_available_parents(owner)}")
     if parent.shelf == "archive":
         raise TicketError(f"{parent.title} is closed. Reopen it with "
                           f'`move_ticket(ticket="{number}", to="work")` or pick a '
                           f"different parent.")
-    if parent.read_error:
-        raise TicketError(f"can't read `{parent.index_path}` ({parent.read_error}), so the "
-                          f"business area of {parent.title} is unknown. Nothing was changed. "
-                          f"Ask the user to fix the file.")
     return parent
 
 
@@ -264,7 +264,7 @@ def ensure_frontmatter(ticket: Ticket) -> None:
         return
     fm = ticket.frontmatter
     fm.present = True
-    fm.lines = ["folder-type: work", f"work-type: {ticket.work_type}"]
+    fm.lines = ["folder-type: ticket", f"ticket-type: {ticket.ticket_type}"]
     if fm.body and not fm.body.startswith("\n"):
         fm.body = "\n" + fm.body
     if not fm.body:
@@ -286,73 +286,89 @@ def frontmatter_block(frontmatter: Frontmatter, label: str) -> list[str]:
 # === new_ticket ===
 
 
-def new_ticket(env: TicketEnv, name: str, parent: str = "",
-               work_type: str = "project", shelf: str = "work", description: str = "",
-               icon: str = "", area: str = "", code: str = "", business: str = "") -> str:
+def new_ticket(env: TicketEnv, name: str, workspace: str = "", code: str = "",
+               ticket_type: str = "project", parent: str = "", shelf: str = "work",
+               description: str = "", icon: str = "",
+               default_workspace: str | None = None) -> str:
     """Create a ticket: allocate its number, create its folder, write `INDEX.md`.
+
+    The ticket goes to the tickets workspace of `workspace` (or of the owner
+    `code` or `parent` names). When `workspace` is a desk of that owner and
+    `default_workspace` is not given, the ticket gets
+    `default-workspace: "@<workspace>"`, so it opens where it was created. A
+    given `default_workspace` must be the owner or one of its desks; an empty
+    one writes no field.
 
     Not idempotent: every successful call creates a new ticket.
     """
-    contexts, today = env.contexts, env.today
-    work_type = (work_type or "project").strip().lower()
+    workspaces, today = env.workspaces, env.today
+    ticket_type = (ticket_type or "project").strip().lower()
     shelf = (shelf or "work").strip().lower()
-    if work_type not in LETTER_BY_WORK_TYPE:
-        raise TicketError(f'`work_type` must be "project", "program", or "routine"; got "{work_type}".')
+    if ticket_type not in LETTER_BY_TICKET_TYPE:
+        raise TicketError(f'`ticket_type` must be "project", "program", or "routine"; '
+                          f'got "{ticket_type}".')
     if shelf not in ("work", "backlog"):
         raise TicketError(f'new tickets can only be created in "work" or "backlog"; '
                           f'got "{shelf}".')
     slug = _slugify(name)
     description, description_note = _clean_description(description or "")
-    area = _one_line(area or "")
     icon = _one_line(icon or "")
     with disk_lock():
         if parent:
             parent_number = parse_number(parent)
-            biz = resolve_business(contexts, code=parent_number[:3])
-            check_same_business(biz, parent_number, code, business)
-            parent_ticket = _validate_parent(biz, parent, work_type)
-            parent_area = parent_ticket.frontmatter.get("business-area")
-            if area and parent_area and area != parent_area:
-                raise TicketError(f"`area` conflicts with the parent: {parent_ticket.title} "
-                                  f"is in {parent_area}. Omit `area` to inherit it.")
-            area = parent_area or area
+            owner = resolve_owner(workspaces, code=parent_number[:3])
+            check_same_owner(workspaces, owner, parent_number, code, workspace)
+            parent_ticket = _validate_parent(owner, parent, ticket_type)
         else:
-            if not code and not business:
-                raise TicketError("specify `parent`, or a business with `code` or "
-                                  f"`business`. {available_codes_hint(contexts)}")
-            biz = resolve_business(contexts, code, business)
+            if not code and not workspace:
+                raise TicketError("specify `parent`, or a workspace with `code` or "
+                                  f"`workspace`. {available_codes_hint(workspaces)}")
+            owner = resolve_owner(workspaces, code, workspace)
             parent_ticket = None
 
-        number = next_number(biz.code, work_type, [t.number for t in biz.tickets])
-        if number is None:
-            raise TicketError(f"no {work_type} numbers left for code {biz.code}. Numbers are never "
-                              f"reused, so the highest one in use decides.")
+        inherited_by = None
+        if workspace:
+            ref = find_workspace(workspaces, workspace)
+            if Path(ref.folder) != owner.folder:
+                inherited_by = ref.name
+        if default_workspace is None:
+            default = f"@{inherited_by}" if inherited_by else None
+        elif default_workspace.strip():
+            default = check_default_workspace(workspaces, owner, default_workspace)
+        else:
+            default = None
 
-        folder = biz.folder / shelf / (f"{number}_{slug}" if slug else number)
+        number = next_number(owner.code, ticket_type, [t.number for t in owner.tickets])
+        if number is None:
+            raise TicketError(f"no {ticket_type} numbers left for code {owner.code}. Numbers are "
+                              f"never reused, so the highest one in use decides.")
+
+        folder = owner.folder / shelf / (f"{number}_{slug}" if slug else number)
         heading = f"# {number} — {humanize_name(slug)}" if slug else f"# {number}"
         frontmatter = Frontmatter(present=True, body=f"\n{heading}\n")
-        frontmatter.lines = ["folder-type: work", f"work-type: {work_type}"]
+        frontmatter.lines = ["folder-type: ticket", f"ticket-type: {ticket_type}"]
         if icon:
             frontmatter.set("icon", icon)
         if description:
             frontmatter.set("description", description)
         frontmatter.lines.append(f"opened: {today.isoformat()}")
-        frontmatter.lines.append(
-            f"business-area: {format_scalar(area)}" if area else "business-area:")
+        if default:
+            frontmatter.lines.append(f"{DEFAULT_WORKSPACE_FIELD}: {format_scalar(default)}")
         frontmatter.lines.append(f"parent: {parent_ticket.number if parent_ticket else 'null'}")
 
         _create_ticket_folder(folder, number, frontmatter)
 
-    created = Ticket(number, slug, folder, shelf, frontmatter)
+    created = Ticket(number, slug, folder, shelf, frontmatter, owner=owner.folder)
     record(created, env.repos)
-    summary = [f"{work_type.capitalize()} in {shelf}."]
+    summary = [f"{ticket_type.capitalize()} in {shelf} of {owner.name}."]
     summary.append(f"Parent: {parent_ticket.title}." if parent_ticket else "No parent.")
-    if area:
-        summary.append(f"Business area: {area}.")
-    else:
-        summary.append("No business area; set one with `edit_ticket` if it belongs to one.")
+    if default:
+        summary.append(f"Default workspace: {default}.")
     lines = [f"### Created {created.title}", "", *location_lines(created, env.repos), "",
              " ".join(summary), ""]
+    if inherited_by:
+        lines += [f"{inherited_by} inherits the tickets of {owner.name}, so the ticket was "
+                  f"created there, under the code {owner.code}.", ""]
     if note := _name_note(name, slug):
         lines += [f"{note[0].upper()}{note[1:]}.", ""]
     if description_note:
@@ -395,13 +411,13 @@ def _create_ticket_folder(folder: Path, number: str, frontmatter: Frontmatter) -
 # === move_ticket ===
 
 
-def _archive_month_dir(biz: Business, today: date) -> Path:
-    """Return this month's archive folder, matching the business's existing layout.
+def _archive_month_dir(owner: TicketOwner, today: date) -> Path:
+    """Return this month's archive folder, matching the workspace's existing layout.
 
     Defaults to `archive/202610`; uses `archive/2026/10` if the archive is
     already organized by year.
     """
-    archive = biz.folder / "archive"
+    archive = owner.folder / "archive"
     names = [p.name for p in archive.iterdir() if p.is_dir()] if archive.is_dir() else []
     uses_year_folders = (not any(re.fullmatch(r"\d{6}", n) for n in names)
                          and any(re.fullmatch(r"\d{4}", n) for n in names))
@@ -429,7 +445,7 @@ def already_there(env: TicketEnv, item: Ticket, to: str) -> str:
                       *location_lines(item, env.repos), "", "No changes."])
 
 
-def plan_move(biz: Business, item: Ticket, to: str, today: date) -> MovePlan:
+def plan_move(owner: TicketOwner, item: Ticket, to: str, today: date) -> MovePlan:
     """The ordinary checks of a move, with nothing changed yet. Call under `disk_lock`."""
     # Only closing and reopening are dated; work <-> backlog is not, and it
     # doesn't touch INDEX.md, so it works even on a file we couldn't read.
@@ -446,7 +462,7 @@ def plan_move(biz: Business, item: Ticket, to: str, today: date) -> MovePlan:
             f"can't read `{item.index_path}` ({item.read_error}), so Duet can't confirm "
             f"that {item.title} has no branch, and shelving a ticket with a branch would "
             f"lose it. Nothing was changed. Ask the user to fix the file.")
-    children = biz.children(item.number)
+    children = owner.children(item.number)
     if to == "archive":
         open_children = [t for t in children if t.shelf != "archive"]
         if open_children:
@@ -454,16 +470,16 @@ def plan_move(biz: Business, item: Ticket, to: str, today: date) -> MovePlan:
             raise TicketError(
                 f"{item.title} still has open tickets: {names}. Close them or "
                 f"reassign them with `edit_ticket` first.")
-        unknown = [t for t in biz.unreadable if t.shelf != "archive"]
+        unknown = [t for t in owner.unreadable if t.shelf != "archive"]
         if item.is_group and unknown:
             names = ", ".join(t.title for t in unknown)
             raise TicketError(
                 f"can't confirm that {item.title} has no open tickets, because "
                 f"{INDEX_FILENAME} could not be read for {names}. Nothing was changed. "
                 f"Ask the user to fix the file.")
-        target_dir = _archive_month_dir(biz, today)
+        target_dir = _archive_month_dir(owner, today)
     else:
-        target_dir = biz.folder / to
+        target_dir = owner.folder / to
     target = target_dir / item.folder.name
     if target.exists():
         raise TicketError(f"`{target}` already exists, so {item.title} can't be moved "
@@ -472,7 +488,7 @@ def plan_move(biz: Business, item: Ticket, to: str, today: date) -> MovePlan:
     return MovePlan(to, item.shelf, target_dir, target, date_field, children)
 
 
-def apply_move(biz: Business, item: Ticket, plan: MovePlan, today: date,
+def apply_move(owner: TicketOwner, item: Ticket, plan: MovePlan, today: date,
                write: bool = False) -> Ticket | None:
     """Move the folder, writing `INDEX.md` with it when the move is dated or `write` is set.
 
@@ -492,7 +508,7 @@ def apply_move(biz: Business, item: Ticket, plan: MovePlan, today: date,
         move_folder_and_write(item, plan.target)
     else:
         _move_folder(item, plan.target)
-    closed_parent = _closed_parent(biz, item) if plan.source_shelf == "archive" else None
+    closed_parent = _closed_parent(owner, item) if plan.source_shelf == "archive" else None
     item.shelf = plan.to
     return closed_parent
 
@@ -524,19 +540,19 @@ def move_lines(env: TicketEnv, item: Ticket, plan: MovePlan,
     return lines
 
 
-def move_plain(env: TicketEnv, biz: Business, item: Ticket, to: str) -> str:
+def move_plain(env: TicketEnv, owner: TicketOwner, item: Ticket, to: str) -> str:
     """Move a ticket that has no branch. Call under `disk_lock`, for the whole move."""
     if item.shelf == to:
         return already_there(env, item, to)
-    plan = plan_move(biz, item, to, env.today)
-    closed_parent = apply_move(biz, item, plan, env.today)
+    plan = plan_move(owner, item, to, env.today)
+    closed_parent = apply_move(owner, item, plan, env.today)
     record(item, env.repos)
     return "\n".join(move_lines(env, item, plan, closed_parent))
 
 
-def _closed_parent(biz: Business, ticket: Ticket) -> Ticket | None:
+def _closed_parent(owner: TicketOwner, ticket: Ticket) -> Ticket | None:
     """Return the ticket's parent if that parent is in the archive."""
-    parents = biz.find(ticket.parent) if ticket.parent else []
+    parents = owner.find(ticket.parent) if ticket.parent else []
     return parents[0] if parents and parents[0].shelf == "archive" else None
 
 
@@ -545,30 +561,31 @@ def _closed_parent(biz: Business, ticket: Ticket) -> Ticket | None:
 
 def edit_ticket(env: TicketEnv, ticket: str,
                 name: str | None = None, parent: str | None = None,
-                area: str | None = None, icon: str | None = None,
-                description: str | None = None, routine_type: str | None = None) -> str:
-    """Change a ticket's name, parent, business area, icon, description, or routine type.
+                icon: str | None = None, description: str | None = None,
+                routine_type: str | None = None,
+                default_workspace: str | None = None) -> str:
+    """Change a ticket's name, parent, icon, description, routine type, or default workspace.
 
     For every field, None means "leave unchanged" and an empty string means
     "clear" (a name can't be cleared). Idempotent: if the ticket already has
     the requested values, the call succeeds without writing anything.
     """
-    if all(value is None for value in (name, parent, area, icon, description, routine_type)):
+    if all(value is None for value in (name, parent, icon, description, routine_type,
+                                       default_workspace)):
         raise TicketError("nothing to change. Pass at least one of `name`, `parent`, "
-                          "`area`, `icon`, `description`, or `routine_type`. To clear a "
-                          "field, pass an empty string; null leaves it unchanged.")
+                          "`icon`, `description`, `routine_type`, or `default_workspace`. "
+                          "To clear a field, pass an empty string; null leaves it unchanged.")
     if name is not None and not name.strip():
         raise TicketError("a ticket's name can't be cleared. Pass the new name, or leave "
                           "`name` out to keep the current one.")
     slug = _slugify(name) if name is not None else None
-    area = _one_line(area) if area is not None else None
     icon = _one_line(icon) if icon is not None else None
     description_note = ""
     if description is not None:
         description, description_note = _clean_description(description)
     routine_type = _clean_routine_type(routine_type) if routine_type is not None else None
-    return _edit_one(env, ticket, name, slug, parent, area, icon, description,
-                     description_note, routine_type)
+    return _edit_one(env, ticket, name, slug, parent, icon, description,
+                     description_note, routine_type, default_workspace)
 
 
 def _describe_change(label: str, old: str | None, new: str | None, quote: bool = False,
@@ -583,18 +600,21 @@ def _describe_change(label: str, old: str | None, new: str | None, quote: bool =
 
 
 def _edit_one(env: TicketEnv, ticket: str, name: str | None,
-              slug: str | None, parent: str | None, area: str | None, icon: str | None,
+              slug: str | None, parent: str | None, icon: str | None,
               description: str | None, description_note: str = "",
-              routine_type: str | None = None) -> str:
-    contexts, today = env.contexts, env.today
+              routine_type: str | None = None, default_workspace: str | None = None) -> str:
+    workspaces, today = env.workspaces, env.today
     number = parse_number(ticket)
     with disk_lock():
-        biz = resolve_business(contexts, code=number[:3])
-        item = find_ticket(biz, number)
+        owner = resolve_owner(workspaces, code=number[:3])
+        item = find_ticket(owner, number)
         require_editable(item)
-        if routine_type and item.work_type != "routine":
-            raise TicketError(f"{item.title} is a {item.work_type}. Only a routine has a "
+        if routine_type and item.ticket_type != "routine":
+            raise TicketError(f"{item.title} is a {item.ticket_type}. Only a routine has a "
                               f"`routine-type`: it names the routine's class.")
+        if default_workspace is not None:
+            default_workspace = (check_default_workspace(workspaces, owner, default_workspace)
+                                 if default_workspace.strip() else "")
         changes: list[str] = []
         target = item.folder
         old_name, old_folder_name = item.name, item.folder.name
@@ -607,7 +627,7 @@ def _edit_one(env: TicketEnv, ticket: str, name: str | None,
             if target.exists() and not target.samefile(item.folder):
                 raise TicketError(f"`{target}` already exists. Pick a different name.")
 
-        old_parent = biz.find(item.parent)[0] if item.parent and biz.find(item.parent) else None
+        old_parent = owner.find(item.parent)[0] if item.parent and owner.find(item.parent) else None
         old_parent_title = old_parent.title if old_parent else item.parent
         new_parent: Ticket | None = None
         clear_parent = parent is not None and not parent.strip()
@@ -616,22 +636,12 @@ def _edit_one(env: TicketEnv, ticket: str, name: str | None,
                 # Callers reach for "none" or "null" here; point them at the real way.
                 raise TicketError(
                     f"`{parent}` is not a valid ticket number. Expected the 3-letter "
-                    f"business code followed by 3 characters, e.g. DUE009, DUEX01, or "
+                    f"ticket code followed by 3 characters, e.g. DUE009, DUEX01, or "
                     f"DUEA01. To clear the parent, pass an empty string.")
-            new_parent = _validate_parent(biz, parent, item.work_type, child=number)
-
-        # The business area is inherited from the parent the ticket will have after this call.
-        final_parent = new_parent if new_parent else (None if clear_parent else old_parent)
-        inherited = final_parent.frontmatter.get("business-area") if final_parent else None
-        if area is not None and inherited and area != inherited:
-            raise TicketError(
-                f"`area` conflicts with the parent: {final_parent.title} is in {inherited}. "
-                f"A ticket inherits its business area from its parent; omit `area`, or "
-                f"clear the parent in the same call.")
+            new_parent = _validate_parent(owner, parent, item.ticket_type, child=number)
 
         ensure_frontmatter(item)
         fm = item.frontmatter
-        old_area = fm.get("business-area")
         if slug is not None:
             fm.set("renamed-from", fm.get_list("renamed-from") + [old_folder_name])
             fm.set("renamed", fm.get_list("renamed") + [today.isoformat()])
@@ -642,25 +652,15 @@ def _edit_one(env: TicketEnv, ticket: str, name: str | None,
         if new_parent is not None and item.parent != new_parent.number:
             fm.set("parent", new_parent.number)
             changes.append(_describe_change("Parent", old_parent_title, new_parent.title))
-            # A parent with no business area doesn't erase the ticket's own.
-            if inherited and inherited != old_area:
-                fm.set("business-area", inherited)
-                changes.append(_describe_change("Business area", old_area, inherited,
-                                                suffix=" to match the parent"))
         elif clear_parent and item.parent is not None:
             fm.set("parent", "null", raw=True)
-            kept = "" if area is not None else "; business area unchanged"
-            changes.append(f"Parent cleared (was {old_parent_title}{kept})")
+            changes.append(f"Parent cleared (was {old_parent_title})")
 
-        new_area = fm.get("business-area")
-        if area is not None and area != (new_area or ""):
-            # An empty business area keeps its key, like a new ticket's.
-            fm.set("business-area", area)
-            changes.append(_describe_change("Business area", new_area, area))
-            new_area = area or None
         for key, label, value, quote in (("icon", "Icon", icon, False),
                                          ("description", "Description", description, True),
-                                         ("routine-type", "Routine type", routine_type, False)):
+                                         ("routine-type", "Routine type", routine_type, False),
+                                         (DEFAULT_WORKSPACE_FIELD, "Default workspace",
+                                          default_workspace, False)):
             old = fm.get(key)
             if value is None or (old or "") == value:
                 continue

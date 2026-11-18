@@ -1,4 +1,4 @@
-"""Tests for watcher.py - Manifest file watcher."""
+"""Tests for watcher.py - workspace declaration watcher."""
 
 import asyncio
 import json
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from watcher import ManifestWatcher, ManifestFilter, MANIFEST_NAMES
+from watcher import ManifestWatcher, ManifestFilter, WATCHED_NAMES, needs_rescan
 from watchfiles import Change
 
 
@@ -32,9 +32,15 @@ class TestManifestFilter:
         f = ManifestFilter()
         assert f(Change.modified, "/some/path/settings.json") is False
 
-    def test_rejects_non_json(self):
+    def test_rejects_other_files(self):
         f = ManifestFilter()
         assert f(Change.modified, "/some/path/README.md") is False
+        assert f(Change.modified, "/some/path/notes.md") is False
+
+    def test_passes_index_md(self):
+        """INDEX.md passes the filter; `needs_rescan` decides whether it matters."""
+        f = ManifestFilter()
+        assert f(Change.modified, "/some/path/INDEX.md") is True
 
     def test_rejects_manifest_name_in_directory(self):
         """context.json in dir name but file is something else."""
@@ -68,7 +74,7 @@ class TestManifestWatcher:
 
     @pytest.mark.asyncio
     async def test_start_with_existing_folders(self, tmp_path: Path):
-        folder = tmp_path / "business"
+        folder = tmp_path / "workspace"
         folder.mkdir()
 
         watcher = ManifestWatcher(on_scan=lambda: None)
@@ -102,7 +108,7 @@ class TestManifestWatcher:
 
     @pytest.mark.asyncio
     async def test_start_idempotent_same_folders(self, tmp_path: Path):
-        folder = tmp_path / "business"
+        folder = tmp_path / "workspace"
         folder.mkdir()
 
         watcher = ManifestWatcher(on_scan=lambda: None)
@@ -141,7 +147,7 @@ class TestManifestWatcher:
 
     @pytest.mark.asyncio
     async def test_maybe_restart_no_change(self, tmp_path: Path):
-        folder = tmp_path / "business"
+        folder = tmp_path / "workspace"
         folder.mkdir()
 
         watcher = ManifestWatcher(on_scan=lambda: None)
@@ -175,7 +181,7 @@ class TestManifestWatcher:
     @pytest.mark.asyncio
     async def test_scan_triggered_on_manifest_change(self, tmp_path: Path):
         """Integration test: manifest change triggers scan callback."""
-        folder = tmp_path / "context"
+        folder = tmp_path / "workspace"
         folder.mkdir()
 
         scan_count = 0
@@ -192,7 +198,7 @@ class TestManifestWatcher:
         await asyncio.sleep(0.5)
 
         (folder / "context.json").write_text(
-            json.dumps({"version": 2, "name": "Test", "icon": "📁"}),
+            json.dumps({"version": 4}),
             encoding="utf-8",
         )
 
@@ -204,7 +210,7 @@ class TestManifestWatcher:
     @pytest.mark.asyncio
     async def test_async_on_scan(self, tmp_path: Path):
         """Watcher accepts async on_scan callback."""
-        folder = tmp_path / "business"
+        folder = tmp_path / "workspace"
         folder.mkdir()
 
         async def async_scan():
@@ -216,9 +222,93 @@ class TestManifestWatcher:
         watcher.stop()
 
 
-class TestManifestNames:
-    """Verify MANIFEST_NAMES constant."""
+class TestWatchedNames:
+    """Verify WATCHED_NAMES constant."""
 
-    def test_contains_context_json_only(self):
-        """v2 watches `context.json` only; legacy v1 names are not tracked."""
-        assert MANIFEST_NAMES == frozenset({"context.json"})
+    def test_contains_manifest_and_index(self):
+        """Legacy v1 names are not tracked."""
+        assert WATCHED_NAMES == frozenset({"context.json", "INDEX.md"})
+
+
+class TestNeedsRescan:
+    """An INDEX.md change rescans only when a workspace's frontmatter changed."""
+
+    FRONTMATTER = "folder-type: workspace\nname: Lab\nticket-code: LAB\n"
+
+    def workspace(self, tmp_path: Path) -> tuple[Path, dict]:
+        folder = tmp_path / "Lab"
+        folder.mkdir()
+        (folder / "context.json").write_text('{"version": 4}', encoding="utf-8")
+        index = folder / "INDEX.md"
+        index.write_text(f"---\n{self.FRONTMATTER}---\n# Lab\n", encoding="utf-8")
+        return index, {str(index): self.FRONTMATTER}
+
+    def test_manifest_change_always_rescans(self, tmp_path: Path):
+        assert needs_rescan([(Change.modified, str(tmp_path / "context.json"))], {})
+
+    def test_body_edit_does_not_rescan(self, tmp_path: Path):
+        index, known = self.workspace(tmp_path)
+        index.write_text(f"---\n{self.FRONTMATTER}---\n# Lab\n\nNew paragraph.\n",
+                         encoding="utf-8")
+        assert not needs_rescan([(Change.modified, str(index))], known)
+
+    def test_frontmatter_edit_rescans(self, tmp_path: Path):
+        index, known = self.workspace(tmp_path)
+        index.write_text(index.read_text().replace("ticket-code: LAB", "ticket-code: inherit"),
+                         encoding="utf-8")
+        assert needs_rescan([(Change.modified, str(index))], known)
+
+    def test_deleted_index_of_a_workspace_rescans(self, tmp_path: Path):
+        index, known = self.workspace(tmp_path)
+        index.unlink()
+        assert needs_rescan([(Change.deleted, str(index))], known)
+
+    def test_new_index_of_a_workspace_rescans(self, tmp_path: Path):
+        """A workspace the last scan couldn't name gets its INDEX.md: scan it now."""
+        index, _ = self.workspace(tmp_path)
+        assert needs_rescan([(Change.added, str(index))], {})
+
+    def test_body_edit_under_a_symlinked_root_does_not_rescan(self, tmp_path: Path, db,
+                                                               monkeypatch):
+        """Roots are configured through a symlink; events arrive at the real path."""
+        from scanner import Scanner
+        from tests.fixtures import ManifestBuilder, write_index_body
+
+        real = tmp_path / "real" / "Root"
+        ManifestBuilder.workspace(real, "Root")
+        link = tmp_path / "link"
+        link.symlink_to(tmp_path / "real")
+        monkeypatch.setattr("scanner.get_root_workspace_folders", lambda: [str(link / "Root")])
+        scanner = Scanner(db)
+        scanner.scan()
+        index = (real / "INDEX.md").resolve()
+        write_index_body(real, "# Root\n\nNew paragraph.\n")
+        assert not needs_rescan([(Change.modified, str(index))], scanner.index_frontmatters)
+        index.write_text(index.read_text().replace("name: \"Root\"", "name: \"Renamed\""),
+                         encoding="utf-8")
+        assert needs_rescan([(Change.modified, str(index))], scanner.index_frontmatters)
+
+    def test_ticket_index_does_not_rescan(self, tmp_path: Path):
+        index, known = self.workspace(tmp_path)
+        ticket = index.parent / "work" / "LAB001_Task" / "INDEX.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text("---\nfolder-type: ticket\n---\n", encoding="utf-8")
+        assert not needs_rescan([(Change.modified, str(ticket))], known)
+
+    @pytest.mark.asyncio
+    async def test_watcher_skips_scan_for_body_edit(self, tmp_path: Path, monkeypatch):
+        """The loop asks `needs_rescan` with the scan's snapshot before scanning."""
+        index, known = self.workspace(tmp_path)
+        index.write_text(index.read_text() + "More body.\n", encoding="utf-8")
+        batches = [{(Change.modified, str(index))},
+                   {(Change.modified, str(index.parent / "context.json"))}]
+
+        async def fake_awatch(*args, **kwargs):
+            for batch in batches:
+                yield batch
+
+        monkeypatch.setattr("watcher.awatch", fake_awatch)
+        scans = []
+        watcher = ManifestWatcher(on_scan=lambda: scans.append(1), frontmatters=lambda: known)
+        await watcher._watch_loop([str(tmp_path)])
+        assert scans == [1]

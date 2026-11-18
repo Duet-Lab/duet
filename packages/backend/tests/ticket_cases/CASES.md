@@ -6,12 +6,14 @@ Each behavior of `tickets`, `new_ticket`, `move_ticket`, and `edit_ticket` is a 
 
 - `tree.txt`: name of the shared tree in `trees/` that the case starts from. A case has its own `before/` folder instead only when it needs a layout that no shared tree provides.
 - `call.txt`: the call, on one line.
-- `expected.md`: the exact response the tool must return. `{root}` stands for the directory containing the business.
+- `expected.md`: the exact response the tool must return. `{root}` stands for the directory containing the workspace.
 - `after/`: the files the call creates or modifies, and nothing else.
 - `removed.txt`: the folders the call removes from their original location.
 - `today.txt`: the date of the call, if it isn't 2026-10-08.
 
 A case with neither `after/` nor `removed.txt` must leave the disk untouched.
+
+Besides the workspace a case starts from, every case has the desk `DuetDev` registered: a workspace with `ticket-code: inherit` whose parent is the case's workspace. It lives outside the compared tree, so a case can't change it.
 
 A case whose name contains `_error_` must fail: the result is flagged as an error, the response starts with `Error:`, and the disk is untouched. Every other case must succeed. A response includes `**Index:**`, an address like `@DUE008/INDEX.md` that stays valid when the ticket is moved or renamed.
 
@@ -21,24 +23,24 @@ Some behavior can't be expressed as files: a write that fails halfway, file perm
 
 Starting data is defined once, in `trees/`. Changing a shared tree changes the expected output of every case that uses it.
 
-`trees/empty` is the DuetLab business (code DUE) with no tickets.
+`trees/empty` is the DuetLab workspace (code DUE) with no tickets.
 
-`trees/lab` is the DuetLab business (code DUE) with:
+`trees/lab` is the DuetLab workspace (code DUE) with:
 
-- `DUEX01 ShellPrototype`: active program with an icon and a description. `DUE004` and `DUE007 UIResearch` are in work; `DUE030` is in the backlog, inside the `backlog/shell` grouping folder.
+- `DUEX01 ShellPrototype`: active program with an icon and a description. `DUE004` (with `default-workspace: "@DuetDev"`) and `DUE007 UIResearch` are in work; `DUE030` is in the backlog, inside the `backlog/shell` grouping folder.
 - `DUEX02 WorkDoctrine`: active program with a description. In work: `DUE008` (has a description and body content), `DUE011` (renamed once), `DUE024` (closed once, then reopened). In the backlog: `DUE014`. Archived: `DUE013` and `DUE019` (closed twice).
 - `DUEX04 DuetVision`: active program whose only ticket, `DUE012`, is in the backlog.
 - `DUEX06 Marketplace`: active program with no tickets.
 - `DUEX05 DuetSkills`: program in the backlog. `DUE027` is in the backlog; `DUE021` is archived.
-- `DUEX03 WorkSupport`: closed program. `DUE017` and `DUE036` are archived; `DUE036` is the highest project number in the business.
-- `DUEA01 Curation`: active routine with no tickets. `DUEA02 Migration`: closed routine whose frontmatter still says `work-type: process`, as written by an earlier version; the number's letter types it.
+- `DUEX03 WorkSupport`: closed program. `DUE017` and `DUE036` are archived; `DUE036` is the highest project number in the workspace.
+- `DUEA01 Curation`: active routine with no tickets. `DUEA02 Migration`: closed routine whose frontmatter still says `ticket-type: process`, as written by an earlier version; the number's letter types it.
 - No parent: `DUE026` and `DUE033` (no frontmatter in its `INDEX.md`) in work, `DUE029` in the backlog, `DUE002` and `DUE009` archived.
 
 ## tickets
 
 - `tickets/01_overview`: default view on the shared tree. Groups list their work and backlog tickets. DUEX04 has only backlog tickets, DUEX06 and DUEA01 have none, and DUEX05 is itself in the backlog, so it shows counts without a list. Also covers Unsorted and the archive summary. Starts from `lab`.
 - `tickets/02_unsorted_only_in_backlog`: the only parentless ticket is in the backlog, and Unsorted still appears. Own `before/`.
-- `tickets/03_empty_business`: no tickets yet; the business is looked up by name instead of code. Starts from `empty`.
+- `tickets/03_empty_workspace`: no tickets yet; the workspace is looked up by name instead of code. Starts from `empty`.
 - `tickets/04_parent_not_found`: a ticket references a parent that doesn't exist, so its group is marked "not found". Own `before/`.
 - `tickets/05_closed_program_with_open_ticket`: a closed program still has a ticket in work, so its group is marked "archive". Own `before/`.
 - `tickets/06_shelf_backlog`: `shelf="backlog"` lists every backlog ticket by parent. Starts from `lab`.
@@ -47,8 +49,8 @@ Starting data is defined once, in `trees/`. Changing a shared tree changes the e
 - `tickets/09_parent_unsorted`: `parent="unsorted"` lists every ticket with no parent. Starts from `lab`.
 - `tickets/10_number`: `number` shows one ticket's location and frontmatter. Starts from `lab`.
 - `tickets/11_number_closed_twice`: a ticket closed twice shows all of its close and reopen dates. Starts from `lab`.
-- `tickets/12_error_unknown_code`: error when no business has the ticket code. Starts from `empty`.
-- `tickets/13_error_no_business`: error when neither a code nor a business is given. Starts from `empty`.
+- `tickets/12_error_unknown_code`: error when no workspace has the ticket code. Starts from `empty`.
+- `tickets/13_error_no_workspace`: error when neither a code nor a workspace is given. Starts from `empty`.
 - `tickets/14_error_ticket_not_found`: error when the ticket number doesn't exist. Starts from `lab`.
 - `tickets/15_error_bad_shelf`: error on an unknown `shelf` value. Starts from `empty`.
 - `tickets/16_number_list`: `number` given as a list returns one section per ticket. A number that doesn't exist gets an error section without failing the others, and the first line says how many resolved. Starts from `lab`.
@@ -56,7 +58,7 @@ Starting data is defined once, in `trees/`. Changing a shared tree changes the e
 - `tickets/18_parent_and_shelf`: `parent` and `shelf` combine: one program's backlog tickets, with the group's full counts above. Starts from `lab`.
 - `tickets/19_unsorted_and_shelf`: `parent="unsorted"` combines with `shelf` the same way. Starts from `lab`.
 - `tickets/20_error_number_with_filters`: error when `number` is combined with `parent` or `shelf`, instead of silently ignoring them. Starts from `lab`.
-- `tickets/21_error_number_wrong_code`: error when `code` contradicts the business the number belongs to. Starts from `lab`.
+- `tickets/21_error_number_wrong_code`: error when `code` contradicts the owner workspace the number belongs to. Starts from `lab`.
 - `tickets/22_error_number_list_all_failed`: a list in which no number resolves is an error as a whole, with one section per number. Starts from `lab`.
 - `tickets/23_number_empty_group`: a program with no tickets says `Tickets: none` rather than nothing. Starts from `lab`.
 - `tickets/24_parent_not_found`: `parent` for a number that doesn't exist still lists the tickets that reference it, so they can be reassigned. Own `before/`.
@@ -66,36 +68,34 @@ Starting data is defined once, in `trees/`. Changing a shared tree changes the e
 - `tickets/28_number_folder_without_index`: a ticket folder with no `INDEX.md` is a valid ticket, and the lookup says so. Own `before/`.
 - `tickets/29_number_lowercase`: a number in lowercase is accepted; a ticket with empty fields shows them as `none`. Starts from `lab`.
 - `tickets/30_error_numbers_in_one_string`: several numbers in one comma-separated string get an error that shows the list form. Starts from `lab`.
-
-- `tickets/31_area_overview`: tickets(business="DuetShell"). Starts from `lab`.
-- `tickets/32_area_shelf`: tickets(code="DUE", business="DuetShell", shelf="backlog"). Starts from `lab`.
-- `tickets/33_area_parent_shelf`: tickets(business="DuetShell", parent="DUEX01", shelf="work"). Starts from `lab`.
-- `tickets/34_error_number_outside_area`: tickets(business="DuetShell", number="DUE008"). Starts from `lab`.
-- `tickets/35_error_parent_outside_area`: tickets(business="DuetShell", parent="DUEX02"). Starts from `lab`.
-- `tickets/36_area_empty_shelf`: tickets(business="DuetShell", shelf="archive"). Starts from `lab`.
+- `tickets/31_desk_overview`: the desk DuetDev lists the tickets it inherits from DuetLab, and the heading says so. Starts from `lab`.
+- `tickets/32_number_default_workspace`: a lookup shows `default-workspace` with the other fields. Starts from `lab`.
+- `tickets/33_error_desk_code_mismatch`: error when `code` contradicts the tickets workspace of `workspace`. Starts from `lab`.
 
 ## new_ticket
 
-- `new_ticket/01_project_under_program`: a project under a program. The number is one past the highest, DUE036, which is in the archive. The business area is inherited from the parent. Starts from `lab`.
+- `new_ticket/01_project_under_program`: a project under a program. The number is one past the highest, DUE036, which is in the archive. Starts from `lab`.
 - `new_ticket/02_name_in_plain_words`: a plain-words name with no parent becomes a PascalCase folder with `parent: null`. Starts from `lab`.
 - `new_ticket/03_into_backlog_with_description`: created directly in the backlog, with a description. Starts from `lab`.
-- `new_ticket/04_program`: a program gets the next DUEX number, plus an icon and a business area. Starts from `lab`.
-- `new_ticket/05_routine`: a routine gets the next DUEA number; the business is looked up by name. Starts from `lab`.
+- `new_ticket/04_program`: a program gets the next DUEX number, plus an icon. Starts from `lab`.
+- `new_ticket/05_routine`: a routine gets the next DUEA number; the workspace is looked up by name. Starts from `lab`.
 - `new_ticket/06_number_in_grouped_folders`: the highest number is in a year/month archive and another ticket is in a backlog grouping folder; both are counted, and gaps aren't reused. Own `before/`.
-- `new_ticket/07_first_ticket_cyrillic_name`: the first ticket of a business, with a Cyrillic name. Non-Latin letters are kept in the folder name, and `work/` is created on demand. Starts from `empty`.
+- `new_ticket/07_first_ticket_cyrillic_name`: the first ticket of a workspace, with a Cyrillic name. Non-Latin letters are kept in the folder name, and `work/` is created on demand. Starts from `empty`.
 - `new_ticket/08_error_parent_is_project`: error when the parent is a project. Starts from `lab`.
 - `new_ticket/09_error_parent_not_found`: error when the parent doesn't exist; the message lists the available parents. Starts from `lab`.
 - `new_ticket/10_error_program_with_parent`: error when a program is given a parent. Starts from `lab`.
 - `new_ticket/11_error_parent_closed`: error when the parent is closed. Starts from `lab`.
 - `new_ticket/12_error_empty_name`: error when the name has no letters or digits. Starts from `empty`.
-- `new_ticket/13_error_no_business`: error when no parent, code, or business is given. Starts from `empty`.
-- `new_ticket/14_error_area_against_parent`: error when `area` conflicts with the parent's business area. Starts from `lab`.
+- `new_ticket/13_error_no_workspace`: error when no parent, code, or workspace is given. Starts from `empty`.
+- `new_ticket/14_from_desk`: created from the desk DuetDev, the ticket goes to DuetLab under its code and gets `default-workspace: "@DuetDev"`. Starts from `lab`.
 - `new_ticket/15_description_line_breaks`: line breaks in a description, including U+2028, become spaces, so the text can't spill into another frontmatter field. Starts from `lab`.
 - `new_ticket/16_error_description_too_long`: error when the description is over 300 characters while staying within the word limit. Starts from `lab`.
 - `new_ticket/17_no_name`: an empty name creates a ticket with just its number, as the extension's new-ticket button allows. Starts from `lab`.
 - `new_ticket/18_error_description_too_many_words`: error when the description has 8 or more words; the message repeats the rule, not just the limit. Starts from `lab`.
 - `new_ticket/19_description_word_warning`: a 6-word description is written, and the response carries a note with the rule. Starts from `lab`.
 - `new_ticket/20_error_name_too_many_words`: error when the name has 4 or more words. Starts from `lab`.
+- `new_ticket/21_from_desk_under_parent`: created from the desk under a parent; the parent decides the owner and the desk still becomes the default workspace. Starts from `lab`.
+- `new_ticket/22_error_unknown_default_workspace`: error when `default_workspace` names a workspace that isn't registered; nothing is created. Starts from `lab`.
 
 ## move_ticket
 
@@ -120,16 +120,16 @@ Starting data is defined once, in `trees/`. Changing a shared tree changes the e
 - `move_ticket/19_program_to_backlog`: moving a program moves only the program; the response says its tickets stay put. Starts from `lab`.
 - `move_ticket/20_close_folder_without_index`: closing a ticket that has no `INDEX.md` creates one and says so. Own `before/`.
 - `move_ticket/21_reopen_under_closed_parent`: reopening a ticket whose parent is closed works, with a note about the parent. Starts from `lab`.
-- `move_ticket/22_reopen_routine_with_old_frontmatter`: a routine archived by an earlier version, with `work-type: process`, reopens as any other; its frontmatter line is left as written, because the number's letter types the ticket for the Backend and the Extension alike. Starts from `lab`.
+- `move_ticket/22_reopen_routine_with_old_frontmatter`: a routine archived by an earlier version, with `ticket-type: process`, a value that no longer exists, reopens as any other; its frontmatter line is left as written, because the number's letter types the ticket for the Backend and the Extension alike. Starts from `lab`.
 
 ## edit_ticket
 
 - `edit_ticket/01_rename`: renaming changes the folder name and records the old name and the date in the frontmatter; the title heading in the body gets the new name, and the rest of the body is untouched. The response says what the name became. Starts from `lab`.
 - `edit_ticket/02_rename_second_time`: renaming again turns `renamed-from` and `renamed` into lists. Starts from `lab`.
 - `edit_ticket/03_rename_letter_case_only`: a case-only rename (UIResearch to UiResearch) works on a case-insensitive filesystem instead of failing with "already exists". Starts from `lab`.
-- `edit_ticket/04_parent_changed`: a new parent updates the business area to match; each change line names the previous value. Starts from `lab`.
-- `edit_ticket/05_parent_given_to_unsorted`: giving a parentless ticket a parent fills in its empty business area. Starts from `lab`.
-- `edit_ticket/06_parent_removed`: removing the parent sets `parent: null` and keeps the business area. Starts from `lab`.
+- `edit_ticket/04_parent_changed`: a new parent; each change line names the previous value. Starts from `lab`.
+- `edit_ticket/05_parent_given_to_unsorted`: giving a parentless ticket a parent. Starts from `lab`.
+- `edit_ticket/06_parent_removed`: removing the parent sets `parent: null`. Starts from `lab`.
 - `edit_ticket/07_description_set`: setting a description. Starts from `lab`.
 - `edit_ticket/08_description_removed_icon_set`: removing the description and setting an icon in one call. Starts from `lab`.
 - `edit_ticket/09_everything_at_once`: changing the name, parent, and description in one call. Starts from `lab`.
@@ -139,9 +139,9 @@ Starting data is defined once, in `trees/`. Changing a shared tree changes the e
 - `edit_ticket/13_error_nothing_given`: error when no field to change is given; the message explains that an empty string clears a field and null leaves it unchanged. Starts from `lab`.
 - `edit_ticket/14_already_up_to_date`: a ticket that already has the given values succeeds with "No changes", so a retry is safe. Starts from `lab`.
 - `edit_ticket/15_error_unreadable_index`: error when the ticket's `INDEX.md` can't be read; the file is never overwritten. Own `before/`.
-- `edit_ticket/16_area_set`: setting the business area of a ticket with no parent. Starts from `lab`.
-- `edit_ticket/17_parent_removed_area_changed`: clearing the parent and setting a new business area in one call. Starts from `lab`.
-- `edit_ticket/18_error_area_against_parent`: error when `area` conflicts with the business area inherited from the parent. Starts from `lab`.
+- `edit_ticket/16_default_workspace_set`: setting `default-workspace`; the value is written quoted, with `@`. Starts from `lab`.
+- `edit_ticket/17_default_workspace_removed`: an empty `default_workspace` removes the field. Starts from `lab`.
+- `edit_ticket/18_error_unknown_default_workspace`: error when `default_workspace` names a workspace that isn't registered. Starts from `lab`.
 - `edit_ticket/20_crlf_line_endings`: a file with Windows (CRLF) line endings keeps them, in the frontmatter and in the body. Own `before/`.
 - `edit_ticket/22_rename_keeps_unrelated_heading`: a title heading that doesn't mention the old name is left alone, and the response says so. Own `before/`.
 - `edit_ticket/21_error_empty_name`: error when `name` is an empty string; a name can be changed but not cleared. Starts from `lab`.
@@ -149,6 +149,6 @@ Starting data is defined once, in `trees/`. Changing a shared tree changes the e
 - `edit_ticket/23_description_word_warning`: a 6-word description is written, and the response carries a note with the rule. Starts from `lab`.
 - `edit_ticket/24_error_description_too_many_words`: error when the description has 8 or more words; nothing is written. Starts from `lab`.
 - `edit_ticket/25_error_name_too_many_words`: error when the new name has 4 or more words. Starts from `lab`.
-- `edit_ticket/26_routine_type_set`: a routine gets its class; the value is lowercased and placed after `work-type`. Starts from `lab`.
+- `edit_ticket/26_routine_type_set`: a routine gets its class; the value is lowercased and placed after `ticket-type`. Starts from `lab`.
 - `edit_ticket/27_error_routine_type_on_project`: error when the ticket isn't a routine. Starts from `lab`.
 - `edit_ticket/28_error_routine_type_shape`: error when the value isn't lowercase words joined by hyphens. Starts from `lab`.

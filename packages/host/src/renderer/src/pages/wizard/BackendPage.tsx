@@ -5,8 +5,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Package, Download, Loader2, Code, CheckCircle, AlertTriangle } from 'lucide-react'
-import type { AppState, DeployStatus, DeployChannel } from '../../../../preload/index.d'
+import type {
+  AppState,
+  BackendSources,
+  DeployStatus,
+  DeployChannel
+} from '../../../../preload/index.d'
 import type { PageStatus } from '../../../../core/wizard-status'
+import { isListed, showSourceChoice } from '../../../../shared/backend-source-choice'
 
 interface BackendPageProps {
   appState: AppState
@@ -60,6 +66,27 @@ export function BackendPage({ appState, onStatusChange }: BackendPageProps): Rea
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [logs])
+
+  const [backendSources, setBackendSources] = useState<BackendSources | null>(null)
+
+  // DEV source choice: re-read when the channel changes, the list depends on DuetData/repos
+  const devChannel = appState.deployChannel === 'dev'
+  useEffect(() => {
+    if (!devChannel) return
+    window.api
+      .getBackendSources()
+      .then(setBackendSources)
+      .catch((e) => console.error('Failed to list backend sources:', e))
+  }, [devChannel])
+
+  const handleSourceChange = async (path: string): Promise<void> => {
+    try {
+      await window.api.setDevBackendPath(path)
+      setBackendSources(await window.api.getBackendSources())
+    } catch (e) {
+      console.error('Failed to set backend source:', e)
+    }
+  }
 
   const handleChannelChange = async (channel: DeployChannel): Promise<void> => {
     try {
@@ -116,6 +143,27 @@ export function BackendPage({ appState, onStatusChange }: BackendPageProps): Rea
               <Code className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
               <div className="text-xs text-muted-foreground">
                 <span className="font-medium text-amber-500">DEV</span> — источник из репозитория
+                {backendSources && showSourceChoice(backendSources) && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span>Ветка:</span>
+                    <select
+                      className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+                      value={backendSources.current ?? ''}
+                      onChange={(e) => void handleSourceChange(e.target.value)}
+                    >
+                      {backendSources.current && !isListed(backendSources) && (
+                        <option value={backendSources.current} disabled>
+                          выбранная ветка удалена
+                        </option>
+                      )}
+                      {backendSources.sources.map((s) => (
+                        <option key={s.path} value={s.path}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
             </div>
           )}

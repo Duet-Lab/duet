@@ -130,9 +130,9 @@ describe('core/config', () => {
 
       const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
       expect(settings).toEqual({
-        version: 2,
+        version: 3,
         user_name: 'Human',
-        root_context_folders: [],
+        root_workspace_folders: [],
         timestampTZ: { id: 'Z', value: 'UTC' }
       })
     })
@@ -150,7 +150,7 @@ describe('core/config', () => {
     it('does not overwrite existing settings.json', () => {
       const settingsPath = join(ctx.duetConfigDir, 'settings.json')
       const custom = {
-        root_context_folders: ['@MyCtx'],
+        root_workspace_folders: ['@MyWorkspace'],
         timestampTZ: { id: 'M', value: 'Europe/Moscow' }
       }
       writeFileSync(settingsPath, JSON.stringify(custom))
@@ -229,11 +229,11 @@ describe('core/config', () => {
       })
       writeFileSync(
         join(ctx.duetConfigDir, 'settings.json'),
-        JSON.stringify({ root_context_folders: ['/path'] })
+        JSON.stringify({ root_workspace_folders: ['/path'] })
       )
 
       const result = readSettingsConfig()
-      expect(result).toEqual({ root_context_folders: ['/path'] })
+      expect(result).toEqual({ root_workspace_folders: ['/path'] })
     })
 
     it('returns null on invalid JSON', () => {
@@ -262,13 +262,13 @@ describe('core/config', () => {
       })
       writeFileSync(
         join(ctx.duetConfigDir, 'settings.json'),
-        JSON.stringify({ root_context_folders: [], timestampTZ: { id: 'Z', value: 'UTC' } })
+        JSON.stringify({ root_workspace_folders: [], timestampTZ: { id: 'Z', value: 'UTC' } })
       )
 
-      setSettingsConfigKey('root_context_folders', ['/new/path'])
+      setSettingsConfigKey('root_workspace_folders', ['/new/path'])
 
       const settings = JSON.parse(readFileSync(join(ctx.duetConfigDir, 'settings.json'), 'utf-8'))
-      expect(settings.root_context_folders).toEqual(['/new/path'])
+      expect(settings.root_workspace_folders).toEqual(['/new/path'])
       expect(settings.timestampTZ).toEqual({ id: 'Z', value: 'UTC' })
     })
 
@@ -279,7 +279,7 @@ describe('core/config', () => {
         machine: 'test'
       })
 
-      expect(() => setSettingsConfigKey('root_context_folders', ['/path'])).toThrow(
+      expect(() => setSettingsConfigKey('root_workspace_folders', ['/path'])).toThrow(
         /Settings file not found/
       )
     })
@@ -292,12 +292,12 @@ describe('core/config', () => {
       })
       writeFileSync(join(ctx.duetConfigDir, 'settings.json'), '{ broken json', 'utf-8')
 
-      expect(() => setSettingsConfigKey('root_context_folders', ['/path'])).toThrow(/Invalid JSON/)
+      expect(() => setSettingsConfigKey('root_workspace_folders', ['/path'])).toThrow(/Invalid JSON/)
     })
 
     it('throws when pointer is not configured', () => {
       // No writeTestConfig — pointer not set
-      expect(() => setSettingsConfigKey('root_context_folders', ['/path'])).toThrow(
+      expect(() => setSettingsConfigKey('root_workspace_folders', ['/path'])).toThrow(
         /duetConfigPath/
       )
     })
@@ -403,7 +403,7 @@ describe('core/config', () => {
     it('creates Human by default and defaults older settings without rewriting', () => {
       expect(readSettingsConfig()?.user_name).toBe('Human')
       const path = join(ctx.duetConfigDir, 'settings.json')
-      writeFileSync(path, JSON.stringify({ version: 2, root_context_folders: [] }))
+      writeFileSync(path, JSON.stringify({ version: 3, root_workspace_folders: [] }))
       const before = readFileSync(path, 'utf-8')
       expect(readUserName()).toBe('Human')
       expect(readFileSync(path, 'utf-8')).toBe(before)
@@ -469,7 +469,7 @@ describe('core/config', () => {
 
     it('distinguishes an absent field from a stored invalid value', () => {
       const path = join(ctx.duetConfigDir, 'settings.json')
-      writeFileSync(path, JSON.stringify({ version: 2, root_context_folders: [] }))
+      writeFileSync(path, JSON.stringify({ version: 3, root_workspace_folders: [] }))
       expect(readUserNameState()).toEqual({ name: 'Human', error: null })
       for (const invalid of [null, 3, 'User', ' ', 'A`B']) {
         writeFileSync(path, JSON.stringify({ version: 2, user_name: invalid }))

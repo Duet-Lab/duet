@@ -1,4 +1,4 @@
-"""Business descriptions from INDEX frontmatter and legacy Markdown utilities."""
+"""INDEX.md frontmatter of a workspace, and the legacy Markdown description extractor."""
 
 import logging
 import re
@@ -13,11 +13,41 @@ _FRONTMATTER = re.compile(
 )
 
 
-def read_business_description(folder: Path) -> str | None:
-    """Read a business's explicit description, without legacy fallbacks.
+def frontmatter_block(text: str) -> str | None:
+    """The raw YAML between the `---` lines at the top of `text`, or None."""
+    match = _FRONTMATTER.match(text)
+    return match.group(1) if match else None
+
+
+def read_frontmatter(path: Path) -> dict | None:
+    """Parse the YAML frontmatter of a Markdown file.
+
+    Returns the mapping, or None when the file has no frontmatter.
+
+    Raises:
+        FileNotFoundError: the file is missing.
+        OSError, UnicodeError: the file can't be read as UTF-8.
+        ValueError: the frontmatter is not valid YAML or not a mapping.
+    """
+    block = frontmatter_block(path.read_text(encoding="utf-8"))
+    if block is None:
+        return None
+    try:
+        fields = yaml.safe_load(block)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid YAML: {exc}") from exc
+    if fields is None:
+        return {}
+    if not isinstance(fields, dict):
+        raise ValueError("the frontmatter is not a mapping of fields")
+    return fields
+
+
+def read_workspace_description(folder: Path) -> str | None:
+    """Read a workspace's explicit description, without legacy fallbacks.
 
     Args:
-        folder: The business folder containing INDEX.md.
+        folder: The workspace folder containing INDEX.md.
 
     Returns:
         A nonempty string from YAML frontmatter, normalized to one line,
@@ -25,44 +55,19 @@ def read_business_description(folder: Path) -> str | None:
     """
     path = folder / "INDEX.md"
     try:
-        text = path.read_text(encoding="utf-8")
+        fields = read_frontmatter(path)
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError) as exc:
-        logger.warning("Cannot read business description in %s: %s", path, exc)
+        logger.warning("Cannot read workspace description in %s: %s", path, exc)
         return None
-    match = _FRONTMATTER.match(text)
-    if match is None:
+    except ValueError:
+        logger.warning("Invalid workspace frontmatter in %s", path)
         return None
-    try:
-        fields = yaml.safe_load(match.group(1))
-    except yaml.YAMLError:
-        logger.warning("Invalid business frontmatter in %s", path)
-        return None
-    if not isinstance(fields, dict):
+    if not fields:
         return None
     value = fields.get("description")
     return (" ".join(value.split()) or None) if isinstance(value, str) else None
-
-
-# Spec file fallback chains keyed by lookup category.
-# - "context_with_git": context whose products live in a git repo (PRODUCT.md inside).
-# - "context": context without git_url (intermediate or root). CONTEXT.md is
-#   the canonical name; legacy BUSINESS.md / STREAM.md are kept as fallbacks
-#   for user-authored files that haven't been renamed yet.
-# - "component": package inside a product.
-SPEC_FALLBACK: dict[str, list[str]] = {
-    "context_with_git": [
-        "PRODUCT.md", "COMPONENT.md", "ARCHITECTURE.md", "README.md", "INDEX.md",
-    ],
-    "context": [
-        "CONTEXT.md", "BUSINESS.md", "STREAM.md", "COMPONENT.md",
-        "ARCHITECTURE.md", "README.md", "INDEX.md",
-    ],
-    "component": [
-        "COMPONENT.md", "ARCHITECTURE.md", "README.md", "INDEX.md",
-    ],
-}
 
 
 def extract_description(file_path: Path) -> str | None:
@@ -142,31 +147,3 @@ def _extract_first_sentence(text: str) -> str:
         return match.group(1)
     # No sentence ending found -> return whole line
     return text.strip()
-
-
-def find_spec_file(root_path: Path, lookup_category: str) -> Path | None:
-    """Find spec file using fallback chain for lookup category.
-
-    Searches spec/ directory under root_path for files in priority order.
-
-    Args:
-        root_path: Root directory of the entity.
-        lookup_category: One of: context_with_git, context, component.
-
-    Returns:
-        Absolute path to first existing spec file, or None.
-    """
-    if lookup_category not in SPEC_FALLBACK:
-        logger.warning(
-            "Unknown lookup_category %r in find_spec_file, using 'component' fallback",
-            lookup_category,
-        )
-    chain = SPEC_FALLBACK.get(lookup_category, SPEC_FALLBACK["component"])
-    spec_dir = root_path / "spec"
-
-    for filename in chain:
-        spec_path = spec_dir / filename
-        if spec_path.is_file():
-            return spec_path
-
-    return None

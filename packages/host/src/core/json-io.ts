@@ -1,9 +1,9 @@
 /*
  * ЧТО: Атомарные read/write для JSON-файлов Host'а.
- * ЗАЧЕМ: pointer / settings / machine config / context manifests — все чтения/записи должны
+ * ЗАЧЕМ: pointer / settings / machine config / workspace manifests (context.json) — все чтения/записи должны
  *        быть atomic, иначе сбой при Drive sync, kill, OOM оставляет битый файл и
  *        пользовательские данные теряются.
- * КТО ИСПОЛЬЗУЕТ: core/config.ts, core/root-contexts.ts, core/schema-migrations.ts.
+ * КТО ИСПОЛЬЗУЕТ: core/config.ts, core/root-workspaces.ts, core/schema-migrations.ts.
  *
  * НЕТ Electron imports — тестируемо с plain Node.js.
  */

@@ -1,10 +1,10 @@
-"""Tests for EntitiesService.get_contexts — live business metadata.
+"""Tests for EntitiesService.get_workspaces — live workspace metadata.
 
-§7.2 added two fields to the /contexts response for context entities:
+Besides the registry fields, every `/workspaces` record carries:
 - `git_repos` — alias→URL map (live from manifest); `null` when absent.
+- `reference_repos` — name→URL map; `null` when absent.
 - `description` — explicit description from INDEX.md frontmatter.
-
-`reference_repos` was already there.
+- `ticket_code` — `ticket-code` as the scan read it, or `null`.
 """
 
 from __future__ import annotations
@@ -22,17 +22,17 @@ from tests.fixtures import DuetDataBuilder, ManifestBuilder
 
 
 class TestContextsReturnsGitRepos:
-    def test_contexts_returns_git_repos_map(
+    def test_workspaces_returns_git_repos_map(
         self, tmp_path: Path, db: DatabaseManager, monkeypatch
     ) -> None:
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
 
-        root_path = builder.get_root_context_path(0)
+        root_path = builder.get_root_workspace_path(0)
         lab_path = root_path / "DuetLab"
         lab_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             lab_path, "DuetLab",
             git_repos={
                 "Duet": "https://duet.git",
@@ -41,57 +41,57 @@ class TestContextsReturnsGitRepos:
         )
         Scanner(db, repos_path=builder.get_repos_path()).scan()
 
-        contexts = EntitiesService(db).get_contexts()
-        lab = next(c for c in contexts if c["name"] == "DuetLab")
+        workspaces = EntitiesService(db).get_workspaces()
+        lab = next(c for c in workspaces if c["name"] == "DuetLab")
 
         assert lab["git_repos"] == {
             "Duet": "https://duet.git",
             "Duet-Instructions": "https://duet-instructions.git",
         }
 
-    def test_contexts_includes_drive_child_below_git_repos_context(
+    def test_workspaces_includes_drive_child_below_git_repos_workspace(
         self, tmp_path: Path, db: DatabaseManager, monkeypatch
     ) -> None:
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
 
-        root_path = builder.get_root_context_path(0)
+        root_path = builder.get_root_workspace_path(0)
         onto_path = root_path / "OntoCore"
         onto_path.mkdir()
-        ManifestBuilder.context(
+        ManifestBuilder.workspace(
             onto_path, "OntoCore",
             git_repos={"OntoCore": "https://ontocore.git"},
         )
         structs_path = onto_path / "OntoCoreStructs"
         structs_path.mkdir()
-        ManifestBuilder.context(structs_path, "OntoCoreStructs")
+        ManifestBuilder.workspace(structs_path, "OntoCoreStructs")
 
         Scanner(db, repos_path=builder.get_repos_path()).scan()
 
-        contexts = EntitiesService(db).get_contexts()
-        onto = next(c for c in contexts if c["name"] == "OntoCore")
-        structs = next(c for c in contexts if c["name"] == "OntoCoreStructs")
+        workspaces = EntitiesService(db).get_workspaces()
+        onto = next(c for c in workspaces if c["name"] == "OntoCore")
+        structs = next(c for c in workspaces if c["name"] == "OntoCoreStructs")
 
         assert structs["parent_id"] == onto["id"]
         assert structs["absolute_path"] == str(structs_path)
         assert structs["git_repos"] is None
 
-    def test_contexts_git_repos_null_when_absent(
+    def test_workspaces_git_repos_null_when_absent(
         self, tmp_path: Path, db: DatabaseManager, monkeypatch
     ) -> None:
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Plain")
+        builder.add_root_workspace("Plain")
         builder.build(monkeypatch)
         Scanner(db).scan()
 
-        contexts = EntitiesService(db).get_contexts()
-        plain = next(c for c in contexts if c["name"] == "Plain")
+        workspaces = EntitiesService(db).get_workspaces()
+        plain = next(c for c in workspaces if c["name"] == "Plain")
         assert plain["git_repos"] is None
 
 
 class TestContextsCanonicalOrder:
-    """`/contexts` order contract: roots follow settings.json config order;
+    """`/workspaces` order contract: roots follow settings.json config order;
     non-root siblings are alphabetical by name. Extension is a passive view
     that preserves this order."""
 
@@ -101,34 +101,34 @@ class TestContextsCanonicalOrder:
         # Declare three roots in a deliberately non-alphabetical order.
         # If sort were alphabetical, the order would be Альфа, БАЗА, Гамма.
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("БАЗА", meta=True)
-        builder.add_root_context("Гамма")
-        builder.add_root_context("Альфа")
+        builder.add_root_workspace("БАЗА", meta=True)
+        builder.add_root_workspace("Гамма")
+        builder.add_root_workspace("Альфа")
         builder.build(monkeypatch)
         Scanner(db).scan()
 
-        contexts = EntitiesService(db).get_contexts()
-        roots = [c["name"] for c in contexts if c["parent_id"] is None]
+        workspaces = EntitiesService(db).get_workspaces()
+        roots = [c["name"] for c in workspaces if c["parent_id"] is None]
         assert roots == ["БАЗА", "Гамма", "Альфа"]
 
     def test_non_root_siblings_alphabetical(
         self, tmp_path: Path, db: DatabaseManager, monkeypatch
     ) -> None:
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
 
-        root_path = builder.get_root_context_path(0)
+        root_path = builder.get_root_workspace_path(0)
         for child_name in ["Янтарь", "Альбатрос", "Гроза"]:
             child_path = root_path / child_name
             child_path.mkdir()
-            ManifestBuilder.context(child_path, child_name)
+            ManifestBuilder.workspace(child_path, child_name)
         Scanner(db).scan()
 
-        contexts = EntitiesService(db).get_contexts()
-        root = next(c for c in contexts if c["name"] == "Root")
+        workspaces = EntitiesService(db).get_workspaces()
+        root = next(c for c in workspaces if c["name"] == "Root")
         children = [
-            c["name"] for c in contexts if c["parent_id"] == root["id"]
+            c["name"] for c in workspaces if c["parent_id"] == root["id"]
         ]
         assert children == ["Альбатрос", "Гроза", "Янтарь"]
 
@@ -142,58 +142,59 @@ class TestContextsCanonicalOrder:
         # surface the on-disk order verbatim so the user can see and
         # repair it. This test pins that contract by constructing a
         # deliberately inconsistent state (meta flag on the non-first
-        # context) and asserting the response preserves config order.
+        # workspace) and asserting the response preserves config order.
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Альфа")
-        builder.add_root_context("БАЗА", meta=True)
+        builder.add_root_workspace("Альфа")
+        builder.add_root_workspace("БАЗА", meta=True)
         builder.build(monkeypatch)
         Scanner(db).scan()
 
-        contexts = EntitiesService(db).get_contexts()
-        roots = [c["name"] for c in contexts if c["parent_id"] is None]
+        workspaces = EntitiesService(db).get_workspaces()
+        roots = [c["name"] for c in workspaces if c["parent_id"] is None]
         assert roots == ["Альфа", "БАЗА"]
 
 
-class TestContextsIncludesDescription:
+class TestWorkspacesIncludeDescription:
     def test_explicit_index_description_is_live_and_has_no_legacy_fallback(
         self, tmp_path: Path, db: DatabaseManager, monkeypatch
     ) -> None:
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
-        root_path = builder.get_root_context_path(0)
-        ManifestBuilder.context(root_path, "Root", description="Legacy manifest text")
+        root_path = builder.get_root_workspace_path(0)
+        ManifestBuilder.workspace(root_path, "Root", description="Legacy manifest text")
         readme = root_path / "README.md"
         readme.write_text("# Root\n\nLegacy README text.", encoding="utf-8")
         index = root_path / "INDEX.md"
         index.write_text(
-            "---\ndescription: Explicit business purpose\n---\n# Root\n\nDifferent body text.",
+            "---\nname: Root\ndescription: Explicit workspace purpose\n---\n# Root\n\n"
+            "Different body text.",
             encoding="utf-8",
         )
         Scanner(db).scan()
         service = EntitiesService(db)
-        assert service.get_contexts()[0]["description"] == "Explicit business purpose"
-        assert service.get_entities()[0]["description"] == "Explicit business purpose"
+        assert service.get_workspaces()[0]["description"] == "Explicit workspace purpose"
 
         # No rescan or README is required when a user edits the description.
         readme.unlink()
-        index.write_text("---\ndescription: Updated business purpose\n---\n", encoding="utf-8")
-        assert service.get_contexts()[0]["description"] == "Updated business purpose"
+        index.write_text("---\nname: Root\ndescription: Updated workspace purpose\n---\n",
+                         encoding="utf-8")
+        assert service.get_workspaces()[0]["description"] == "Updated workspace purpose"
 
         # Missing metadata must not revive the legacy manifest or Markdown prose.
         index.write_text("# Root\n\nNot a description field.", encoding="utf-8")
-        assert service.get_contexts()[0]["description"] is None
+        assert service.get_workspaces()[0]["description"] is None
         index.unlink()
-        assert service.get_contexts()[0]["description"] is None
+        assert service.get_workspaces()[0]["description"] is None
 
-    def test_readme_alone_is_not_a_business_description(
+    def test_readme_alone_is_not_a_workspace_description(
         self, tmp_path: Path, db: DatabaseManager, monkeypatch
     ) -> None:
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root")
+        builder.add_root_workspace("Root")
         builder.build(monkeypatch)
-        (builder.get_root_context_path(0) / "README.md").write_text(
-            "# Root\n\nNot business metadata.", encoding="utf-8"
+        (builder.get_root_workspace_path(0) / "README.md").write_text(
+            "# Root\n\nNot workspace metadata.", encoding="utf-8"
         )
         Scanner(db).scan()
-        assert EntitiesService(db).get_contexts()[0]["description"] is None
+        assert EntitiesService(db).get_workspaces()[0]["description"] is None

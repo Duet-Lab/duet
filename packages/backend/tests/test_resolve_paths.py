@@ -1,8 +1,8 @@
 """Tests for alpha-path resolution behind the `resolve_paths` MCP tool.
 
-The resolver works over a context list and a repos dir, so these tests build
-a small tree in tmp_path: repos, a business with a ticket code and tickets in
-every status folder, a business without a code, and a business with another
+The resolver works over a workspace list and a repos dir, so these tests build
+a small tree in tmp_path: repos, a workspace with a ticket code and tickets in
+every status folder, a workspace without a code, and a workspace with another
 code. They pin what the agent gets: the absolute path, the ticket's work type and
 state, the nearest folder for a missing file, and a reason for every failure.
 """
@@ -22,7 +22,7 @@ from mcp_handler import mcp
 from mcp_handler import resolve_paths as resolve_paths_tool
 from services.at_paths import resolve_at_path
 from services.resolve_paths import (
-    ContextRef,
+    WorkspaceRef,
     describe_ticket,
     find_ticket_folders,
     render_markdown,
@@ -30,10 +30,14 @@ from services.resolve_paths import (
 )
 
 
-def _manifest(folder: Path, name: str, **fields) -> None:
+def _manifest(folder: Path, name: str, ticket_code: str | None = None, **fields) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    data = {"version": 4, "name": name, **fields}
+    data = {"version": 4, **fields}
     (folder / "context.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    code = f"ticket-code: {ticket_code}\n" if ticket_code else ""
+    (folder / "INDEX.md").write_text(
+        f"---\nfolder-type: workspace\nname: {json.dumps(name, ensure_ascii=False)}\n{code}---\n",
+        encoding="utf-8")
 
 
 def _dir(path: Path) -> Path:
@@ -73,34 +77,34 @@ def tree(tmp_path: Path) -> dict:
     family = tmp_path / "Drive" / "Семейный ЛикБез"
     _manifest(family, "Семейный ЛикБез")
 
-    contexts = [
-        ContextRef("МетаЛаб", meta),
-        ContextRef("DuetLab", lab),
-        ContextRef("Stardew_Valley", game),
-        ContextRef("Subjectum", sub),
-        ContextRef("Семейный ЛикБез", family),
+    workspaces = [
+        WorkspaceRef("МетаЛаб", meta),
+        WorkspaceRef("DuetLab", lab),
+        WorkspaceRef("Stardew_Valley", game),
+        WorkspaceRef("Subjectum", sub),
+        WorkspaceRef("Семейный ЛикБез", family),
     ]
-    return {"repos": repos, "contexts": contexts, "lab": lab, "game": game, "sub": sub}
+    return {"repos": repos, "workspaces": workspaces, "lab": lab, "game": game, "sub": sub}
 
 
 def _one(tree: dict, path: str):
-    return resolve_paths([path], tree["repos"], tree["contexts"])[0]
+    return resolve_paths([path], tree["repos"], tree["workspaces"])[0]
 
 
-class TestBusinessAndRepoPaths:
-    """`@<repo>.git/...` and `@<business>/...` resolve to existing paths."""
+class TestWorkspaceAndRepoPaths:
+    """`@<repo>.git/...` and `@<workspace>/...` resolve to existing paths."""
 
     def test_repo_path(self, tree: dict) -> None:
         res = _one(tree, "@Duet.git/spec/PRODUCT.md")
         assert res.absolute == (tree["repos"] / "Duet.git/spec/PRODUCT.md").resolve()
         assert res.exists and res.error is None
 
-    def test_business_path(self, tree: dict) -> None:
+    def test_workspace_path(self, tree: dict) -> None:
         res = _one(tree, "@DuetLab/README.md")
         assert res.absolute == (tree["lab"] / "README.md").resolve()
         assert res.exists
 
-    def test_business_root_with_cyrillic_name(self, tree: dict) -> None:
+    def test_workspace_root_with_cyrillic_name(self, tree: dict) -> None:
         res = _one(tree, "@МетаЛаб")
         assert res.absolute == (tree["lab"].parent).resolve()
 
@@ -139,23 +143,23 @@ class TestTickets:
         res = _one(tree, "@DUE009/INDEX.md")
         assert res.absolute == (tree["lab"] / "work/DUE009_AlphaPaths/INDEX.md").resolve()
         assert res.ticket.state == "active" and res.ticket.letter == ""
-        assert describe_ticket(res.ticket) == "Project DUE009, in work. Business: DuetLab."
+        assert describe_ticket(res.ticket) == "Project DUE009, in work. Owner workspace: DuetLab."
 
     def test_ticket_in_archive_month_folder(self, tree: dict) -> None:
         res = _one(tree, "@DUE002")
         assert res.ticket.state == "closed"
         assert res.ticket.archive_month == (2026, 9)
-        assert describe_ticket(res.ticket) == "Project DUE002, closed (archived September 2026). Business: DuetLab."
+        assert describe_ticket(res.ticket) == "Project DUE002, closed (archived September 2026). Owner workspace: DuetLab."
 
     def test_ticket_in_backlog_section(self, tree: dict) -> None:
         res = _one(tree, "@DUE008")
         assert res.absolute.name == "DUE008_Blockers"
-        assert describe_ticket(res.ticket) == "Project DUE008, in backlog. Business: DuetLab."
+        assert describe_ticket(res.ticket) == "Project DUE008, in backlog. Owner workspace: DuetLab."
 
     def test_program_and_routine_work_types(self, tree: dict) -> None:
-        assert describe_ticket(_one(tree, "@DUEX01").ticket) == "Program DUEX01, in work. Business: DuetLab."
+        assert describe_ticket(_one(tree, "@DUEX01").ticket) == "Program DUEX01, in work. Owner workspace: DuetLab."
         assert describe_ticket(_one(tree, "@DUEX02").ticket).startswith("Program DUEX02, closed (archived")
-        assert describe_ticket(_one(tree, "@DUEA01").ticket) == "Routine DUEA01, in work. Business: DuetLab."
+        assert describe_ticket(_one(tree, "@DUEA01").ticket) == "Routine DUEA01, in work. Owner workspace: DuetLab."
 
     def test_missing_file_inside_ticket(self, tree: dict) -> None:
         res = _one(tree, "@DUE009/новое/отчёт.md")
@@ -168,7 +172,7 @@ class TestTickets:
         _manifest(tree["game"], "Stardew_Valley", ticket_code="VAL")
         res = _one(tree, "@VAL001")
         assert res.error is None
-        assert describe_ticket(res.ticket) == "Project VAL001, closed (archived September 2026). Business: Stardew_Valley."
+        assert describe_ticket(res.ticket) == "Project VAL001, closed (archived September 2026). Owner workspace: Stardew_Valley."
 
     def test_ticket_not_found_in_owner(self, tree: dict) -> None:
         res = _one(tree, "@DUE099")
@@ -189,30 +193,36 @@ class TestTickets:
         lines = out.split("\n")
         assert lines[0] == "### @DUE002"
         assert lines[2].startswith("`/") and lines[2].endswith("DUE002_DuetChat`")
-        assert lines[4] == "Project DUE002, closed (archived September 2026). Business: DuetLab."
+        assert lines[4] == "Project DUE002, closed (archived September 2026). Owner workspace: DuetLab."
 
 
 class TestTicketCodes:
-    """A ticket code resolves only through exactly one business."""
+    """A ticket code resolves only through exactly one workspace."""
 
-    def test_unregistered_code_points_to_manifest(self, tree: dict) -> None:
+    def test_unregistered_code_points_to_index(self, tree: dict) -> None:
         res = _one(tree, "@VAL001")
         assert res.error_code == "ticket_code_unregistered"
-        assert "no business has ticket code VAL" in res.error
+        assert "no workspace has ticket code VAL" in res.error
         assert "is in Stardew_Valley" in res.error
-        assert '`"ticket_code": "VAL"`' in res.error
-        assert str(tree["game"] / "context.json") in res.error
+        assert "`ticket-code: VAL` to the frontmatter of" in res.error
+        assert str(tree["game"] / "INDEX.md") in res.error
 
-    def test_unregistered_code_folder_in_business_with_other_code(self, tree: dict) -> None:
+    def test_inherit_is_not_a_code(self, tree: dict) -> None:
+        """A desk's `inherit` never owns ticket folders: the code must be its own."""
+        _manifest(tree["game"], "Stardew_Valley", ticket_code="inherit")
+        res = _one(tree, "@VAL001")
+        assert res.error_code == "ticket_code_unregistered"
+
+    def test_unregistered_code_folder_in_workspace_with_other_code(self, tree: dict) -> None:
         res = _one(tree, "@QQQ001")
         assert res.error_code == "ticket_code_unregistered"
         assert "whose ticket code is SBT" in res.error
-        assert "ticket_code" not in res.error
+        assert "ticket-code" not in res.error
 
     def test_unregistered_code_and_no_folder(self, tree: dict) -> None:
         res = _one(tree, "@ZZZ001")
         assert res.error_code == "ticket_code_unregistered"
-        assert "No business has a ticket folder ZZZ001_*" in res.error
+        assert "No workspace has a ticket folder ZZZ001_*" in res.error
 
     def test_code_declared_twice_is_refused(self, tree: dict) -> None:
         _manifest(tree["sub"], "Subjectum", ticket_code="DUE")
@@ -248,7 +258,7 @@ class TestRefusals:
         assert _one(tree, "@DuetLab/link/x").error_code == "escapes_root"
 
     def test_one_failure_does_not_stop_the_rest(self, tree: dict) -> None:
-        results = resolve_paths(["@nope", "@DuetLab"], tree["repos"], tree["contexts"])
+        results = resolve_paths(["@nope", "@DuetLab"], tree["repos"], tree["workspaces"])
         assert results[0].error and results[1].error is None
         out = render_markdown(results)
         assert out.index("### @nope") < out.index("### @DuetLab")
@@ -270,14 +280,14 @@ class TestSameGrammarAsDeploy:
     )
 
     def test_same_answer_on_every_address(self, tree: dict) -> None:
-        folders = {c.name: str(c.folder) for c in tree["contexts"]}
+        folders = {c.name: str(c.folder) for c in tree["workspaces"]}
         for raw in self.ADDRESSES:
             deploy = resolve_at_path(raw, tree["repos"], folders)
             tool = _one(tree, raw)
             assert deploy == tool.absolute, raw
 
     def test_tickets_are_only_for_the_tool(self, tree: dict) -> None:
-        folders = {c.name: str(c.folder) for c in tree["contexts"]}
+        folders = {c.name: str(c.folder) for c in tree["workspaces"]}
         assert resolve_at_path("@DUE009/INDEX.md", tree["repos"], folders) is None
         assert _one(tree, "@DUE009/INDEX.md").error is None
 
@@ -295,29 +305,29 @@ class TestTool:
         assert list(tools["resolve_paths"].inputSchema["properties"]) == ["paths"]
 
 
-class TestThroughWorkspaceService:
-    """End to end: scanned contexts in the DB feed the resolver."""
+class TestThroughOrientationService:
+    """End to end: scanned workspaces in the DB feed the resolver."""
 
-    def test_scanned_context_and_ticket(
+    def test_scanned_workspace_and_ticket(
         self, tmp_path: Path, db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from scanner import Scanner
-        from services.workspace import WorkspaceService
+        from services.orientation import OrientationService
         from tests.fixtures import DuetDataBuilder, ManifestBuilder
 
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root", folder_name="!Root")
+        builder.add_root_workspace("Root", folder_name="!Root")
         builder.add_repo("Duet")
         builder.build(monkeypatch)
 
-        lab = builder.get_root_context_path(0) / "DuetLab"
-        ManifestBuilder.context(lab, "DuetLab", ticket_code="DUE")
+        lab = builder.get_root_workspace_path(0) / "DuetLab"
+        ManifestBuilder.workspace(lab, "DuetLab", ticket_code="DUE")
         _dir(lab / "archive" / "202609" / "DUE002_DuetChat")
         Scanner(db, repos_path=builder.get_repos_path()).scan()
 
-        results = WorkspaceService(db).resolve_paths(["@Root", "@DUE002/INDEX.md", "@Duet.git"])
+        results = OrientationService(db).resolve_paths(["@Root", "@DUE002/INDEX.md", "@Duet.git"])
 
-        assert results[0].absolute == builder.get_root_context_path(0).resolve()
+        assert results[0].absolute == builder.get_root_workspace_path(0).resolve()
         assert results[1].absolute == (lab / "archive/202609/DUE002_DuetChat/INDEX.md").resolve()
         assert results[1].ticket.state == "closed" and not results[1].exists
         assert results[2].absolute == builder.get_repo_path("Duet").resolve()
@@ -336,7 +346,6 @@ class TestRootBehindSymlink:
         real = _dir(tmp_path / "real")
         lab = real / "DuetLab"
         _manifest(lab, "DuetLab", ticket_code="DUE")
-        (lab / "INDEX.md").write_text("x", encoding="utf-8")
         _dir(lab / "work" / "DUE009_AlphaPaths")
         outside = _dir(tmp_path / "outside")
         (lab / "escape").symlink_to(outside, target_is_directory=True)
@@ -344,15 +353,15 @@ class TestRootBehindSymlink:
 
         link = tmp_path / "link"
         link.symlink_to(real, target_is_directory=True)
-        return {"lab": link / "DuetLab", "contexts": [ContextRef("DuetLab", link / "DuetLab")]}
+        return {"lab": link / "DuetLab", "workspaces": [WorkspaceRef("DuetLab", link / "DuetLab")]}
 
     def _resolve(self, linked: dict, *paths: str):
-        return resolve_paths(list(paths), None, linked["contexts"])
+        return resolve_paths(list(paths), None, linked["workspaces"])
 
-    def test_business_and_file_keep_the_symlink(self, linked: dict) -> None:
+    def test_workspace_and_file_keep_the_symlink(self, linked: dict) -> None:
         lab = linked["lab"]
-        business, index = self._resolve(linked, "@DuetLab", "@DuetLab/INDEX.md")
-        assert business.absolute == lab
+        workspace, index = self._resolve(linked, "@DuetLab", "@DuetLab/INDEX.md")
+        assert workspace.absolute == lab
         assert index.absolute == lab / "INDEX.md" and index.exists
 
     def test_missing_file_and_nearest_keep_the_symlink(self, linked: dict) -> None:
@@ -385,40 +394,40 @@ class TestRootBehindSymlink:
     ) -> None:
         """Scanner, registry and resolver keep the configured symlink end to end."""
         import scanner as scanner_module
-        import services.workspace as workspace_module
+        import services.orientation as workspace_module
         from scanner import Scanner
-        from services.workspace import WorkspaceService
+        from services.orientation import OrientationService
         from tests.fixtures import DuetDataBuilder, ManifestBuilder
 
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root", folder_name="!Root")
+        builder.add_root_workspace("Root", folder_name="!Root")
         builder.build(monkeypatch)
-        real_root = builder.get_root_context_path(0)
+        real_root = builder.get_root_workspace_path(0)
         lab = real_root / "DuetLab"
-        ManifestBuilder.context(lab, "DuetLab", ticket_code="DUE")
+        ManifestBuilder.workspace(lab, "DuetLab", ticket_code="DUE")
         _dir(lab / "work" / "DUE002_DuetChat")
 
         link = tmp_path / "linked"
         link.symlink_to(real_root.parent, target_is_directory=True)
         linked_root = link / real_root.name
         for module in (scanner_module, workspace_module):
-            monkeypatch.setattr(module, "get_root_context_folders", lambda: [str(linked_root)])
+            monkeypatch.setattr(module, "get_root_workspace_folders", lambda: [str(linked_root)])
         Scanner(db, repos_path=builder.get_repos_path()).scan()
 
-        business, ticket = WorkspaceService(db).resolve_paths(["@DuetLab", "@DUE002/INDEX.md"])
+        workspace, ticket = OrientationService(db).resolve_paths(["@DuetLab", "@DUE002/INDEX.md"])
 
-        assert business.absolute == linked_root / "DuetLab"
+        assert workspace.absolute == linked_root / "DuetLab"
         assert ticket.absolute == linked_root / "DuetLab" / "work" / "DUE002_DuetChat" / "INDEX.md"
 
 
 class TestUnavailableRoot:
-    """A registered business folder that is gone refuses its own addresses only."""
+    """A registered workspace folder that is gone refuses its own addresses only."""
 
-    def test_missing_business_folder_does_not_stop_the_call(self, tmp_path: Path) -> None:
+    def test_missing_workspace_folder_does_not_stop_the_call(self, tmp_path: Path) -> None:
         present = _dir(tmp_path / "Present")
-        contexts = [ContextRef("Gone", tmp_path / "Gone"), ContextRef("Present", present)]
+        workspaces = [WorkspaceRef("Gone", tmp_path / "Gone"), WorkspaceRef("Present", present)]
 
-        bare, inside, other = resolve_paths(["@Gone", "@Gone/INDEX.md", "@Present"], None, contexts)
+        bare, inside, other = resolve_paths(["@Gone", "@Gone/INDEX.md", "@Present"], None, workspaces)
 
         assert bare.error_code == "root_unavailable" and bare.absolute is None
         assert inside.error_code == "root_unavailable"

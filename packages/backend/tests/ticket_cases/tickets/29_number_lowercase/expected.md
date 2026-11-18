@@ -1,13 +1,12 @@
 ### DUE026 AiCliResearch
 
-Project, in work. Business: DuetLab (DUE).
+Project, in work. Owner workspace: DuetLab (DUE).
 
 **Folder:** `{root}/DuetLab/work/DUE026_AiCliResearch`
 
 **Index:** `@DUE026/INDEX.md`
 
-* folder-type: work
-* work-type: project
+* folder-type: ticket
+* ticket-type: project
 * opened: 2026-10-01
-* business-area: none
 * parent: none

@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { openInCurrentWindow, openInNewWindow, buildGitCloneArgs, isSafeRepoName, findUnsafeAliases } from '../../vscode/commands/openFolder';
 import { refreshFromBackend } from '../../vscode/commands/refresh';
-import { TreeNode } from '../../core/tree/contextTree';
+import { TreeNode } from '../../core/tree/workspaceTree';
 import * as vscode from 'vscode';
 import { TicketReader, TicketInfo } from '../../core/intents/tickets';
 import { TicketOpener } from '../../vscode/commands/openTicket';
@@ -50,18 +50,18 @@ vi.mock('vscode', () => ({
 }));
 
 /** Workspace files the open commands asked to write; the real manager would write under DuetData. */
-const writtenWorkspaces: Array<{ name: string; aliases: string[]; drivePath: string; settings: unknown }> = [];
+const writtenWorkspaces: Array<{ name: string; aliases: string[]; drivePath: string; ticketsWorkspacePath?: string | null; settings: unknown }> = [];
 
 vi.mock('../../core/workspace', async importOriginal => ({
     ...await importOriginal<typeof import('../../core/workspace')>(),
     WorkspaceManager: class {
         constructor(private readonly workspacesDir: string) {}
-        getContextWithReposWorkspacePath(name: string): string {
+        workspaceFilePath(name: string): string {
             return `${this.workspacesDir}/${name}.code-workspace`;
         }
-        async writeContextWithReposWorkspace(name: string, aliases: string[], drivePath: string, settings?: unknown): Promise<string> {
-            writtenWorkspaces.push({ name, aliases, drivePath, settings });
-            return this.getContextWithReposWorkspacePath(name);
+        async writeWorkspaceFile(name: string, spec: { workspacePath: string; ticketsWorkspacePath?: string | null; aliases: string[] }, settings?: unknown): Promise<string> {
+            writtenWorkspaces.push({ name, aliases: spec.aliases, drivePath: spec.workspacePath, settings, ...(spec.ticketsWorkspacePath ? { ticketsWorkspacePath: spec.ticketsWorkspacePath } : {}) });
+            return this.workspaceFilePath(name);
         }
     }
 }));
@@ -79,7 +79,7 @@ describe('VS Code Commands', () => {
             id: '/path/to/folder',
             label: 'Folder',
             icon: '',
-            type: 'context',
+            type: 'workspace',
             isRoot: true,
             meta: false,
             hasGit: false,
@@ -100,7 +100,7 @@ describe('VS Code Commands', () => {
             );
         });
 
-        it.each([false, true])('DUE019: curator redirects business open, forceNewWindow=%s', async forceNewWindow => {
+        it.each([false, true])('DUE019: curator redirects workspace open, forceNewWindow=%s', async forceNewWindow => {
             const curator = { number: 'DUEA01', folder: 'DUEA01_Curator', shelf: 'work', path: '/path/to/folder/work/DUEA01_Curator' } as TicketInfo;
             vi.spyOn(TicketReader.prototype, 'findRoutine').mockResolvedValue(curator);
             setIntentsRuntime({ tickets: new TicketReader() } as never);
@@ -112,7 +112,7 @@ describe('VS Code Commands', () => {
             expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
         });
 
-        it('DUE019: failed search and unavailable ticket runtime never silently open a business', async () => {
+        it('DUE019: failed search and unavailable ticket runtime never silently open a workspace', async () => {
             const search = vi.spyOn(TicketReader.prototype, 'findRoutine').mockRejectedValue(new Error('INDEX unreadable'));
             await openInCurrentWindow(plainContext());
             expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('Duet: INDEX unreadable');
@@ -149,7 +149,7 @@ describe('VS Code Commands', () => {
                 id: '!МетаЛаб/ДЕЛА/ТехноЛаб', // relative drive_path — no absolute_path from backend
                 label: 'ТехноЛаб',
                 icon: '',
-                type: 'context',
+                type: 'workspace',
                 isRoot: false,
                 meta: false,
                 hasGit: false,
@@ -174,19 +174,19 @@ describe('VS Code Commands', () => {
     });
 
     describe('refreshFromBackend', () => {
-        it('should call apiClient.scan and return contexts', async () => {
-            const mockContexts = [
-                { id: '1', type: 'context', name: 'Biz1', icon: 'B', path: '', absolute_path: '/drive/biz1', parent_id: null, meta: false, git_repos: null }
+        it('should call apiClient.scan and return the workspaces of GET /workspaces', async () => {
+            const mockWorkspaces = [
+                { id: '1', type: 'workspace', name: 'Biz1', icon: 'B', path: '', absolute_path: '/drive/biz1', parent_id: null, meta: false, git_repos: null, ticket_code: 'BIZ' }
             ];
             const apiClient = {
                 scan: vi.fn().mockResolvedValue({ status: 'completed' }),
-                contexts: vi.fn().mockResolvedValue({ contexts: mockContexts }),
+                workspaces: vi.fn().mockResolvedValue({ workspaces: mockWorkspaces }),
             } as any;
             const result = await refreshFromBackend(apiClient);
 
             expect(apiClient.scan).toHaveBeenCalled();
-            expect(apiClient.contexts).toHaveBeenCalled();
-            expect(result).toEqual(mockContexts);
+            expect(apiClient.workspaces).toHaveBeenCalled();
+            expect(result).toEqual(mockWorkspaces);
         });
     });
 
@@ -231,7 +231,7 @@ describe('VS Code Commands', () => {
                 id: '/drive/DuetLab',
                 label: 'DuetLab',
                 icon: '',
-                type: 'context',
+                type: 'workspace',
                 isRoot: true,
                 meta: false,
                 hasGit: true,
@@ -262,7 +262,7 @@ describe('VS Code Commands', () => {
                 id: '/drive/Plain',
                 label: 'Plain',
                 icon: '',
-                type: 'context',
+                type: 'workspace',
                 isRoot: true,
                 meta: false,
                 hasGit: false,
@@ -292,7 +292,7 @@ describe('VS Code Commands', () => {
                 id: '/drive/DuetLab',
                 label: 'DuetLab',
                 icon: '',
-                type: 'context',
+                type: 'workspace',
                 isRoot: true,
                 meta: false,
                 hasGit: true,

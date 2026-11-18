@@ -1,7 +1,7 @@
 import { parseTicketFolderName } from '../pathUtils';
 
 /**
- * An intent is a ticket of a business. Its name is the ticket folder name
+ * An intent is a ticket of a workspace. Its name is the ticket folder name
  * without the number, spaced for reading. One function serves the row in the
  * views, the tab label and the notepad heading, so the three never disagree.
  */
@@ -38,13 +38,13 @@ export function intentIdentity(folder: string): IntentIdentity | null {
     return { number: parsed.number, folder, name: spaceIntentName(parsed.rest) };
 }
 
-/** Stands in a business row where an intent row shows its ticket number. */
-export const BUSINESS_TAG = 'biz';
+/** Stands in a workspace row where an intent row shows its ticket number. */
+export const WORKSPACE_TAG = 'ws';
 
 export interface RowText {
     /** Icon and name: `🧰 Intent Switcher`. */
     label: string;
-    /** The tag — a ticket number or `biz` — which the tree draws smaller, after the name. */
+    /** The tag — a ticket number or `ws` — which the tree draws smaller, after the name. */
     description: string | undefined;
     /** Where the name stands in `label`: start inclusive, end exclusive. */
     name: [number, number];
@@ -67,23 +67,23 @@ export function rowText(icon: string, name: string, tag: string): RowText {
     };
 }
 
-/** Title of the bin view in a window without a business. */
+/** Title of the bin view in a window without a workspace with tickets. */
 export const BIN_TITLE = 'Корзина';
 
-/** Title of the bin view: `Корзина DuetLab` — whose tickets it shows. */
-export function binTitle(businessName: string | null | undefined): string {
-    return businessName ? `${BIN_TITLE} ${businessName}` : BIN_TITLE;
+/** Title of the bin view: `Корзина DuetLab` — the workspace whose tickets it shows. */
+export function binTitle(workspaceName: string | null | undefined): string {
+    return workspaceName ? `${BIN_TITLE} ${workspaceName}` : BIN_TITLE;
 }
 
 /**
  * Emoji of an intent, the same wherever the intent is shown — its row in
  * «Активная Работа» and the tab of its notepad. Three steps: the ticket's own;
- * else the one of its nearest parent ticket that has one; else the one of its
- * business. The first two come together as `ticketIcon`
+ * else the one of its nearest parent ticket that has one; else the one of the
+ * workspace that owns it. The first two come together as `ticketIcon`
  * (`TicketReader.inheritedIcon`). Empty when none of the three has one.
  */
-export function intentIcon(ticketIcon: string, businessIcon: string): string {
-    return ticketIcon || businessIcon;
+export function intentIcon(ticketIcon: string, workspaceIcon: string): string {
+    return ticketIcon || workspaceIcon;
 }
 
 /**

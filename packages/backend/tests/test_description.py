@@ -1,4 +1,4 @@
-"""Tests for description extraction and spec file resolution."""
+"""Tests for the legacy Markdown description extraction."""
 
 import sys
 from pathlib import Path
@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from description import extract_description, find_spec_file
+from description import extract_description
 
 
 class TestExtractDescription:
@@ -143,77 +143,3 @@ class TestExtractDescription:
         md = tmp_path / "test.md"
         md.write_text("# Title\n\nSingle sentence.")
         assert extract_description(md) == "Single sentence."
-
-
-class TestFindSpecFile:
-    """Tests for find_spec_file function."""
-
-    def test_context_with_git_finds_product_md(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "PRODUCT.md").write_text("# Product")
-        assert find_spec_file(tmp_path, "context_with_git") == spec_dir / "PRODUCT.md"
-
-    def test_context_with_git_falls_back_to_component_md(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "COMPONENT.md").write_text("# Component")
-        assert find_spec_file(tmp_path, "context_with_git") == spec_dir / "COMPONENT.md"
-
-    def test_fallback_to_architecture_md(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "ARCHITECTURE.md").write_text("# Arch")
-        assert find_spec_file(tmp_path, "component") == spec_dir / "ARCHITECTURE.md"
-
-    def test_returns_none_when_no_spec(self, tmp_path: Path) -> None:
-        assert find_spec_file(tmp_path, "context_with_git") is None
-
-    def test_returns_none_when_no_spec_dir(self, tmp_path: Path) -> None:
-        assert find_spec_file(tmp_path, "context_with_git") is None
-
-    def test_component_starts_with_component_md(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "COMPONENT.md").write_text("# Comp")
-        (spec_dir / "ARCHITECTURE.md").write_text("# Arch")
-        assert find_spec_file(tmp_path, "component") == spec_dir / "COMPONENT.md"
-
-    def test_context_finds_context_md(self, tmp_path: Path) -> None:
-        """Plain context (no git_url) checks CONTEXT.md first."""
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "CONTEXT.md").write_text("# Ctx")
-        assert find_spec_file(tmp_path, "context") == spec_dir / "CONTEXT.md"
-
-    def test_context_legacy_business_md(self, tmp_path: Path) -> None:
-        """Plain context falls back to legacy BUSINESS.md if CONTEXT.md absent."""
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "BUSINESS.md").write_text("# Biz")
-        assert find_spec_file(tmp_path, "context") == spec_dir / "BUSINESS.md"
-
-    def test_context_legacy_stream_md(self, tmp_path: Path) -> None:
-        """Plain context falls back to legacy STREAM.md when no higher-priority files."""
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "STREAM.md").write_text("# Stream")
-        assert find_spec_file(tmp_path, "context") == spec_dir / "STREAM.md"
-
-    def test_fallback_to_readme_md(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "README.md").write_text("# Readme")
-        assert find_spec_file(tmp_path, "component") == spec_dir / "README.md"
-
-    def test_fallback_to_index_md(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "INDEX.md").write_text("# Index")
-        assert find_spec_file(tmp_path, "component") == spec_dir / "INDEX.md"
-
-    def test_unknown_lookup_falls_back_to_component(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "spec"
-        spec_dir.mkdir()
-        (spec_dir / "COMPONENT.md").write_text("# Comp")
-        assert find_spec_file(tmp_path, "unknown_type") == spec_dir / "COMPONENT.md"

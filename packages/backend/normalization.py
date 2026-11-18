@@ -15,7 +15,7 @@ Usage:
 
     # At system boundaries:
     drive_path = normalize_path(path_from_filesystem)  # Scanner
-    search_path = normalize_path(path_from_http)       # WorkspaceService
+    search_path = normalize_path(path_from_http)       # OrientationService
 """
 
 import unicodedata

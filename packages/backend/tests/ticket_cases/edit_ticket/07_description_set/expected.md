@@ -10,11 +10,11 @@ Updated frontmatter:
 
 ```yaml
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 description: Initial shell commit and scaffolding
 opened: 2026-10-01
-business-area: DuetShell
+default-workspace: "@DuetDev"
 parent: DUEX01
 ---
 ```

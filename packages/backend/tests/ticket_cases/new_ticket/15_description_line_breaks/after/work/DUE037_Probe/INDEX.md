@@ -1,9 +1,8 @@
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 description: "First line second parent: DUEX04"
 opened: 2026-10-08
-business-area: DuetWork
 parent: DUEX02
 ---
 

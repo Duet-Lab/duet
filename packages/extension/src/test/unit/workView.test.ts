@@ -25,13 +25,13 @@ const TICKET = {
 
 interface Opened { disk: MemDisk; fs: ReturnType<typeof asFileSystem>; view: WorkView; actions: WorkActions; tree: FakeTreeView; fired: Array<string | undefined> }
 
-async function open(files: Record<string, string> = TICKET, own: 'intent' | 'business' | null = 'intent', dirs: string[] = []): Promise<Opened> {
+async function open(files: Record<string, string> = TICKET, own: 'intent' | 'workspace' | null = 'intent', dirs: string[] = []): Promise<Opened> {
     const disk = createMemDisk(files, dirs);
     const fs = asFileSystem(disk);
     const runtime = {
         own: own === null ? null : {
             subject: own, key: own === 'intent' ? 'DUE018' : '@Lab', ticketFolder: own === 'intent' ? 'DUE018_WorkView' : '',
-            businessDir: 'Lab', businessPath: B, workspaceFile: '/w.code-workspace'
+            nameFromFile: 'Lab', workspacePath: B, ownerPath: B, workspaceFile: '/w.code-workspace'
         }
     };
     const context = {
@@ -94,8 +94,8 @@ describe('М1.1, М2.1: что показано при запуске', () => {
         expect(tree.options).toMatchObject({ canSelectMany: true, showCollapseAll: false });
     });
 
-    it('М4.2: окно бизнеса — пусто, без текста; окно, которое Duet не открывал, — тоже', async () => {
-        for (const own of ['business', null] as const) {
+    it('М4.2: окно воркспейса — пусто, без текста; окно, которое Duet не открывал, — тоже', async () => {
+        for (const own of ['workspace', null] as const) {
             resetFake();
             const { view, tree } = await open(TICKET, own);
             expect(tree.title).toBe('Рабочая папка');
@@ -117,7 +117,7 @@ describe('М1.1, М2.1: что показано при запуске', () => {
         const disk = createMemDisk(TICKET);
         disk.failing.add(T);
         const view = new WorkView({ workspaceState: { get: () => undefined, update: async () => undefined } } as never,
-            { own: { subject: 'intent', key: 'DUE018', ticketFolder: 'DUE018_WorkView', businessPath: B } } as never,
+            { own: { subject: 'intent', key: 'DUE018', ticketFolder: 'DUE018_WorkView', ownerPath: B } } as never,
             new Paths('/data'), { disk: disk.ops, snapshotFs: disk.fs, fs: asFileSystem(disk) });
         await view.start();
         expect(fake.trees.get('duet.work')?.message).toBe('Папка не прочитана: папка не читается');
@@ -252,7 +252,7 @@ describe('М1.2, М3.6: кнопки шапки и доступность', () =
     });
 
     it('М3.3: без тикета галочка «одна папка» недоступна, а настройки окна меняются', async () => {
-        const { view } = await open(TICKET, 'business');
+        const { view } = await open(TICKET, 'workspace');
         await view.setRule(true, null, undefined);
         expect(view.tree.oneFolder).toBe(false);
         await view.setShowHidden(true);
@@ -470,8 +470,8 @@ describe('T9–T12, М3.2: другой тикет и «обновить»', () 
         expect(fired).toEqual([]);
     });
 
-    it('окно бизнеса: выбор показывает тикет, «обновить» снова даёт пустоту', async () => {
-        const { view, tree } = await open(TICKET, 'business');
+    it('окно воркспейса: выбор показывает тикет, «обновить» снова даёт пустоту', async () => {
+        const { view, tree } = await open(TICKET, 'workspace');
         await view.selectFromBin(ticketNode('DUE017', OTHER));
         expect(names(view)).toEqual(['d|drafts', 'f|INDEX.md']);
         await view.goHome();
@@ -495,12 +495,12 @@ describe('T9–T12, М3.2: другой тикет и «обновить»', () 
         expect(tree.description).toBe('');
     });
 
-    it('DUE019: выбор бизнеса очищает Work, не стирает состояние тикета и освобождает watcher', async () => {
+    it('DUE019: выбор воркспейса очищает Work, не стирает состояние тикета и освобождает watcher', async () => {
         const { view, tree, disk, actions } = await open();
         await actions.pin(el('f', 'b.md'), undefined);
         const saved = disk.files.get(ORDER);
         const watchers = [...fake.watchers];
-        await view.clearForBusiness();
+        await view.clearForWorkspace();
         expect(tree.title).toBe('Рабочая папка');
         expect(tree.description).toBe('');
         expect(tree.message).toBeUndefined();
@@ -511,7 +511,7 @@ describe('T9–T12, М3.2: другой тикет и «обновить»', () 
         expect(tree.title).toBe('Рабочая папка DUE018');
     });
 
-    it('DUE019: выбор бизнеса отменяет запоздалый возврат к тикету окна', async () => {
+    it('DUE019: выбор воркспейса отменяет запоздалый возврат к тикету окна', async () => {
         const { view, tree } = await open();
         let release!: () => void;
         const ownPlace = vi.spyOn(view as never, 'ownPlace' as never).mockImplementation(async () => {
@@ -519,7 +519,7 @@ describe('T9–T12, М3.2: другой тикет и «обновить»', () 
             return { state: 'found', number: 'DUE018', path: T } as never;
         });
         const returning = view.goHome();
-        await view.clearForBusiness();
+        await view.clearForWorkspace();
         release();
         await returning;
         expect(tree.title).toBe('Рабочая папка');
@@ -1354,7 +1354,7 @@ describe('Ревью: операция действует по подтверж�
             return resolveLink(linkPath);
         };
         const view = new WorkView({ workspaceState: { get: () => undefined, update: async () => undefined } } as never,
-            { own: { subject: 'intent', key: 'DUE018', ticketFolder: 'DUE018_WorkView', businessPath: B } } as never,
+            { own: { subject: 'intent', key: 'DUE018', ticketFolder: 'DUE018_WorkView', ownerPath: B } } as never,
             new Paths('/data'), { disk: disk.ops, snapshotFs: disk.fs, fs: asFileSystem(disk) });
         await view.start();
         expect(most).toBe(4);

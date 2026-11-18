@@ -40,8 +40,8 @@ const createApi = (): {
     getDeployStatus: { state: 'up_to_date', version: '0.1.28' },
     getCachedScan: { status: 'ok', entities_count: 0, errors: [] },
     getAgents: [{ id: 'claude-code', name: 'Claude Code', status: 'configured', details: '' }],
-    getMigrationStatus: { critical: null, contextErrors: [], migratedCount: 0 },
-    getRootContextFolders: []
+    getMigrationStatus: { critical: null, workspaceErrors: [], migratedCount: 0 },
+    getRootWorkspaceFolders: []
   }
   const api: Record<string, ReturnType<typeof vi.fn>> = new Proxy(
     {},

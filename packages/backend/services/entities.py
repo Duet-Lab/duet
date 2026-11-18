@@ -1,14 +1,15 @@
 """Entities service.
 
-Provides entity listing and hierarchy scanning.
+Lists the registered workspaces (`GET /workspaces`, `workspace_tree`) and
+runs the hierarchy scan.
 """
 
 import time
 from pathlib import Path
 
-from config import get_repos_path, get_root_context_folders
+from config import get_repos_path, get_root_workspace_folders
 from db import DatabaseManager, Entity
-from description import read_business_description
+from description import read_workspace_description
 from scanner import Scanner, make_scan_result
 from services.manifest import read_manifest, read_reference_repos
 
@@ -23,46 +24,29 @@ class EntitiesService:
     def __init__(self, db: DatabaseManager):
         self.db = db
         self._last_scan_time: float = 0
+        # INDEX.md path → raw frontmatter of every workspace the last
+        # completed scan registered; the watcher compares against it.
+        self.index_frontmatters: dict[str, str] = {}
 
-    def get_entities(
-        self,
-        entity_type: str | None = None,
-        parent_id: int | None = None,
-        root_only: bool = False,
-    ) -> list[dict]:
-        """Get list of entities with filters."""
-        if root_only:
-            entities = self.db.get_entities(parent_id=None)
-        elif parent_id is not None:
-            entities = self.db.get_entities(parent_id=parent_id)
-        else:
-            entities = self.db.get_all_entities()
-
-        if entity_type:
-            entities = [e for e in entities if e.type == entity_type]
-
-        path_lookup = self._build_path_lookup()
-        return [self._entity_to_dict(e, path_lookup) for e in entities]
-
-    def get_contexts(self) -> list[dict]:
-        """Get all context entities (excludes product_repo, reference_repo).
+    def get_workspaces(self) -> list[dict]:
+        """Get all workspace entities (excludes product_repo, reference_repo).
 
         Returns flat list in canonical UI order, assembled here (not at the
         DB layer — `id` is identity, not order):
-        - roots emitted in `root_context_folders` order (settings.json is
+        - roots emitted in `root_workspace_folders` order (settings.json is
           the declarative source — we walk it and pick each matching root);
         - everything else appended alphabetically by `name`.
 
         Clients filter by `parent_id` and preserve the API order.
         """
-        entities = self.db.get_contexts()
+        entities = self.db.get_workspaces()
         path_lookup = self._build_path_lookup()
 
         by_drive_path = {e.drive_path: e for e in entities}
         ordered: list[Entity] = []
         emitted_ids: set[int] = set()
 
-        for folder in get_root_context_folders():
+        for folder in get_root_workspace_folders():
             root = by_drive_path.get(Path(folder).name)
             if root is not None and root.parent_id is None and root.id is not None:
                 ordered.append(root)
@@ -89,19 +73,21 @@ class EntitiesService:
         scanner = Scanner(self.db)
         result = scanner.scan()
         self._last_scan_time = time.time()
+        if result.get("status") == "completed":
+            self.index_frontmatters = dict(scanner.index_frontmatters)
 
         return result
 
     @staticmethod
     def _build_path_lookup() -> dict:
         """Build lookup for resolving relative drive_path to absolute path."""
-        root_folders = get_root_context_folders()
+        root_folders = get_root_workspace_folders()
         bf_lookup = {}
         for folder in root_folders:
             p = Path(folder)
             bf_lookup[p.name] = p
         return {
-            "root_context_folders": bf_lookup,
+            "root_workspace_folders": bf_lookup,
             "repos_path": get_repos_path(),
         }
 
@@ -110,8 +96,8 @@ class EntitiesService:
         """Resolve relative drive_path to absolute filesystem path.
 
         Algorithm:
-        1. Split first segment of drive_path (root context folder name)
-        2. Match against root context folder names → folder / rest
+        1. Split first segment of drive_path (root workspace folder name)
+        2. Match against root workspace folder names → folder / rest
         3. If no match, try repos_path / drive_path (paths under cloned repos)
         4. If neither → None
         """
@@ -122,7 +108,7 @@ class EntitiesService:
         first_segment = parts[0]
         rest = parts[1] if len(parts) > 1 else None
 
-        bf = path_lookup["root_context_folders"].get(first_segment)
+        bf = path_lookup["root_workspace_folders"].get(first_segment)
         if bf:
             if rest:
                 return str(bf / rest)
@@ -136,12 +122,14 @@ class EntitiesService:
 
     @staticmethod
     def _entity_to_dict(entity: Entity, path_lookup: dict | None = None) -> dict:
-        """Convert Entity to dict for API response.
+        """Convert a workspace Entity to a `WorkspaceEntity` dict for the API.
 
-        Context entities additionally surface live business metadata:
+        Besides the registry fields, it surfaces live workspace metadata:
         - `git_repos` — alias→URL map; `null` when manifest has none.
         - `reference_repos` — name→URL map; `null` when manifest has none.
         - `description` — the explicit description in INDEX.md frontmatter.
+        - `ticket_code` — `ticket-code` as the last scan read it: a code,
+          `"inherit"`, or `null`.
         """
         absolute_path = None
         if path_lookup is not None:
@@ -153,16 +141,16 @@ class EntitiesService:
         ref_repos: dict[str, str] | None = None
         description: str | None = None
 
-        if entity.type == "context" and absolute_path:
+        if entity.type == "workspace" and absolute_path:
             manifest = read_manifest(absolute_path)
             if manifest:
                 if manifest.git_repos:
                     git_repos = dict(manifest.git_repos)
                 if manifest.reference_repos:
                     ref_repos = dict(manifest.reference_repos)
-            description = read_business_description(Path(absolute_path))
-        elif entity.type == "context":
-            # Fallback path for contexts whose absolute path didn't resolve —
+            description = read_workspace_description(Path(absolute_path))
+        elif entity.type == "workspace":
+            # Fallback path for workspaces whose absolute path didn't resolve —
             # reference_repos still comes from the raw helper for parity.
             ref_repos = read_reference_repos(absolute_path)
 
@@ -174,9 +162,9 @@ class EntitiesService:
             "path": entity.drive_path,
             "absolute_path": absolute_path,
             "parent_id": str(entity.parent_id) if entity.parent_id else None,
-            "git_url": entity.git_url,
-            "git_repos": git_repos,
             "meta": entity.meta,
-            "reference_repos": ref_repos,
             "description": description,
+            "git_repos": git_repos,
+            "reference_repos": ref_repos,
+            "ticket_code": entity.ticket_code,
         }

@@ -1,10 +1,15 @@
-"""Unit tests for `services.manifest.read_manifest` — strict v4 reader.
+"""Unit tests for `services.manifest.read_manifest` — strict workspace reader.
 
-Backend is the strict reader: any malformed shape (missing required `name`,
-wrong scalar types, bad `git_repos` / `reference_repos` map, bad deploy
-fields) must be reported as `invalid_manifest`, never silently coerced.
+Backend is the strict reader: any malformed shape of `context.json` (wrong
+scalar types, bad `git_repos` / `reference_repos` map, bad deploy fields)
+must be reported as `invalid_manifest`, and a workspace whose `INDEX.md`
+gives no `name` as `missing_workspace_name` — never silently coerced.
 Folder-name fallback in the scanner is intentionally absent — these tests
 are the safety net that catches regressions to silent repair.
+
+`_write` takes the fields as they were once all in `context.json` and puts
+`name`, `icon` and `ticket_code` into the frontmatter of `INDEX.md`, where
+they live now.
 """
 
 from __future__ import annotations
@@ -24,8 +29,23 @@ from services.manifest import (
 )
 
 
+INDEX_FIELDS = {"name": "name", "icon": "icon", "ticket_code": "ticket-code"}
+
+
+def _write_index(folder: Path, fields: dict) -> None:
+    lines = ["---", "folder-type: workspace"]
+    lines += [f"{INDEX_FIELDS[key]}: {json.dumps(value, ensure_ascii=False)}"
+              for key, value in fields.items()]
+    (folder / "INDEX.md").write_text("\n".join(lines + ["---", "# Body", ""]), encoding="utf-8")
+
+
 def _write(folder: Path, payload) -> None:
     folder.mkdir(parents=True, exist_ok=True)
+    fields = {"name": "X"}
+    if isinstance(payload, dict):
+        payload = dict(payload)
+        fields = {key: payload.pop(key) for key in INDEX_FIELDS if key in payload}
+    _write_index(folder, fields)
     (folder / MANIFEST_FILENAME).write_text(
         json.dumps(payload) if not isinstance(payload, str) else payload,
         encoding="utf-8",
@@ -163,33 +183,6 @@ class TestReadManifestInvalidShape:
         assert errors[0]["reason_code"] == "invalid_manifest"
         assert "JSON object" in errors[0]["description"]
 
-    def test_missing_name_rejected(self, tmp_path: Path) -> None:
-        _write(tmp_path, {"version": 4})
-        errors: list[dict] = []
-        assert read_manifest(tmp_path, errors) is None
-        assert errors[0]["reason_code"] == "invalid_manifest"
-        assert "name" in errors[0]["description"]
-
-    def test_empty_name_rejected(self, tmp_path: Path) -> None:
-        _write(tmp_path, {"version": 4, "name": ""})
-        errors: list[dict] = []
-        assert read_manifest(tmp_path, errors) is None
-        assert errors[0]["reason_code"] == "invalid_manifest"
-        assert "name" in errors[0]["description"]
-
-    def test_non_string_name_rejected(self, tmp_path: Path) -> None:
-        _write(tmp_path, {"version": 4, "name": 123})
-        errors: list[dict] = []
-        assert read_manifest(tmp_path, errors) is None
-        assert errors[0]["reason_code"] == "invalid_manifest"
-
-    def test_non_string_icon_rejected(self, tmp_path: Path) -> None:
-        _write(tmp_path, {"version": 4, "name": "X", "icon": 123})
-        errors: list[dict] = []
-        assert read_manifest(tmp_path, errors) is None
-        assert errors[0]["reason_code"] == "invalid_manifest"
-        assert "icon" in errors[0]["description"]
-
     def test_non_bool_meta_rejected(self, tmp_path: Path) -> None:
         _write(tmp_path, {"version": 4, "name": "X", "meta": "true"})
         errors: list[dict] = []
@@ -276,7 +269,7 @@ class TestGitReposValidation:
         assert "reference_repos" in errors[0]["description"]
 
     def test_git_repos_absent_is_fine(self, tmp_path: Path) -> None:
-        """`git_repos` is optional — a context without it is just intermediate."""
+        """`git_repos` is optional — a workspace without it is just intermediate."""
         _write(tmp_path, {"version": 4, "name": "Plain"})
         manifest = read_manifest(tmp_path)
         assert manifest is not None
@@ -346,23 +339,94 @@ class TestDeployFieldsValidation:
         assert errors[0]["reason_code"] == "invalid_manifest"
         assert "system_prompt" in errors[0]["description"]
 
+class TestWorkspaceIndex:
+    """`name`, `icon` and `ticket-code` come from the frontmatter of `INDEX.md`."""
+
+    def test_missing_index_is_reported(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 4})
+        (tmp_path / "INDEX.md").unlink()
+        errors: list[dict] = []
+        assert read_manifest(tmp_path, errors) is None
+        assert [e["reason_code"] for e in errors] == ["missing_workspace_name"]
+        assert errors[0]["path"] == str(tmp_path / "INDEX.md")
+
+    def test_index_without_frontmatter_is_reported(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 4})
+        (tmp_path / "INDEX.md").write_text("# Lab\n", encoding="utf-8")
+        errors: list[dict] = []
+        assert read_manifest(tmp_path, errors) is None
+        assert [e["reason_code"] for e in errors] == ["missing_workspace_name"]
+
+    def test_missing_name_is_reported(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 4})
+        errors: list[dict] = []
+        assert read_manifest(tmp_path, errors) is None
+        assert [e["reason_code"] for e in errors] == ["missing_workspace_name"]
+        assert "name" in errors[0]["description"]
+
+    @pytest.mark.parametrize("name", ["", "   ", 123, True, ["X"]])
+    def test_bad_name_is_rejected(self, tmp_path: Path, name) -> None:
+        _write(tmp_path, {"version": 4, "name": name})
+        errors: list[dict] = []
+        assert read_manifest(tmp_path, errors) is None
+        assert [e["reason_code"] for e in errors] == ["invalid_workspace_index"]
+
+    def test_invalid_yaml_is_rejected(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 4})
+        (tmp_path / "INDEX.md").write_text("---\nname: [unclosed\n---\n", encoding="utf-8")
+        errors: list[dict] = []
+        assert read_manifest(tmp_path, errors) is None
+        assert [e["reason_code"] for e in errors] == ["invalid_workspace_index"]
+
+    def test_body_is_not_read(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 4})
+        (tmp_path / "INDEX.md").write_text(
+            "---\nname: Lab\n---\n# Lab\n\nname: Other\nticket-code: XYZ\n", encoding="utf-8")
+        manifest = read_manifest(tmp_path, [])
+        assert manifest.name == "Lab" and manifest.ticket_code is None
+
+    def test_non_string_icon_drops_the_field(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 4, "name": "X", "icon": 123})
+        errors: list[dict] = []
+        manifest = read_manifest(tmp_path, errors)
+        assert manifest is not None and manifest.icon is None
+        assert [e["reason_code"] for e in errors] == ["invalid_workspace_index"]
+        assert "icon" in errors[0]["description"]
+
+    def test_fields_left_in_context_json_are_not_read(self, tmp_path: Path) -> None:
+        """No transition release: the old fields in `context.json` mean nothing."""
+        _write(tmp_path, {"version": 4, "name": "New"})
+        (tmp_path / MANIFEST_FILENAME).write_text(json.dumps(
+            {"version": 4, "name": "Old", "icon": "🦖", "ticket_code": "OLD"}), encoding="utf-8")
+        manifest = read_manifest(tmp_path, [])
+        assert (manifest.name, manifest.icon, manifest.ticket_code) == ("New", None, None)
+
+
 class TestTicketCode:
-    """`ticket_code` is field-level: a bad value drops the field, not the manifest."""
+    """`ticket-code` is field-level: a bad value drops the field, not the workspace."""
 
     def test_valid_code(self, tmp_path: Path) -> None:
         _write(tmp_path, {"version": 4, "name": "X", "ticket_code": "DUE"})
         manifest = read_manifest(tmp_path, [])
         assert manifest is not None
         assert manifest.ticket_code == "DUE"
+        assert manifest.own_ticket_code == "DUE" and not manifest.inherits_tickets
+
+    def test_inherit(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 4, "name": "X", "ticket_code": "inherit"})
+        manifest = read_manifest(tmp_path, [])
+        assert manifest.ticket_code == "inherit"
+        assert manifest.own_ticket_code is None and manifest.inherits_tickets
 
     def test_absent_is_none(self, tmp_path: Path) -> None:
         _write(tmp_path, {"version": 4, "name": "X"})
         manifest = read_manifest(tmp_path, [])
         assert manifest is not None
         assert manifest.ticket_code is None
+        assert manifest.own_ticket_code is None and not manifest.inherits_tickets
 
     def test_invalid_code_drops_field_keeps_manifest(self, tmp_path: Path) -> None:
-        for bad in ("due", "DU", "DUEX", "ДУЕ", 7, ""):
+        for bad in ("due", "DU", "DUEX", "ДУЕ", 7, "", "Inherit", "INHERIT"):
             _write(tmp_path, {"version": 4, "name": "X", "ticket_code": bad})
             errors: list[dict] = []
             manifest = read_manifest(tmp_path, errors)
@@ -402,7 +466,7 @@ class TestReadGitRepos:
 @pytest.mark.parametrize("field", ["instructions", "memory"])
 def test_retired_fields_are_unrecognized(tmp_path, field):
     """Retired keys follow the existing unknown-key policy, with no consumer."""
-    _write(tmp_path, {"version": 4, "name": "Business", field: {"invalid": True}})
+    _write(tmp_path, {"version": 4, "name": "Workspace", field: {"invalid": True}})
     errors = []
     manifest = read_manifest(tmp_path, errors)
     assert manifest is not None

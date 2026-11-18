@@ -1,9 +1,9 @@
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 description: Claude Code button in editor title
 opened: 2026-10-01
-business-area: DuetShell
+default-workspace: "@DuetDev"
 parent: DUEX01
 ---
 

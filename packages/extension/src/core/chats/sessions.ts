@@ -5,7 +5,7 @@ export type ChatProvider = 'claude' | 'codex';
 export interface ChatScope {
     directories: string[];
     ticket: string | null;
-    business: string;
+    workspace: string;
     ticketCodes: string[];
     codesComplete: boolean;
 }
@@ -52,7 +52,7 @@ export function classifyPrompt(prompt: string, scope: ChatScope): 'match' | 'oth
 }
 export function initialChatPrompt(ticket: string | null): string { return ticket ?? 'Новый Чат'; }
 export function nextChatName(scope: ChatScope, provider: ChatProvider, sessions: ChatSession[]): string {
-    return `${scope.ticket ?? scope.business} (${sessions.filter(session => session.provider === provider).length + 1})`;
+    return `${scope.ticket ?? scope.workspace} (${sessions.filter(session => session.provider === provider).length + 1})`;
 }
 export function nativeCodexTitle(name: string): string { const title = name.trim(); return title.length > 30 ? title.substring(0, 30) + '…' : title; }
 
@@ -193,7 +193,7 @@ export class SessionCatalog {
                         continue;
                     }
                     const match = classifyPrompt(session.firstPrompt, scope);
-                    if (match === 'unknown') { warnings.add('Реестр коротких кодов бизнесов неполон; часть чатов не удалось классифицировать.'); }
+                    if (match === 'unknown') { warnings.add('Реестр кодов тикетов воркспейсов неполон; часть чатов не удалось классифицировать.'); }
                     if (match !== 'match') { continue; }
                     results.push({ ...session, title: summary?.name?.trim() || session.title, createdAt: summary?.createdAt ?? session.createdAt });
                 } catch { warnings.add('Не удалось прочитать некоторые файлы истории чатов.'); }

@@ -1,6 +1,6 @@
 ### DUEX02 WorkDoctrine
 
-Program, in work. Business: DuetLab (DUE).
+Program, in work. Owner workspace: DuetLab (DUE).
 
 **Folder:** `{root}/DuetLab/work/DUEX02_WorkDoctrine`
 

@@ -8,12 +8,12 @@ Six sidebar views, top to bottom, each with its own visibility gate:
 
 | View | ID | Purpose | Provider | Data source |
 |------|-----|---------|----------|-------------|
-| Активная Работа | `duet.intents` | The windows Duet opened in this program, in one list: business windows and the active intents of every business — tickets that have a window open. One click switches to the window | `IntentsProvider.ts` | window markers in `DuetData/intents/<program>/` — no Backend |
-| Корзина | `duet.bin` | All tickets of the current business from `work/` and `backlog/`; opens an intent, moves a ticket between the two, keeps their order. Never switches windows | `BinProvider.ts` | ticket folders of the business on disk + window markers |
-| Рабочая папка | `duet.work` | The files of one ticket, as Explorer shows the folder of a project: the ticket of the window, or another ticket of any business picked in Корзина. Rows by the alphabet with pinned ones first, what is expanded remembered per ticket, files hidden as Explorer hides them | `work/WorkView.ts` | the ticket folder on disk + the files of the view — no Backend |
+| Активная Работа | `duet.intents` | The windows Duet opened in this program, in one list: workspace windows and the active intents of every workspace — tickets that have a window open. One click switches to the window | `IntentsProvider.ts` | window markers in `DuetData/intents/<program>/` — no Backend |
+| Корзина | `duet.bin` | All tickets of one workspace from `work/` and `backlog/` — the owner in a ticket window, the tickets workspace of the first folder in any other; opens an intent, moves a ticket between the two, keeps their order. Never switches windows | `BinProvider.ts` | ticket folders of that workspace on disk + window markers |
+| Рабочая папка | `duet.work` | The files of one ticket, as Explorer shows the folder of a project: the ticket of the window, or another ticket of any workspace picked in Корзина. Rows by the alphabet with pinned ones first, what is expanded remembered per ticket, files hidden as Explorer hides them | `work/WorkView.ts` | the ticket folder on disk + the files of the view — no Backend |
 | DUET (status) | `duet.status` | Shown when backend not ready — welcome message or spinner | Stub `TreeDataProvider` (empty array) | — |
-| КОНТЕКСТ | `duet.context` | **Deprecated, hidden by default** (`"visibility": "hidden"`; shown again from the «…» menu of the panel). Show where the window stands: the venture, the current business, the businesses directly under it | `ContextProvider.ts` | `GET /contexts` (`ContextEntity[]`, the list «Все Бизнесы» already holds) |
-| Все Бизнесы | `duet.contexts` | Full forest of root contexts and descendants for navigation | `ContextTreeProvider.ts` | `GET /contexts` (`ContextEntity[]`) |
+| ВОРКСПЕЙС | `duet.context` | **Deprecated, hidden by default** (`"visibility": "hidden"`; shown again from the «…» menu of the panel). Show where the window stands: the root workspace, the workspace of the window (its first folder), the workspaces directly under it | `WorkspacePanelProvider.ts` | `GET /workspaces` (`WorkspaceEntity[]`, the list «Все воркспейсы» already holds) |
+| Все воркспейсы | `duet.contexts` | Full forest of root workspaces and descendants for navigation | `WorkspaceTreeProvider.ts` | `GET /workspaces` (`WorkspaceEntity[]`) |
 
 ### Visibility
 
@@ -21,7 +21,7 @@ Six sidebar views, top to bottom, each with its own visibility gate:
 |------|-----------------------------------|
 | Активная Работа, Рабочая папка | `duet.hasPointer` — as soon as the DuetData path is known, Backend or not |
 | DUET (status) | `!duet.ready` |
-| Корзина, КОНТЕКСТ, Все Бизнесы | `duet.hasPointer && duet.ready` |
+| Корзина, ВОРКСПЕЙС, Все воркспейсы | `duet.hasPointer && duet.ready` |
 
 Context keys:
 
@@ -39,13 +39,13 @@ Context keys:
 |------|------|---------|
 | DUET (status) | `duet.initializing` | `$(sync~spin) Подключение к backend…` |
 | DUET (status) | default | "Установите и запустите Duet Host" + reload button |
-| КОНТЕКСТ | default (no folder open) | "Нет открытой папки" + open folder button |
+| ВОРКСПЕЙС | default (no folder open) | "Нет открытой папки" + open folder button |
 
 «Активная Работа», Корзина and «Рабочая папка» have no welcome content: an empty one is empty, without text.
 
 ## Активная Работа — active intents
 
-An *intent* is a ticket of a business; it is *active* while a window of this program is open on it. Closing the window pauses the intent; nothing is written into the ticket. The view also lists the windows of businesses, so it is the one place to switch between everything Duet opened. How the windows find each other: [COMPONENT.md → Intents](COMPONENT.md#intents).
+An *intent* is a ticket of a workspace; it is *active* while a window of this program is open on it. Closing the window pauses the intent; nothing is written into the ticket. The view also lists the windows of workspaces, so it is the one place to switch between everything Duet opened. How the windows find each other: [COMPONENT.md → Intents](COMPONENT.md#intents).
 
 ### Row
 
@@ -53,17 +53,17 @@ Both intent views build a row the same way (`core/intents/naming.ts:rowText`, `v
 
 ```
 АКТИВНАЯ РАБОТА
-🚀  1: DuetLab  biz
+🚀  1: DuetLab  ws
 🧰  2: Intent Switcher  DUE017 🔴
 🚀  3: Core Protocols  DUE008
 ```
 
 | Part | Where | Rule |
 |------|-------|------|
-| Icon | the row's icon place, at the left edge | The emoji drawn as a small picture. In «Активная Работа», by three steps: the ticket's own emoji — `icon` in the frontmatter of its `INDEX.md`; else the emoji of its parent ticket, the nearest one up the `parent` chain that has an icon; else the emoji of its business from `context.json`. For a business row, the emoji of the business. In Корзина: the ticket's own emoji or nothing — no inheritance there. A row without an emoji gets an empty picture, so all names start in one column |
-| Name | label | The intent name, or the business name |
-| Number | in front of the name, «Активная Работа» only: `2: Intent Switcher` | The first nine rows, counted from 1 in shown order — windows of businesses and of intents alike, the way the editor numbers its tabs. It is the digit of the shortcut that switches to the row: Cmd+1 … Cmd+9. The number is the place of the row, not a property of the window: after a drag, or when a window opens or closes, the rows take new numbers, in every window. Rows past the ninth carry none. In the row of the current window the backdrop lies under the number too |
-| Tag | description — the tree draws it smaller, after the name | The ticket number; `biz` for a business row. A ticket number in front, of uneven width, would push the names out of line and leave the icon no place |
+| Icon | the row's icon place, at the left edge | The emoji drawn as a small picture. In «Активная Работа», by three steps: the ticket's own emoji — `icon` in the frontmatter of its `INDEX.md`; else the emoji of its parent ticket, the nearest one up the `parent` chain that has an icon; else the emoji of the workspace that owns it, from its `INDEX.md`. For a workspace row, the emoji of the workspace. In Корзина: the ticket's own emoji or nothing — no inheritance there. A row without an emoji gets an empty picture, so all names start in one column |
+| Name | label | The intent name, or the workspace name |
+| Number | in front of the name, «Активная Работа» only: `2: Intent Switcher` | The first nine rows, counted from 1 in shown order — windows of workspaces and of intents alike, the way the editor numbers its tabs. It is the digit of the shortcut that switches to the row: Cmd+1 … Cmd+9. The number is the place of the row, not a property of the window: after a drag, or when a window opens or closes, the rows take new numbers, in every window. Rows past the ninth carry none. In the row of the current window the backdrop lies under the number too |
+| Tag | description — the tree draws it smaller, after the name | The ticket number; `ws` for a workspace row. A ticket number in front, of uneven width, would push the names out of line and leave the icon no place |
 | Colour | the whole text of the row | The colour of the row's window, the one in force now — only rows that have a window open. A row whose window has no colour, or one outside the palette, keeps the colour of the theme. In dark themes a lighter shade of the same colour is used: the palette is dark, chosen to carry white text |
 | «🔴» | end of the row, «Активная Работа» only | Stands at the row of the window you are in |
 
@@ -84,33 +84,33 @@ The rules that follow from it. Font colour: every row of «Активная Ра
 | Behavior | Why it matters |
 |----------|----------------|
 | At the very top of the Duet side bar; the title holds the name «Активная Работа» and two buttons — «новый тикет» and refresh — nothing else | The switcher is the first thing in the bar |
-| «Новый тикет» (`+`, shown once Backend has answered) asks one thing — the name, in an input box — then makes the next ticket of the window's business in `work/` and opens its window, where the notepad is waiting. The number is never asked for: it is the next project number of the business. The typed name becomes the folder name after the number in strict PascalCase — `ui research` and `UI research` both give `DUE023_UiResearch`; Cyrillic stays Cyrillic. Enter on an empty box makes a ticket with the bare number; Escape makes nothing. Parent, area, a move, a rename are not asked — an agent does them later | Adding a ticket is starting active work on it, so the button is here and not in Корзина. One question keeps it one gesture; one strict rule gives the same name however carelessly it was typed |
-| Flat list from the markers of this program's windows: business windows and the active intents of all businesses, in the order set by dragging. A new window, of a business or of an intent, always takes the last place, and the place is remembered; dragging changes it — as tabs in a browser. A window closed and opened again comes back to the place it had | One list to switch between everything that is open. Decided by the user: a business window is a tab like any other — the view shows open windows |
-| A business window is listed whether it was opened by its workspace file or as a plain folder; it is not mentioned in Корзина — it is opened from «Все Бизнесы» | The bin is the work of a business, not the business |
+| «Новый тикет» (`+`, shown once Backend has answered) asks one thing — the name, in an input box — then makes the next ticket in the home of Корзина — the tickets workspace of the first folder, the owner in a ticket window — in `work/` and opens its window, where the notepad is waiting. The button sends the server only the name and the window's workspace; the server takes the code of the tickets workspace and, when the first folder is a desk of that workspace, writes `default-workspace` with the desk's name, so the ticket opens there. The number is never asked for: it is the next project number of that workspace. The typed name becomes the folder name after the number in strict PascalCase — `ui research` and `UI research` both give `DUE023_UiResearch`; Cyrillic stays Cyrillic. Enter on an empty box makes a ticket with the bare number; Escape makes nothing. Parent, a move, a rename are not asked — an agent does them later | Adding a ticket is starting active work on it, so the button is here and not in Корзина. One question keeps it one gesture; one strict rule gives the same name however carelessly it was typed |
+| Flat list from the markers of this program's windows: workspace windows and the active intents of all workspaces, in the order set by dragging. A new window, of a workspace or of an intent, always takes the last place, and the place is remembered; dragging changes it — as tabs in a browser. A window closed and opened again comes back to the place it had | One list to switch between everything that is open. Decided by the user: a workspace window is a tab like any other — the view shows open windows |
+| A workspace window is listed whether it was opened by its workspace file or as a plain folder; it is not mentioned in Корзина — it is opened from «Все воркспейсы» | The bin is the work of a workspace, not the workspace |
 | One click switches to the window of the row. Only this view switches | Switching is the purpose of the view |
-| Cmd+1 … Cmd+9 switch to the row that shows this number now — a business window or an intent; the same switch as the click, from wherever the focus is: an editor, the terminal, a web panel. A digit no row carries, and the digit of the current window, do nothing. Declared by the extension (macOS), active wherever Duet is set up (`duet.hasPointer`); they take these keys from the editor's «focus editor group N» | Going to an intent without the mouse and without looking for its row. The number in the row and the key are one number, counted anew from the shown rows each time (`intents/active.ts:numberedRows`), so they cannot disagree |
+| Cmd+1 … Cmd+9 switch to the row that shows this number now — a workspace window or an intent; the same switch as the click, from wherever the focus is: an editor, the terminal, a web panel. A digit no row carries, and the digit of the current window, do nothing. Declared by the extension (macOS), active wherever Duet is set up (`duet.hasPointer`); they take these keys from the editor's «focus editor group N» | Going to an intent without the mouse and without looking for its row. The number in the row and the key are one number, counted anew from the shown rows each time (`intents/active.ts:numberedRows`), so they cannot disagree |
 | The name in the row of the current window stands on a backdrop — the light version of the window colour — and the row ends with «🔴»; the row keeps its place. The backdrop covers the whole name and nothing else: the tag after the name cannot have one. No other row of this view has a backdrop | The user sees where they are without the list jumping. The backdrop is the highlight of a search match, whose colour is one for the whole window — so it can be this window's own colour |
 | The saturated selection of a row — the fill of the selected row while the list has the focus — and the outline of the focused row take the colour of the window, in every list of that window. The pale selection of a list without focus stays the theme's | The window colour is set in the workspace file, so it cannot be limited to one view |
 | After a switch the selection in the window left behind returns to that window's own row — only while the view is visible | The clicked row stays selected and would outshine the highlighted one |
-| Order of rows is set by dragging, a business window like an intent: a row dragged up lands before the target, a row dragged down — after it, a drop past the rows — at the end | The tree reports only the row a drop landed on, not the place between rows |
+| Order of rows is set by dragging, a workspace window like an intent: a row dragged up lands before the target, a row dragged down — after it, a drop past the rows — at the end | The tree reports only the row a drop landed on, not the place between rows |
 | The order is remembered, the same in every window of the program, and changes in the others at once; an intent it does not hold stands after the listed ones, by number | One order per program, kept in `intents/<program>/active.json` |
 | Refresh re-reads the window markers | A manual way out if a marker went stale |
 | Works without Backend | An intent window marks itself and reads markers from DuetData alone |
 | Only rows of this view can be dropped here | Each view accepts only the drag data of its own tree |
 
-## Корзина — work of the current business
+## Корзина — the tickets of the window's workspace
 
-A separate collapsible view under «Активная Работа». At startup it shows the window's business (found as in КОНТЕКСТ); selecting a business in «Все Бизнесы» previews that business's tickets without changing the workspace and empties «Рабочая папка» until a ticket is selected. The title names the shown business — «Корзина DuetLab» (`intents/naming.ts:binTitle`) — and the muted description «другой бизнес» appears when it differs from the window's business. Preview is not kept between restarts; a repeated click on the selected business previews it again after a return. With no window business, the initial bin is empty; another business may still be previewed.
+A separate collapsible view under «Активная Работа». At startup it shows its home (`core/workspaces.ts:binHome`): in a ticket window, the workspace that owns the ticket, as its workspace file names it; in any other window, the tickets workspace of the first folder when that folder is the folder of a registered workspace — the window of DuetDev (`ticket-code: inherit`) shows the tickets of DuetLab. A first folder that is not a workspace folder gives no home: the bin is empty under the bare title «Корзина». Selecting a workspace in «Все воркспейсы» previews its tickets without changing the window and empties «Рабочая папка» until a ticket is selected. The title names the shown workspace — «Корзина DuetLab» (`intents/naming.ts:binTitle`) — and the muted description «другой воркспейс» appears when it differs from the home. Preview is not kept between restarts; a repeated click on the selected workspace previews it again after a return. A first folder without `ticket-code` has no tickets, and the initial bin is empty; a first folder with `inherit` and no ancestor with a code of its own shows that message in the bin instead of rows. Another workspace may still be previewed.
 
-Both refresh buttons, in Корзина and «Рабочая папка», restore the same binding: Корзина shows the window's business; Work is empty in a business window and shows the window's own ticket in a ticket window. The selection left in «Все Бизнесы» does not undo this return. Files, editor tabs, pins and remembered expansion are not deleted or reset. The rows follow the shown business's folder through file events, including a folder outside the workspace; changing the preview replaces its watchers. A hidden bin stays hidden and does not read merely because a business is selected.
+Both refresh buttons, in Корзина and «Рабочая папка», restore the same binding: Корзина shows its home; Work is empty in a workspace window and shows the window's own ticket in a ticket window. The selection left in «Все воркспейсы» does not undo this return. Files, editor tabs, pins and remembered expansion are not deleted or reset. The rows follow the shown workspace's folder through file events, including a folder outside the workspace; changing the preview replaces its watchers. A hidden bin stays hidden and does not read merely because a workspace is selected.
 
-All existing ticket actions remain available; opening, moving, copying and reordering act on the shown ticket's business. «Новый тикет» in «Активная Работа» still creates in the window's business. Neither a late read nor a drag begun in an earlier preview can replace or modify the new preview.
+All existing ticket actions remain available; opening, moving, copying and reordering act on the shown ticket's workspace. «Новый тикет» in «Активная Работа» still creates in the home of the bin. Neither a late read nor a drag begun in an earlier preview can replace or modify the new preview.
 
 The bin is for managing the backlog and the order of work. It never switches windows: that is the job of «Активная Работа» alone, and every feature of the bin is measured by this.
 
 ### Tree shape
 
-Built by `core/intents/binTree.ts:buildBinTree`. A *container* is a routine or a program. A number with a letter types the ticket (`DUEA01` a routine, `DUEX01` a program), as on the Backend; `work-type` in `INDEX.md` decides only for a number without one.
+Built by `core/intents/binTree.ts:buildBinTree`. A *container* is a routine or a program. A number with a letter types the ticket (`DUEA01` a routine, `DUEX01` a program), as on the Backend; `ticket-type` in `INDEX.md` decides only for a number without one.
 
 ```
 КОРЗИНА
@@ -133,7 +133,7 @@ Built by `core/intents/binTree.ts:buildBinTree`. A *container* is a routine or a
 | Root order | containers, «Unsorted», root «Backlog». Containers stand in the remembered order, routines and programs mixed as the user put them; those the order does not hold come after — routines, then programs, each by number |
 | Under a container | its tickets from `work/`, then a «Backlog» node with its tickets from `backlog/` |
 | Container of a ticket | the nearest routine or program up the `parent` chain of `INDEX.md`; an empty value and `null` mean «no parent» |
-| «Unsorted» | tickets whose parent is not in `work/` or `backlog/` of this business, or whose chain has no container, or whose `INDEX.md` cannot be read; the same shape as a container group |
+| «Unsorted» | tickets whose parent is not in `work/` or `backlog/` of this workspace, or whose chain has no container, or whose `INDEX.md` cannot be read; the same shape as a container group |
 | Containers stand flat | a container's own `parent` is ignored |
 | Where a container group stands | in the root while the container lies in `work/` or at least one of its tickets does — a program does not hide in the backlog while its ticket is in work; otherwise the whole group, in the same shape, goes under the root «Backlog» |
 | A container from `work/` | always in the root, even when empty |
@@ -146,14 +146,14 @@ Built by `core/intents/binTree.ts:buildBinTree`. A *container* is a routine or a
 | Behavior | Why it matters |
 |----------|----------------|
 | Collapsed by default (`"visibility": "collapsed"`) | It should take the least room. The default applies where VS Code has no saved state for the view; after that the view stays as the user left it — an extension cannot collapse a view |
-| Each time the view becomes visible: containers and «Unsorted» expanded, every «Backlog» collapsed | A known starting shape. VS Code has no «collapse this node»; the shape is restored by giving the rows new ids, on becoming visible or changing the shown business — never on a data refresh, or a «Backlog» opened to pull a ticket out would shut in mid-gesture |
+| Each time the view becomes visible: containers and «Unsorted» expanded, every «Backlog» collapsed | A known starting shape. VS Code has no «collapse this node»; the shape is restored by giving the rows new ids, on becoming visible or changing the shown workspace — never on a data refresh, or a «Backlog» opened to pull a ticket out would shut in mid-gesture |
 | Becoming visible is all the extension learns: it cannot tell expanding the view from coming back to the Duet side bar | So the shape is restored on both |
-| A ticket with an open window stays in its place and its text takes the colour of that window; there is no other mark | The bin is the full list of the business's work; being open is told by the colour, the same colour the row has in «Активная Работа» |
-| The name of the ticket the current window is opened on stands on a backdrop — the same one as in its row of «Активная Работа»; without «🔴». In a business window no row has it | The colour tells which tickets are open, the backdrop tells which of them is this window. One sign for the current window wherever its row is shown (`rowLook.ts:rowLabel`) |
-| A click on any row only selects it; nodes are toggled by the arrow, as in «Все Бизнесы» | A click is the start of managing a row — selecting, dragging; a jump to another window would break it. Opening is a deliberate act with a button |
+| A ticket with an open window stays in its place and its text takes the colour of that window; there is no other mark | The bin is the full list of the workspace's work; being open is told by the colour, the same colour the row has in «Активная Работа» |
+| The name of the ticket the current window is opened on stands on a backdrop — the same one as in its row of «Активная Работа»; without «🔴». In a workspace window no row has it | The colour tells which tickets are open, the backdrop tells which of them is this window. One sign for the current window wherever its row is shown (`rowLook.ts:rowLabel`) |
+| A click on any row only selects it; nodes are toggled by the arrow, as in «Все воркспейсы» | A click is the start of managing a row — selecting, dragging; a jump to another window would break it. Opening is a deliberate act with a button |
 | A click on a ticket row — also a click on the row already selected, Enter and the space bar — shows that ticket in «Рабочая папка»; so do the keys that move the focus: the arrows, Home, End, PageUp, PageDown, on macOS Ctrl+N and Ctrl+P. Rows of groups, a right click, a drag and a vanished selection show nothing | The row carries the command `duet.bin.select`; the keys are bound to «move the focus, then run that command for the focused row» (`runCommands`). The selection event is not the signal: it is silent on a second click and comes empty every time the bin is shown |
 | The context menu of a ticket row has «Копировать @-путь» — the short ticket reference, `` `@DUE018` ``; rows of groups have no menu | The same reference Copy @-Path gives for the ticket folder |
-| A ticket without an open window shows two buttons on hover — «open in the current window», «open in a new window» — the same as a business in «Все Бизнесы» | One habit for both |
+| A ticket without an open window shows two buttons on hover — «open in the current window», «open in a new window» — the same as a workspace in «Все воркспейсы» | One habit for both |
 | Opening a ticket from the backlog first moves its folder to `work/` | An open intent is work in progress |
 | A ticket with a branch opens with its worktrees beside the main clones: `Duet (DUE054_TicketBranches)` right after `Duet.git`. An open window adds a worktree when the server makes one and drops it when the ticket is closed or shelved; when the server can't be asked, one line says the worktrees weren't added or updated. Rules: [COMPONENT.md → Worktrees of a ticket window](COMPONENT.md#worktrees-of-a-ticket-window) | The person works on the branch in the same window, in the explorer and in the git panel |
 | A ticket from `work/` without an open window has a third button — «to the backlog». A ticket with an open window has no buttons | An empty «Backlog» is not shown, so a drop target may be missing |
@@ -185,11 +185,11 @@ What the view must do is set by the accepted model of behaviour of ticket DUE018
 
 | Behavior | Why it matters |
 |----------|----------------|
-| At the start of a window: the ticket the window is opened on. A business window and a window Duet did not open start empty — a bare title «Рабочая папка», no text. The folder is never guessed from the editor | The view is «the files of the window's ticket, always in place» |
+| At the start of a window: the ticket the window is opened on. A workspace window and a window Duet did not open start empty — a bare title «Рабочая папка», no text. The folder is never guessed from the editor | The view is «the files of the window's ticket, always in place» |
 | A ticket row of Корзина shows that ticket (see the bin's contracts); the title then reads «Рабочая папка DUE017» with the muted note «другой тикет». It is shown in full: rows are reordered, files acted on, all of it kept | Looking into another ticket is a full view, only a temporary one |
 | A click on the ticket already shown does not start its view again | A double click runs the row's command twice |
-| Either refresh button restores both views to the window binding: Корзина to its business, Work to its own ticket or empty in a business window. The return does not reset pins, expansion or settings | The views stay linked |
-| A ticket of any business selected in Корзина is shown with all existing file actions. «другой тикет» means it is not the window’s own ticket | Preview changes the shown folder, not the identity of the window |
+| Either refresh button restores both views to the window binding: Корзина to its home, Work to its own ticket or empty in a workspace window. The return does not reset pins, expansion or settings | The views stay linked |
+| A ticket of any workspace selected in Корзина is shown with all existing file actions. «другой тикет» means it is not the window’s own ticket | Preview changes the shown folder, not the identity of the window |
 | The title changes the moment a ticket is chosen; until its folder is read the body shows only «Загрузка…», never the rows of the ticket before. A reading that ends after another ticket was chosen is dropped | An old tree must not pass for the new one |
 | The shown folder moved between `work/`, `backlog/` and the archive: the view follows it by the ticket number, with the same order and expansion. Gone altogether: for the window's ticket — an empty body with the reason; for another ticket — one line and a single return to the window's ticket. Several folders carry the number: no rows, the number and the reason in the header; the row of Корзина names the folder to show | The state of a ticket is kept by its number, so a move loses nothing; an ambiguity is never resolved by a guess |
 | The same ticket read again keeps its rows on the screen while the disk answers. When that reading fails, the rows stay under the line «Данные не обновлены: …» and nothing that changes files is available until a reading succeeds. A folder inside that cannot be read shows one row with the reason instead of content | An error is told as an error, never shown as an empty folder |
@@ -224,7 +224,7 @@ Decided by Andrei, 2026-10-06, in place of the free arrangement of rows the view
 | Only pinned rows have an order of their own: a pinned row is dragged next to another pinned row of its kind. Everything else stands by the alphabet and cannot be put anywhere | The order a person sets is small and deliberate; a file an agent makes always lands where the alphabet puts it |
 | The root of a ticket starts with three pinned files: `INDEX.md`, `AGENDA.md`, `notepad.md`, in that sequence. No other folder starts with pins. The three can be unpinned and reordered like any pin | The files a ticket is entered through stand first |
 | A pin is a name in a folder. It follows a rename made through the view; a rename made past the view leaves the new name unpinned. A pinned name that is not on the disk is not shown and stays pinned: a file that comes back under it is pinned again | The view does not guess that two names are one file |
-| The pins belong to the ticket and lie in the business folder, so they are the same in every window, program and machine. A change written elsewhere moves the rows here and touches nothing expanded | — |
+| The pins belong to the ticket and lie in the folder of the workspace that owns it, so they are the same in every window, program and machine. A change written elsewhere moves the rows here and touches nothing expanded | — |
 | «Сбросить закрепления папки» — on a folder whose pins were changed — returns it to the pins it starts with and leaves the folders below alone; «Сбросить закрепления верхнего уровня» under «…» does the same for the root. No question asked | The root has no row to click |
 | A pins file that cannot be read, or was written by a newer Duet, is never replaced: the rows are shown by the last pins read well (else by default, with a warning), and whatever would change them is refused with the reason | Lost pins are not shown as none |
 | A file of the earlier model — a free arrangement, a list of names per folder — is read as «no pins»: the folder stands by the alphabet with the pins it starts with, and the file is replaced by the first change of pins | The free arrangement no longer exists; nothing is migrated and nothing is deleted |
@@ -281,7 +281,7 @@ Everything is in the context menu of a row; the title has no create buttons. The
 
 | The model asks | What VS Code gives | What is built |
 |----------------|--------------------|---------------|
-| «Рабочая папка» stands right after Корзина, before «Все Бизнесы»; КОНТЕКСТ is hidden by default | The manifest gives only the starting place and the starting visibility. Once a person has dragged a view of the panel, VS Code keeps a number for every view it knew then, and a view added later is placed by its number in the manifest among those kept numbers — it may land below «Все Бизнесы». A view a person has already seen keeps the visibility they left it with (`viewContainerModel.ts`, VS Code 1.104: `getViewOrder`, `add`). An extension can set neither | The manifest declares the order and `"visibility": "hidden"`; they hold in a panel nobody has rearranged. In a rearranged one the view is dragged into place once, and the place is kept from then on. The manifest test proves the declaration, not the place on the screen |
+| «Рабочая папка» stands right after Корзина, before «Все воркспейсы»; ВОРКСПЕЙС is hidden by default | The manifest gives only the starting place and the starting visibility. Once a person has dragged a view of the panel, VS Code keeps a number for every view it knew then, and a view added later is placed by its number in the manifest among those kept numbers — it may land below «Все воркспейсы». A view a person has already seen keeps the visibility they left it with (`viewContainerModel.ts`, VS Code 1.104: `getViewOrder`, `add`). An extension can set neither | The manifest declares the order and `"visibility": "hidden"`; they hold in a panel nobody has rearranged. In a rearranged one the view is dragged into place once, and the place is kept from then on. The manifest test proves the declaration, not the place on the screen |
 | Selection, focus and scroll come back with the ticket | An extension reads only the selection and can set one row; the focus and the scroll are closed to it | The top surviving row of the remembered selection is selected, without taking the focus |
 | A right click outside the selection gives the menu of that one row | A `when` clause sees the selection of the tree, not the clicked row | Items for one row are absent whenever several rows are selected, wherever the click lands; keys follow the model exactly |
 | An unavailable item explains itself | A greyed menu item has no tooltip; a submenu cannot be disabled | The explanation is the title of a greyed twin of the item, and the tooltip of the plus button |
@@ -291,27 +291,27 @@ Everything is in the context menu of a row; the title has no create buttons. The
 | «Рабочая папка DUE018», the reason in the header | Titles of the side bar are drawn in capitals; a header holds a title and a description | A short reason in the description, the full line above the tree |
 | The rule waits for the end of a drag | The start of a drag from the system and a drop taken outside the tree are not reported | For a drag from the system the rule acts at once; a drop outside counts as a cancel at the next event |
 
-## Все Бизнесы — forest navigation
+## Все воркспейсы — forest navigation
 
-Selecting a real business previews its Корзина and clears Work; an arrow only expands or collapses the tree. The two explicit open buttons first look for the business's Curator among its immediate `work/` and `backlog/` tickets: both `work-type: routine` and `routine-type: business-curation` in INDEX.md are required. A business has one such routine: with two the buttons refuse with an error that names both. A found Curator opens through the normal ticket path (including backlog → work and focusing an already open window); with none, the business opens as before. An unreadable shelf or header is an error, not "none". Merely selecting a business never launches its Curator; switching an existing «Активная Работа» row is unchanged.
+Selecting a real workspace previews its Корзина and clears Work; an arrow only expands or collapses the tree. The two explicit open buttons first look for the workspace's Curator among the immediate `work/` and `backlog/` tickets of its own shelves — never through `inherit`, so DuetDev opens its own window and not the curation of DuetLab: both `ticket-type: routine` and `routine-type: workspace-curation` in INDEX.md are required. A workspace has one such routine: with two the buttons refuse with an error that names both. A found Curator opens through the normal ticket path (including backlog → work and focusing an already open window); with none, the workspace opens in its own window — itself, its tickets workspace when it inherits one, its repos, and the roots for a meta workspace. An unreadable shelf or header is an error, not "none". Merely selecting a workspace never launches its Curator; switching an existing «Активная Работа» row is unchanged.
 
-Full forest of root contexts and descendants, accordion pattern, alias-based highlighting.
+Full forest of root workspaces and descendants, accordion pattern, alias-based highlighting.
 
 ### Behavioral contracts
 
 | Behavior | Why it matters |
 |----------|----------------|
-| **Accordion**: one root context expanded at a time | Reduces visual noise, focus on active work |
-| Expand root context → expands to leaves | User sees full hierarchy without extra clicks |
-| Auto-expand active root context on startup | Opens the root the user is working in |
-| Solid `────` line between root contexts; blank spacer between first-level children of a root | Visual separation between roots and inside an expanded root, no dotted clutter |
-| No header row: the list starts with the first root context | The window over all ventures is the window of the meta business (`meta: true`), an ordinary row of the tree — not a separate entity |
-| In the window of a meta business only that business is marked, though the folders of the other ventures are open in it | The window belongs to one business; the other ventures are shown, not worked in |
-| Placeholder when empty: "Добавьте root-контекст в Duet Host" | User pointed to Host (which owns root-context configuration), not to a non-existent Extension button |
+| **Accordion**: one root workspace expanded at a time | Reduces visual noise, focus on active work |
+| Expand root workspace → expands to leaves | User sees full hierarchy without extra clicks |
+| Auto-expand active root workspace on startup | Opens the root the user is working in |
+| Solid `────` line between root workspaces; blank spacer between first-level children of a root | Visual separation between roots and inside an expanded root, no dotted clutter |
+| No header row: the list starts with the first root workspace | The window over all roots is the window of the meta workspace (`meta: true`), an ordinary row of the tree — not a separate entity |
+| Only the first folder of the window is marked — in the window of a meta workspace the other roots, in the window of a desk its tickets workspace, in a desk ticket window the owner are open but not marked | The first folder gives a session its prompt and skills; the window belongs to it, the other folders are shown, not worked in (DUE063: the old rule «a meta workspace among the folders wins» is gone) |
+| Placeholder when empty: "Добавьте корневой воркспейс в Duet Host" | User pointed to Host (which owns root-workspace configuration), not to a non-existent Extension button |
 | Icons: emoji from manifest in label (e.g. `🔬 МетаЛаб`) | Custom icons from manifests, no ThemeIcon |
-| Description: `[git]` marker for contexts with git products (non-empty `git_repos`); otherwise empty | Show role at a glance, no `мета-контекст` / `контекст` decoration |
+| Description: `[git]` marker for workspaces with git products (non-empty `git_repos`); otherwise empty | Show role at a glance, no «мета-воркспейс» / «воркспейс» decoration |
 | **Chain highlighting**: 🟠 for active node + all ancestors | User sees path to current work |
-| A context is current only when its own folder is among the window's folders; an open repo folder marks nobody | One repo may be declared by several businesses, so a repo cannot say which of them the window belongs to. The panel opens business folders, and the business folder is what identifies the window |
+| A workspace is current only when its folder is the first folder of the window; a first folder that is a ticket folder or a subfolder of a workspace marks nobody, not even its root; a repo folder marks nobody | One repo may be declared by several workspaces, so a repo cannot say which of them the window belongs to; the first folder is what identifies the window |
 | Toggle button (fold icon) | Single button to expand/collapse all |
 | Click = select, arrow = toggle | User can select without collapsing |
 
@@ -325,7 +325,7 @@ Full forest of root contexts and descendants, accordion pattern, alias-based hig
 
 ### Status indicators
 
-Root context status circles encode two dimensions:
+Root workspace status circles encode two dimensions:
 
 | Circle | Expanded | Active |
 |--------|----------|--------|
@@ -341,39 +341,38 @@ Non-root nodes:
 ### Implementation
 
 - `AccordionController.ts` — expand/collapse orchestration
-- `ContextTreeProvider.ts` — state tracking, label generation
-- `ContextTree.ts` — `getDescendants()` for expand-to-leaves
+- `WorkspaceTreeProvider.ts` — state tracking, label generation
+- `workspaceTree.ts` — `getDescendants()` for expand-to-leaves
 
-## КОНТЕКСТ — current business
+## ВОРКСПЕЙС — the workspace of the window
 
-Shows where the window stands in the tree of businesses: the venture, the current business and the businesses directly under it. Built from the `/contexts` list.
+Shows where the window stands in the tree of workspaces: the root workspace, the workspace of the window and the workspaces directly under it. Built from the `/workspaces` list.
 
 ### Behavioral contracts
 
 | Behavior | Why |
 |----------|-----|
 | Welcome view when no folder open | User knows how to open folder |
-| Settings via submenu (not QuickPick) | Faster access, no intermediate dialog |
+| Settings via submenu (not QuickPick) — «Настройки воркспейса» | Faster access, no intermediate dialog |
 | Nodes always expanded | The panel should show the whole path at a glance |
-| Current business = the business whose folder is among the window's folders | Same rule as the 🟠 marker in «Все Бизнесы»; a repo folder never chooses a business |
-| Several business folders open → the meta-context, otherwise the first in the window's folder order | Same tie-break the Backend uses when it deploys instructions. The Backend, unlike the panel, also accepts a folder inside a business: a window opened on a ticket folder gets instructions deployed and an empty panel |
-| Single info node «В окне не открыта папка бизнеса» when no window folder is a business folder | A window with only a repo, or a folder inside a business that is not the business folder itself, has no current business |
-| Labels: emoji prefix from the manifest icon (e.g. `🎭 DuetLab`) | Visual parity with «Все Бизнесы» — same `icon` field of `/contexts` |
-| Tooltip: description (manifest `description`, else README first sentence), then the folder path | The panel names the business; the meaning is one hover away |
+| The workspace of the window = the workspace of its first folder (`core/workspaces.ts:windowWorkspace`) | Same rule as the 🟠 marker in «Все воркспейсы» and the deploy of instructions: the first folder gives a session its prompt and skills. A repo folder, the tickets workspace of a desk, the owner in a desk ticket window, the roots in a meta window never choose |
+| Single info node «Первая папка окна — не воркспейс» when the first folder is not the folder of a registered workspace (its path equal to one in the registry) | A window opened on a repo, on a ticket folder or on any other folder inside a workspace has no Duet workspace: the nearest workspace up the tree is never taken for it |
+| Labels: emoji prefix from the workspace icon (e.g. `🎭 DuetLab`) | Visual parity with «Все воркспейсы» — same `icon` field of `/workspaces` |
+| Tooltip: description (manifest `description`, else README first sentence), then the folder path | The panel names the workspace; the meaning is one hover away |
 
 ### Tree shape
 
-Built by `core/tree/contextPanel.ts:buildContextPanel` from `ContextEntity[]` and the window's folders:
+Built by `core/tree/workspacePanel.ts:buildWorkspacePanel` from `WorkspaceEntity[]` and the window's folders:
 
 | Node | Role | Children |
 |------|------|----------|
-| venture | root of the current business's parent chain | the current business |
-| current business | the business whose folder is open | the businesses directly under it |
-| child business | `parent_id` = current business | none (deeper levels are in «Все Бизнесы») |
-| `info` | fallback when the window has no business folder | none |
+| root | root of the parent chain of the window's workspace | the window's workspace |
+| current | the workspace of the first folder | the workspaces directly under it |
+| child | `parent_id` = the current workspace | none (deeper levels are in «Все воркспейсы») |
+| `info` | fallback when the first folder is not a workspace | none |
 
-Intermediate parents between the venture and the current business are not shown. When the current business is itself a venture, it is the root and its child businesses hang directly under it.
+Intermediate parents between the root and the current workspace are not shown. When the current workspace is itself a root, it is the root and its children hang directly under it.
 
 ## Future
 
-- Worktree support in КОНТЕКСТ
+- Worktree support in ВОРКСПЕЙС

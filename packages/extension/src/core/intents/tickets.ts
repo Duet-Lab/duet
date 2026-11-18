@@ -1,10 +1,11 @@
 import * as path from 'path';
 import { FileSystem, FileStat, nodeFs } from '../fs';
-import { parseTicketFolderName } from '../pathUtils';
+import { frontmatterValue, parseTicketFolderName } from '../pathUtils';
+import { ARCHIVE_GROUP_DEPTH } from '../workspaces';
 import { spaceIntentName } from './naming';
 
 /**
- * Tickets of a business as they lie on disk: folders right inside `work/` and
+ * Tickets of a workspace as they lie on disk: folders right inside `work/` and
  * `backlog/` whose name fits the ticket-number rule. Everything else in those
  * folders is not shown. The archive is read only to find one ticket by number.
  * This module only reads: tickets are created and moved by the Duet server,
@@ -26,10 +27,10 @@ export interface TicketInfo {
     path: string;
     shelf: Shelf;
     /**
-     * Work type: what the number's letter says (`workTypeOfNumber`), else
-     * `work-type` of the ticket's `INDEX.md`, lower case; null when neither tells.
+     * Ticket type: what the number's letter says (`ticketTypeOfNumber`), else
+     * `ticket-type` of the ticket's `INDEX.md`, lower case; null when neither tells.
      */
-    workType: string | null;
+    ticketType: string | null;
     /** `routine-type` from INDEX.md, lower case; null when absent. */
     routineType: string | null;
     /** Number of the parent ticket from `parent`; null when the ticket has none. */
@@ -40,15 +41,19 @@ export interface TicketInfo {
 
 export interface TicketFrontmatter {
     parent: string | null;
-    workType: string | null;
+    ticketType: string | null;
     /** `routine-type` from INDEX.md, lower case; null when absent. */
     routineType: string | null;
     icon: string;
     /** `git-branch-name`: the ticket's branch, written by the server; null when it has none. */
     branch: string | null;
+    /** `default-workspace: "@DuetDev"` without the `@`: the workspace the ticket is worked on; null when absent. */
+    defaultWorkspace: string | null;
 }
 
-const NO_FRONTMATTER: TicketFrontmatter = { parent: null, workType: null, routineType: null, icon: '', branch: null };
+const NO_FRONTMATTER: TicketFrontmatter = {
+    parent: null, ticketType: null, routineType: null, icon: '', branch: null, defaultWorkspace: null
+};
 
 export interface TicketPlace {
     shelf: Shelf;
@@ -60,14 +65,14 @@ export interface TicketPlace {
 export const INDEX_HEAD_BYTES = 2048;
 /** Longest `parent` chain followed in search of an icon. */
 const MAX_PARENT_CHAIN = 16;
-/** How deep below `archive/` a ticket is looked for: `archive/2026/09/<ticket>`. */
-const ARCHIVE_DEPTH = 3;
+/** How deep below `archive/` a ticket is looked for: up to three grouping folders, `archive/a/b/c/<ticket>`. */
+const ARCHIVE_DEPTH = ARCHIVE_GROUP_DEPTH + 1;
 
 /**
- * Read `parent`, `work-type`, `routine-type`, `icon` and `git-branch-name` from the frontmatter at the start of a
- * ticket's `INDEX.md`. An empty value and `null` both mean "no parent" and "no
+ * Read `parent`, `ticket-type`, `routine-type`, `icon`, `git-branch-name` and `default-workspace` from the
+ * frontmatter at the start of a ticket's `INDEX.md`. An empty value and `null` both mean "no parent" and "no
  * icon". A parent written as a folder name or an alpha path is reduced to its
- * ticket number.
+ * ticket number; `default-workspace` loses its `@`.
  */
 export function parseTicketFrontmatter(head: string): TicketFrontmatter {
     const result: TicketFrontmatter = { ...NO_FRONTMATTER };
@@ -76,13 +81,15 @@ export function parseTicketFrontmatter(head: string): TicketFrontmatter {
         return result;
     }
     for (let i = 1; i < lines.length && lines[i] !== '---'; i++) {
-        const match = /^(parent|work-type|routine-type|icon|git-branch-name)\s*:(.*)$/.exec(lines[i]);
+        const match = /^(parent|ticket-type|routine-type|icon|git-branch-name|default-workspace)\s*:(.*)$/.exec(lines[i]);
         if (!match) {
             continue;
         }
-        const value = cleanValue(match[2]);
-        if (match[1] === 'work-type') {
-            result.workType = value ? value.toLowerCase() : null;
+        const value = frontmatterValue(match[2]);
+        if (match[1] === 'ticket-type') {
+            result.ticketType = value ? value.toLowerCase() : null;
+        } else if (match[1] === 'default-workspace') {
+            result.defaultWorkspace = value?.replace(/^@/, '').trim() || null;
         } else if (match[1] === 'routine-type') {
             result.routineType = value ? value.toLowerCase() : null;
         } else if (match[1] === 'icon') {
@@ -96,14 +103,8 @@ export function parseTicketFrontmatter(head: string): TicketFrontmatter {
     return result;
 }
 
-function cleanValue(raw: string): string | null {
-    // Trimmed first, so that a value which itself starts with `#` (the emoji #️⃣) is not taken for a comment
-    const value = raw.trim().replace(/\s+#.*$/, '').trim().replace(/^(["'`])(.*)\1$/, '$2').trim();
-    return value === '' || value === 'null' || value === '~' ? null : value;
-}
-
 /**
- * Reads ticket folders of a business. The frontmatter of every `INDEX.md` is
+ * Reads ticket folders of a workspace. The frontmatter of every `INDEX.md` is
  * remembered by the file's modification time and size, so a second reading of
  * unchanged tickets costs a `stat` each and no file content.
  */
@@ -127,10 +128,10 @@ export class TicketReader {
      * ticket that has one — the same chain the bin follows to find a ticket's
      * program. Icons are given to programs, and windows are opened on their
      * projects; without this every such row would carry the emoji of the
-     * business. Empty when no ticket of the chain has an icon — the caller
-     * then falls back on the business.
+     * workspace. Empty when no ticket of the chain has an icon — the caller
+     * then falls back on the workspace that owns the ticket.
      */
-    async inheritedIcon(businessPath: string, ticketPath: string): Promise<string> {
+    async inheritedIcon(ownerPath: string, ticketPath: string): Promise<string> {
         const seen = new Set<string>();
         let current: string | null = ticketPath;
         while (current) {
@@ -143,16 +144,16 @@ export class TicketReader {
                 return '';
             }
             seen.add(front.parent);
-            const places = await this.locate(businessPath, front.parent);
+            const places = await this.locate(ownerPath, front.parent);
             current = (places.find(place => place.shelf === 'work') ?? places[0])?.path
-                ?? await this.findInArchive(businessPath, front.parent);
+                ?? await this.findInArchive(ownerPath, front.parent);
         }
         return '';
     }
 
     /** All tickets of `work/` and `backlog/`. A ticket with an unreadable `INDEX.md` has no parent, type or icon. */
-    async readShelves(businessPath: string): Promise<TicketInfo[]> {
-        const places = (await Promise.all(SHELVES.map(shelf => this.listShelf(businessPath, shelf)))).flat();
+    async readShelves(workspacePath: string): Promise<TicketInfo[]> {
+        const places = (await Promise.all(SHELVES.map(shelf => this.listShelf(workspacePath, shelf)))).flat();
         return Promise.all(places.map(async (place): Promise<TicketInfo> => {
             const parsed = parseTicketFolderName(place.folder)!;
             const front = await this.frontmatterOf(path.join(place.path, 'INDEX.md'));
@@ -162,7 +163,7 @@ export class TicketReader {
                 name: spaceIntentName(parsed.rest),
                 path: place.path,
                 shelf: place.shelf,
-                workType: workTypeOfNumber(parsed.number) ?? front.workType,
+                ticketType: ticketTypeOfNumber(parsed.number) ?? front.ticketType,
                 routineType: front.routineType,
                 parent: front.parent,
                 icon: front.icon
@@ -171,23 +172,25 @@ export class TicketReader {
     }
 
     /**
-     * The business's routine of a class, e.g. `findRoutine(path, BUSINESS_CURATION)`;
-     * null when it has none. A business has one routine of each class: two are
-     * an error that names both. The search cannot silently treat unreadable
-     * shelves or headers as "no routine".
+     * The workspace's routine of a class, e.g. `findRoutine(path, WORKSPACE_CURATION)`;
+     * null when it has none. Only the workspace's own shelves are searched,
+     * never those of the workspace it inherits tickets from: the curation of
+     * a desk is not that of its tickets workspace. A workspace has one routine of each
+     * class: two are an error that names both. The search cannot silently
+     * treat unreadable shelves or headers as "no routine".
      */
-    async findRoutine(businessPath: string, routineType: string): Promise<TicketInfo | null> {
+    async findRoutine(workspacePath: string, routineType: string): Promise<TicketInfo | null> {
         const places = (await Promise.all(SHELVES.map(async shelf =>
-            (await withTimeout(this.subfoldersOrThrow(path.join(businessPath, shelf)), this.timeoutMs))
+            (await withTimeout(this.subfoldersOrThrow(path.join(workspacePath, shelf)), this.timeoutMs))
                 .filter(folder => parseTicketFolderName(folder) !== null)
-                .map(folder => ({ shelf, folder, path: path.join(businessPath, shelf, folder) }))
+                .map(folder => ({ shelf, folder, path: path.join(workspacePath, shelf, folder) }))
         ))).flat();
         const tickets = await Promise.all(places.map(async place => {
             const parsed = parseTicketFolderName(place.folder)!;
             const front = await this.checkedFrontmatter(path.join(place.path, 'INDEX.md'));
             return {
                 ...place, number: parsed.number, name: spaceIntentName(parsed.rest), ...front,
-                workType: workTypeOfNumber(parsed.number) ?? front.workType
+                ticketType: ticketTypeOfNumber(parsed.number) ?? front.ticketType
             };
         }));
         return pickRoutine(tickets, routineType);
@@ -215,7 +218,7 @@ export class TicketReader {
     async isRoutineAt(ticketPath: string, routineType: string): Promise<boolean> {
         const front = await this.checkedFrontmatter(path.join(ticketPath, 'INDEX.md'));
         const number = parseTicketFolderName(path.basename(ticketPath))?.number;
-        return isRoutine({ ...front, workType: (number && workTypeOfNumber(number)) ?? front.workType }, routineType);
+        return isRoutine({ ...front, ticketType: (number && ticketTypeOfNumber(number)) ?? front.ticketType }, routineType);
     }
 
     private async checkedFrontmatter(indexPath: string): Promise<TicketFrontmatter> {
@@ -229,9 +232,17 @@ export class TicketReader {
         }
     }
 
+    /**
+     * `default-workspace` of a ticket, without the `@`; null when it has none
+     * or its `INDEX.md` cannot be read — the ticket then opens at its owner.
+     */
+    async defaultWorkspace(ticketPath: string): Promise<string | null> {
+        return (await this.frontmatterOf(path.join(ticketPath, 'INDEX.md'))).defaultWorkspace;
+    }
+
     /** Ticket folders of one shelf; an absent shelf folder is an empty shelf. */
-    async listShelf(businessPath: string, shelf: Shelf): Promise<TicketPlace[]> {
-        const dir = path.join(businessPath, shelf);
+    async listShelf(workspacePath: string, shelf: Shelf): Promise<TicketPlace[]> {
+        const dir = path.join(workspacePath, shelf);
         return (await this.subfolders(dir))
             .filter(name => parseTicketFolderName(name) !== null)
             .sort()
@@ -239,13 +250,29 @@ export class TicketReader {
     }
 
     /** Every folder of `work/` and `backlog/` that carries the number — normally one, two after a half-done move. */
-    async locate(businessPath: string, number: string): Promise<TicketPlace[]> {
-        const places = (await Promise.all(SHELVES.map(shelf => this.listShelf(businessPath, shelf)))).flat();
+    async locate(workspacePath: string, number: string): Promise<TicketPlace[]> {
+        const places = (await Promise.all(SHELVES.map(shelf => this.listShelf(workspacePath, shelf)))).flat();
         return places.filter(place => parseTicketFolderName(place.folder)?.number === number);
     }
 
-    /** Path of the ticket inside `archive/`, at any grouping depth down to `archive/a/b/<ticket>`; null when not there. */
-    async findInArchive(businessPath: string, number: string): Promise<string | null> {
+    /**
+     * The folder of a ticket of its owner wherever it lies now — `work/`,
+     * `backlog/` or the archive at any grouping depth. `preferred` (the folder
+     * name the window was opened for) wins when it is still there; then the
+     * one in `work/`. Null when the number is nowhere.
+     */
+    async findAnywhere(ownerPath: string, number: string, preferred = ''): Promise<{ path: string; folder: string; location: 'work' | 'backlog' | 'archive' } | null> {
+        const places = await this.locate(ownerPath, number);
+        const place = places.find(p => p.folder === preferred) ?? places.find(p => p.shelf === 'work') ?? places[0];
+        if (place) {
+            return { path: place.path, folder: place.folder, location: place.shelf };
+        }
+        const archived = await this.findInArchive(ownerPath, number);
+        return archived ? { path: archived, folder: path.basename(archived), location: 'archive' } : null;
+    }
+
+    /** Path of the ticket inside `archive/`, at any grouping depth down to `archive/a/b/c/<ticket>`; null when not there. */
+    async findInArchive(ownerPath: string, number: string): Promise<string | null> {
         const search = async (dir: string, depth: number): Promise<string | null> => {
             const names = await this.subfolders(dir);
             const hit = names.find(name => parseTicketFolderName(name)?.number === number);
@@ -267,7 +294,7 @@ export class TicketReader {
             }
             return null;
         };
-        return search(path.join(businessPath, 'archive'), 1);
+        return search(path.join(ownerPath, 'archive'), 1);
     }
 
     /** Subfolders of `dir`; an absent folder has none, any other failure to read it is thrown. */
@@ -323,21 +350,21 @@ export class TicketReader {
 }
 
 /**
- * The work type a ticket number carries in its letter: `X` a program, `A` a
+ * The ticket type a ticket number carries in its letter: `X` a program, `A` a
  * routine; null for a plain number. The Backend types tickets by the same
- * letter, so a ticket whose frontmatter says something else — an old
- * `work-type: process`, a missing `INDEX.md` — is the same thing to both.
+ * letter, so a ticket whose frontmatter says something else — a wrong
+ * `ticket-type`, a missing `INDEX.md` — is the same thing to both.
  */
-export function workTypeOfNumber(number: string): string | null {
+export function ticketTypeOfNumber(number: string): string | null {
     const letter = number.charAt(3);
     return letter === 'X' ? 'program' : letter === 'A' ? 'routine' : null;
 }
 
-/** `routine-type` of the routine that curates a business; its chat is the business's Curator. */
-export const BUSINESS_CURATION = 'business-curation';
+/** `routine-type` of the routine that curates a workspace; its chat is the workspace's Curator. */
+export const WORKSPACE_CURATION = 'workspace-curation';
 
-export function isRoutine(ticket: Pick<TicketFrontmatter, 'workType' | 'routineType'>, routineType: string): boolean {
-    return ticket.workType === 'routine' && ticket.routineType === routineType;
+export function isRoutine(ticket: Pick<TicketFrontmatter, 'ticketType' | 'routineType'>, routineType: string): boolean {
+    return ticket.ticketType === 'routine' && ticket.routineType === routineType;
 }
 
 /**
@@ -350,7 +377,7 @@ export function pickRoutine(tickets: readonly TicketInfo[], routineType: string)
         .sort((a, b) => a.number < b.number ? -1 : a.number > b.number ? 1 : 0);
     if (found.length > 1) {
         const names = found.map(ticket => `${ticket.number} ${ticket.name}`).join(', ');
-        throw new Error(`У бизнеса несколько рутин класса ${routineType}: ${names}. Должна быть одна — оставьте одну и повторите.`);
+        throw new Error(`У воркспейса несколько рутин класса ${routineType}: ${names}. Должна быть одна — оставьте одну и повторите.`);
     }
     return found[0] ?? null;
 }
@@ -384,10 +411,10 @@ export type TicketNow =
  */
 export async function resolveTicketNow(
     reader: TicketReader,
-    businessPath: string,
+    ownerPath: string,
     row: Pick<TicketInfo, 'number' | 'folder' | 'shelf'>
 ): Promise<TicketNow> {
-    const places = await reader.locate(businessPath, row.number);
+    const places = await reader.locate(ownerPath, row.number);
     const own = places.find(p => p.shelf === row.shelf && p.folder === row.folder);
     if (own) {
         return { state: 'here', place: own };
@@ -398,40 +425,80 @@ export async function resolveTicketNow(
     return places.length === 0 ? { state: 'gone' } : { state: 'ambiguous' };
 }
 
-/** What `context.json` of a business says about its name, emoji and ticket code. */
-export interface BusinessManifest {
-    /** `name` of the manifest; null when the folder has no manifest Duet would register. */
+/** What a workspace says about itself: its name, emoji and ticket code. */
+export interface WorkspaceManifest {
+    /** `name` of its `INDEX.md`; null when the folder is not a workspace Duet would register. */
     name: string | null;
-    /** Emoji from `icon`; empty when the manifest has none — the Backend's default icons are not used here. */
+    /** Emoji from `icon`; empty when it has none — the Backend's default icons are not used here. */
     icon: string;
-    /** Three capital letters from `ticket_code`: `DUE`. Null when the manifest declares none. */
+    /**
+     * `ticket-code` as written: three capital letters (`DUE`), `inherit`, or null when there is
+     * none. `inherit` is never a code: see `core/workspaces.ts:ownTicketCode`.
+     */
     ticketCode: string | null;
 }
 
+/** Only the start of a workspace's `INDEX.md` is read: its frontmatter is there, the description may be long. */
+const WORKSPACE_HEAD_BYTES = 8192;
+
 /**
- * Read the name, the emoji and the ticket code of a business straight from its `context.json`.
- * An intent window needs them before the Backend answers, and the Backend puts
- * a default icon where the manifest has none — the intent rule is "no icon, no emoji".
+ * Read `name`, `icon` and `ticket-code` from the frontmatter at the start of a
+ * workspace's `INDEX.md`. Top-level keys only: an indented line belongs to a
+ * value above it.
  */
-export async function readBusinessManifest(businessPath: string, fileSystem?: FileSystem): Promise<BusinessManifest> {
+export function parseWorkspaceFrontmatter(head: string): { name: string | null; icon: string; ticketCode: string | null } {
+    const result = { name: null as string | null, icon: '', ticketCode: null as string | null };
+    const lines = head.replace(/^\uFEFF/, '').split(/\r?\n/);
+    if (lines[0] !== '---') {
+        return result;
+    }
+    for (let i = 1; i < lines.length && lines[i] !== '---'; i++) {
+        const match = /^(name|icon|ticket-code)\s*:(.*)$/.exec(lines[i]);
+        if (!match) {
+            continue;
+        }
+        const value = frontmatterValue(match[2]);
+        if (match[1] === 'name') {
+            result.name = value;
+        } else if (match[1] === 'icon') {
+            result.icon = value ?? '';
+        } else {
+            result.ticketCode = value;
+        }
+    }
+    return result;
+}
+
+/**
+ * Read the name, the emoji and the ticket code of a workspace straight from its
+ * folder. The folder is a workspace when it has a `context.json` with a numeric
+ * `version` — another tool's `context.json` is not one; the three fields are in
+ * the frontmatter of its `INDEX.md`. An intent window needs them before the
+ * Backend answers, and the Backend puts a default icon where the workspace has
+ * none — the intent rule is "no icon, no emoji".
+ */
+export async function readWorkspaceManifest(workspacePath: string, fileSystem?: FileSystem): Promise<WorkspaceManifest> {
     const fs = fileSystem ?? nodeFs;
+    const none: WorkspaceManifest = { name: null, icon: '', ticketCode: null };
     try {
-        const data: unknown = JSON.parse(await fs.readFile(path.join(businessPath, 'context.json'), 'utf8'));
-        if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
-            const manifest = data as Record<string, unknown>;
-            return {
-                // A manifest Duet registers carries a numeric `version`; another tool's `context.json` is not a business
-                name: typeof manifest.version === 'number' && typeof manifest.name === 'string' && manifest.name.trim()
-                    ? manifest.name
-                    : null,
-                icon: typeof manifest.icon === 'string' ? manifest.icon.trim() : '',
-                ticketCode: typeof manifest.ticket_code === 'string' && /^[A-Z]{3}$/.test(manifest.ticket_code.trim())
-                    ? manifest.ticket_code.trim()
-                    : null
-            };
+        const data: unknown = JSON.parse(await fs.readFile(path.join(workspacePath, 'context.json'), 'utf8'));
+        if (typeof data !== 'object' || data === null || Array.isArray(data)
+            || typeof (data as Record<string, unknown>).version !== 'number') {
+            return none;
         }
     } catch {
-        // no manifest or not JSON
+        return none; // no manifest or not JSON
     }
-    return { name: null, icon: '', ticketCode: null };
+    let front: ReturnType<typeof parseWorkspaceFrontmatter>;
+    try {
+        front = parseWorkspaceFrontmatter(await fs.readHead(path.join(workspacePath, 'INDEX.md'), WORKSPACE_HEAD_BYTES));
+    } catch {
+        return none; // a manifest without its INDEX.md has no name: the scanner does not register it either
+    }
+    const code = front.ticketCode?.trim() ?? '';
+    return {
+        name: front.name?.trim() ? front.name.trim() : null,
+        icon: front.icon.trim(),
+        ticketCode: /^[A-Z]{3}$/.test(code) || code === 'inherit' ? code : null
+    };
 }

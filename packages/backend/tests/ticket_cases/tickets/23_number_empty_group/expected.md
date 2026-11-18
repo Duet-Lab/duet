@@ -1,15 +1,14 @@
 ### DUEX06 Marketplace
 
-Program, in work. Business: DuetLab (DUE).
+Program, in work. Owner workspace: DuetLab (DUE).
 
 **Folder:** `{root}/DuetLab/work/DUEX06_Marketplace`
 
 **Index:** `@DUEX06/INDEX.md`
 
-* folder-type: work
-* work-type: program
+* folder-type: ticket
+* ticket-type: program
 * opened: 2026-10-01
-* business-area: DuetOrig
 * parent: none
 
 Tickets: none

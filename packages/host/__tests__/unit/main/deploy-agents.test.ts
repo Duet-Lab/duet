@@ -54,7 +54,7 @@ describe('deploy:start re-configures agents', () => {
       updateAppState: vi.fn(() => order.push('update')),
       setDeployStatus: vi.fn(),
       runMigrations: vi.fn(),
-      getMigrationStatus: () => ({ critical: null, contextErrors: [], migratedCount: 0 }),
+      getMigrationStatus: () => ({ critical: null, workspaceErrors: [], migratedCount: 0 }),
       agents: { getAgents: vi.fn(), refreshAgents: vi.fn(), configureAgents }
     })
   })

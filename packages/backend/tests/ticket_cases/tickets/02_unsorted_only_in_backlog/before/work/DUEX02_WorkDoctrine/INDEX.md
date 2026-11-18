@@ -1,9 +1,8 @@
 ---
-folder-type: work
-work-type: program
+folder-type: ticket
+ticket-type: program
 description: Folder-based workflow conventions
 opened: 2026-10-01
-business-area: DuetWork
 parent: null
 ---
 

@@ -6,23 +6,23 @@ import { binOrderPath, readBinOrder } from './binOrder';
 import { coalesce } from './coalesce';
 import { SHELVES, TicketInfo, TicketReader } from './tickets';
 
-/** What changed in the business folder, as far as the path of the event tells. */
+/** What changed in the workspace folder, as far as the path of the event tells. */
 export type DiskChange =
     /** A folder right inside `work/` or `backlog/`, or the order file: the three stamps tell whether to read. */
     | 'shelves'
     /** An `INDEX.md` of a ticket: the stamps do not see it, the folders are read. */
     | 'ticket';
 
-/** Events of the business folder that come within this time lead to one reading. */
+/** Events of the workspace folder that come within this time lead to one reading. */
 export const DISK_DEBOUNCE_MS = 300;
 
 /**
- * The tickets of one business as a window knows them: what lies in `work/` and
+ * The tickets of one workspace as a window knows them: what lies in `work/` and
  * `backlog/`, the remembered order, the rows built from both. The board owns
  * this state and is the only one to decide when the disk is read; the bin view
  * shows it and the commands act through it.
  *
- * The business folder is the source every window shares — agents and people
+ * The workspace folder is the source every window shares — agents and people
  * change it past the extension — so the signal that it changed is the file
  * events of the folder itself, told to the board by `diskChanged`. Every window
  * holds a board of its own and they agree because they read the same folder.
@@ -36,8 +36,8 @@ export const DISK_DEBOUNCE_MS = 300;
 export class TicketBoard {
     private readonly fs: FileSystem;
     private generation = 0;
-    private businessPath: string | null = null;
-    /** Null until the business folders have been read. */
+    private workspacePath: string | null = null;
+    /** Null until the workspace folders have been read. */
     private tickets: TicketInfo[] | null = null;
     private order: string[] = [];
     private orderKnown = false;
@@ -55,7 +55,7 @@ export class TicketBoard {
         this.fs = fileSystem ?? nodeFs;
     }
 
-    /** Called when the tickets, the order or the business changed. */
+    /** Called when the tickets, the order or the workspace changed. */
     onDidChange(listener: () => void): { dispose: () => void } {
         this.listeners.add(listener);
         return { dispose: () => { this.listeners.delete(listener); } };
@@ -66,15 +66,15 @@ export class TicketBoard {
         this.listeners.clear();
     }
 
-    getBusinessPath(): string | null {
-        return this.businessPath;
+    getWorkspacePath(): string | null {
+        return this.workspacePath;
     }
 
     getGeneration(): number { return this.generation; }
 
     isShown(): boolean { return this.shown; }
 
-    /** Null until the business folders have been read. */
+    /** Null until the workspace folders have been read. */
     getTickets(): TicketInfo[] | null {
         return this.tickets;
     }
@@ -96,13 +96,13 @@ export class TicketBoard {
         return this.orderKnown;
     }
 
-    /** Whose tickets the board holds. Another business drops everything that was read. */
-    setBusiness(businessPath: string | null): void {
-        if (key(businessPath) === key(this.businessPath)) {
+    /** Whose tickets the board holds. Another workspace drops everything that was read. */
+    setWorkspace(workspacePath: string | null): void {
+        if (key(workspacePath) === key(this.workspacePath)) {
             return;
         }
         this.generation++;
-        this.businessPath = businessPath;
+        this.workspacePath = workspacePath;
         this.forget();
         this.tell();
         if (this.shown) {
@@ -112,7 +112,7 @@ export class TicketBoard {
 
     /**
      * The rows are shown or hidden. Showing them reads the folders; while they
-     * are hidden the events of the business folder cost nothing.
+     * are hidden the events of the workspace folder cost nothing.
      */
     setShown(shown: boolean): Promise<void> {
         this.shown = shown;
@@ -124,18 +124,18 @@ export class TicketBoard {
         return this.read();
     }
 
-    /** Read the business folders and the order now. */
+    /** Read the workspace folders and the order now. */
     reload(): Promise<void> {
         return this.read();
     }
 
     /**
-     * Something changed in the business folder. Events are gathered into one
+     * Something changed in the workspace folder. Events are gathered into one
      * answer; the kind of a file event is not looked at — a file written again
      * may come as a rename — only where it happened.
      */
     diskChanged(change: DiskChange): void {
-        if (!this.shown || !this.businessPath) {
+        if (!this.shown || !this.workspacePath) {
             return;
         }
         if (this.pending !== 'ticket') {
@@ -154,29 +154,29 @@ export class TicketBoard {
      * were at the last reading: three `stat` calls when nothing changed.
      */
     async check(): Promise<void> {
-        const businessPath = this.businessPath;
-        if (!this.shown || !businessPath) {
+        const workspacePath = this.workspacePath;
+        if (!this.shown || !workspacePath) {
             return;
         }
-        if (await this.readStamp(businessPath) !== this.stamp) {
+        if (await this.readStamp(workspacePath) !== this.stamp) {
             await this.read();
         }
     }
 
     private async readOnce(): Promise<void> {
-        const businessPath = this.businessPath;
+        const workspacePath = this.workspacePath;
         const generation = this.generation;
-        if (!businessPath) {
+        if (!workspacePath) {
             return;
         }
         // Taken before the reading: a change that comes while it runs leaves the stamp behind, never ahead
-        const stamp = await this.readStamp(businessPath);
+        const stamp = await this.readStamp(workspacePath);
         const [tickets, order] = await Promise.all([
-            this.reader.readShelves(businessPath),
-            readBinOrder(businessPath, this.fs)
+            this.reader.readShelves(workspacePath),
+            readBinOrder(workspacePath, this.fs)
         ]);
-        // The business changed while the folders were being read
-        if (generation !== this.generation || key(this.businessPath) !== key(businessPath)) {
+        // The workspace changed while the folders were being read
+        if (generation !== this.generation || key(this.workspacePath) !== key(workspacePath)) {
             return;
         }
         this.stamp = stamp;
@@ -195,8 +195,8 @@ export class TicketBoard {
     }
 
     /** Modification times of `work/`, `backlog/` and the order file: they change when a ticket comes, goes or the order is written. */
-    private async readStamp(businessPath: string): Promise<string> {
-        const targets = [...SHELVES.map(shelf => path.join(businessPath, shelf)), binOrderPath(businessPath)];
+    private async readStamp(workspacePath: string): Promise<string> {
+        const targets = [...SHELVES.map(shelf => path.join(workspacePath, shelf)), binOrderPath(workspacePath)];
         const parts = await Promise.all(targets.map(async target => {
             try {
                 const stat = await this.fs.stat(target);
@@ -226,6 +226,6 @@ export class TicketBoard {
     }
 }
 
-function key(businessPath: string | null): string | null {
-    return businessPath ? normalizePath(businessPath) : null;
+function key(workspacePath: string | null): string | null {
+    return workspacePath ? normalizePath(workspacePath) : null;
 }

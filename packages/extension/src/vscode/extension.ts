@@ -1,16 +1,16 @@
 import * as vscode from 'vscode';
-import { ContextTreeProvider } from './providers/ContextTreeProvider';
+import { WorkspaceTreeProvider } from './providers/WorkspaceTreeProvider';
 import { TreeDecorationProvider } from './providers/TreeDecorationProvider';
 import { NotepadDecorationProvider } from './providers/NotepadDecorationProvider';
 import { AccordionController } from './providers/AccordionController';
-import { ContextProvider, openDataFolderCommand } from './providers/ContextProvider';
+import { WorkspacePanelProvider, openDataFolderCommand } from './providers/WorkspacePanelProvider';
 import { readPointer, readPort } from '../core/pointer';
 import { refreshFromBackend, dumpIndex } from './commands/refresh';
 import { openInCurrentWindow, openInNewWindow, disposeGitOutputChannel } from './commands/openFolder';
 import { copyAtPath } from './commands/copyAtPath';
-import { setVentureFoldersSource } from './ventures';
+import { setRootFoldersSource, setWorkspacesSource } from './registry';
 import { Paths } from '../core/paths';
-import { ContextEntity, DuetApiClient } from '../core/api-client';
+import { WorkspaceEntity, DuetApiClient } from '../core/api-client';
 import { SidebarStateManager } from '../core/sidebar-state';
 import { IntentsRuntime } from './intents/IntentsRuntime';
 import { setIntentsRuntime, setTicketService } from './intents/current';
@@ -26,7 +26,7 @@ import { ActiveIntent, rowByNumber } from '../core/intents/active';
 import { binTitle } from '../core/intents/naming';
 import { registerWorkView } from './work/registerWorkView';
 import { WorkView } from './work/WorkView';
-import { BusinessViews } from './intents/businessViews';
+import { WorkspaceViews } from './intents/workspaceViews';
 import { ChatChooser } from './chats/ChatChooser';
 import { watchWorktrees } from './intents/worktreeSync';
 import { WorktreeSync } from '../core/intents/worktreeSync';
@@ -74,7 +74,7 @@ export async function activate(context: vscode.ExtensionContext) {
     chatChooser = new ChatChooser(context, () => intentsRuntime);
     context.subscriptions.push(chatChooser);
 
-    // Row decorations: grey separators of «Все Бизнесы», window colours of active intents.
+    // Row decorations: grey separators of «Все воркспейсы», window colours of active intents.
     // Registered here, not with the backend-dependent views: «Активная Работа» needs it with the backend down.
     context.subscriptions.push(
         vscode.window.registerFileDecorationProvider(new TreeDecorationProvider())
@@ -134,10 +134,10 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('duet.selectNode', () => {})
         );
 
-        // Deploy the open context's instruction components (skills / system_prompt)
-        // into its Drive folder. Fire-and-forget and debounced: activation,
-        // workspace-folder changes and `duet.refresh` can fire near-together;
-        // the backend is also idempotent + serialized per context.
+        // Deploy the instruction components (skills / system_prompt) of the window's
+        // workspace — its first folder — into its Drive folder. Fire-and-forget and
+        // debounced: activation, workspace-folder changes and `duet.refresh` can fire
+        // near-together; the backend is also idempotent + serialized per workspace.
         let deployTimer: ReturnType<typeof setTimeout> | undefined;
         const triggerDeployInstructions = (workspacePaths: string[]): void => {
             if (deployTimer) { clearTimeout(deployTimer); }
@@ -173,42 +173,45 @@ export async function activate(context: vscode.ExtensionContext) {
 
         try {
             await sidebarState.setInitializing('Подключение к backend...');
-            backendOutputChannel.appendLine(`Connecting to http://127.0.0.1:${port}/contexts...`);
-            const { contexts } = await apiClient.contexts();
+            backendOutputChannel.appendLine(`Connecting to http://127.0.0.1:${port}/workspaces...`);
+            const { workspaces } = await apiClient.workspaces();
+            let registry = workspaces;
+            setWorkspacesSource(() => registry);
             void worktreeSync?.start(true);
 
-            backendOutputChannel.appendLine(`Backend OK: ${contexts.length} contexts loaded`);
-            chatChooser?.setContexts(contexts);
+            backendOutputChannel.appendLine(`Backend OK: ${workspaces.length} workspaces loaded`);
+            chatChooser?.setWorkspaces(workspaces);
 
             const initialWorkspacePaths = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
             triggerDeployInstructions(initialWorkspacePaths);
 
-            const contextTreeProvider = new ContextTreeProvider(contexts);
-            // The window of a meta business shows every venture: opening it reads them from the tree
-            setVentureFoldersSource(() => contextTreeProvider.getRoots().map(root => root.id));
-            const contextProvider = new ContextProvider(contexts);
+            const workspaceTreeProvider = new WorkspaceTreeProvider(workspaces);
+            // The window of a meta workspace shows every root: opening it reads them from the tree
+            setRootFoldersSource(() => workspaceTreeProvider.getRoots().map(root => root.id));
+            const workspacePanelProvider = new WorkspacePanelProvider(workspaces);
             let binProvider: BinProvider | null = null;
             try {
-                binProvider = intentsRuntime ? registerBinView(context, intentsRuntime, paths, contexts, workView, ticketService) : null;
+                binProvider = intentsRuntime ? registerBinView(context, intentsRuntime, paths, workspaces, workView, ticketService) : null;
             } catch (e) {
                 console.error('[Duet] bin view not started:', e);
             }
-            const contextTreeView = vscode.window.createTreeView('duet.contexts', {
-                treeDataProvider: contextTreeProvider,
+            // The view ID stays `duet.contexts`: VS Code remembers where a view lies by its ID
+            const workspaceTreeView = vscode.window.createTreeView('duet.contexts', {
+                treeDataProvider: workspaceTreeProvider,
                 showCollapseAll: false // Hide native collapse, we use toggle
             });
 
-            const businessViews = binProvider ? new BusinessViews(binProvider, workView) : null;
-            if (businessViews) {
-                businessViews.register(context);
-                context.subscriptions.push(contextTreeView.onDidChangeSelection(event =>
-                    { void businessViews.select(event.selection[0]); }));
+            const workspaceViews = binProvider ? new WorkspaceViews(binProvider, workView) : null;
+            if (workspaceViews) {
+                workspaceViews.register(context);
+                context.subscriptions.push(workspaceTreeView.onDidChangeSelection(event =>
+                    { void workspaceViews.select(event.selection[0]); }));
             } else {
                 context.subscriptions.push(vscode.commands.registerCommand('duet.contexts.select', () => undefined));
             }
 
             // Accordion behavior: only one root expanded at a time, expand to leaves
-            const accordion = new AccordionController(contextTreeProvider, contextTreeView);
+            const accordion = new AccordionController(workspaceTreeProvider, workspaceTreeView);
             context.subscriptions.push(...accordion.registerListeners());
             accordion.autoExpandActive();
 
@@ -217,10 +220,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
             // Backend-dependent commands — require live connection
             context.subscriptions.push(
-                contextTreeView,
-                vscode.window.registerTreeDataProvider('duet.context', contextProvider),
-                { dispose: () => contextTreeProvider.dispose() },
-                { dispose: () => contextProvider.dispose() },
+                workspaceTreeView,
+                vscode.window.registerTreeDataProvider('duet.context', workspacePanelProvider),
+                { dispose: () => workspaceTreeProvider.dispose() },
+                { dispose: () => workspacePanelProvider.dispose() },
+                { dispose: () => setWorkspacesSource(null) },
                 vscode.commands.registerCommand('duet.refresh', async () => {
                     await vscode.window.withProgress({
                         location: vscode.ProgressLocation.Notification,
@@ -228,11 +232,12 @@ export async function activate(context: vscode.ExtensionContext) {
                         cancellable: false
                     }, async () => {
                         try {
-                            const newContexts = await refreshFromBackend(apiClient);
-                            contextTreeProvider.updateContexts(newContexts);
-                            contextProvider.updateContexts(newContexts);
-                            chatChooser?.setContexts(newContexts);
-                            binProvider?.updateContexts(newContexts);
+                            const fresh = await refreshFromBackend(apiClient);
+                            registry = fresh;
+                            workspaceTreeProvider.updateWorkspaces(fresh);
+                            workspacePanelProvider.updateWorkspaces(fresh);
+                            chatChooser?.setWorkspaces(fresh);
+                            binProvider?.updateWorkspaces(fresh);
                             const currentPaths = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
                             triggerDeployInstructions(currentPaths);
                         } catch (error) {
@@ -250,10 +255,10 @@ export async function activate(context: vscode.ExtensionContext) {
                         await vscode.commands.executeCommand('workbench.actions.treeView.duet.contexts.collapseAll');
                         isExpanded = false;
                     } else {
-                        const nodes = contextTreeProvider.getAllNodes();
+                        const nodes = workspaceTreeProvider.getAllNodes();
                         for (const node of nodes) {
                             try {
-                                await contextTreeView.reveal(node, { expand: true, focus: false, select: false });
+                                await workspaceTreeView.reveal(node, { expand: true, focus: false, select: false });
                             } catch (e) {
                                 console.error('Expand error:', e);
                             }
@@ -306,19 +311,19 @@ async function registerIntentsView(context: vscode.ExtensionContext, runtime: In
 }
 
 /**
- * «Корзина» view: the tickets of the window's business. Registered once the
- * backend has answered — the business comes from its `/contexts`.
+ * «Корзина» view: the tickets of the window's home workspace. Registered once
+ * the backend has answered — the workspaces come from its `/workspaces`.
  */
 function registerBinView(
     context: vscode.ExtensionContext,
     runtime: IntentsRuntime,
     paths: Paths,
-    contexts: ContextEntity[],
+    workspaces: WorkspaceEntity[],
     work: WorkView | null,
     tickets: TicketService
 ): BinProvider {
     const board = new TicketBoard(runtime.tickets);
-    const provider = new BinProvider(contexts, runtime, board);
+    const provider = new BinProvider(workspaces, runtime, board);
     const actions = new BinActions(paths, runtime, provider, board, tickets);
     provider.onDrop = (sourceKey, targetKey) => actions.drop(sourceKey, targetKey);
 
@@ -326,10 +331,12 @@ function registerBinView(
         treeDataProvider: provider,
         dragAndDropController: provider
     });
-    // The title tells whose tickets the view shows: «Корзина DuetLab»
+    // The title tells whose tickets the view shows: «Корзина DuetLab». A window whose workspace
+    // inherits tickets from nobody says so instead of showing an empty bin
     const showTitle = () => {
-        view.title = binTitle(provider.currentBusiness()?.name);
-        view.description = provider.isForeignBusiness() ? 'другой бизнес' : '';
+        view.title = binTitle(provider.shownWorkspace()?.name);
+        view.description = provider.isForeignWorkspace() ? 'другой воркспейс' : '';
+        view.message = provider.shownWorkspace() ? undefined : provider.homeProblem() ?? undefined;
     };
     showTitle();
     context.subscriptions.push(
@@ -347,7 +354,7 @@ function registerBinView(
         vscode.commands.registerCommand('duet.bin.select', (node: TicketNode) => provider.hasNode(node) ? work?.selectFromBin(node) : undefined),
         vscode.commands.registerCommand('duet.bin.copyAtPath', (node: TicketNode) =>
             node?.kind === 'ticket' ? copyAtPath(vscode.Uri.file(node.ticket.path)) : undefined),
-        // Its button is in the title of «Активная Работа», but the business it needs comes from the backend
+        // Its button is in the title of «Активная Работа», but the workspace it needs comes from the backend
         vscode.commands.registerCommand('duet.intents.newTicket', () => actions.create())
     );
     provider.setVisible(view.visible);

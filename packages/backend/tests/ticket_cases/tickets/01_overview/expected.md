@@ -1,6 +1,6 @@
 ### Tickets of DuetLab (DUE)
 
-**Business folder:** `{root}/DuetLab`
+**Workspace folder:** `{root}/DuetLab`
 
 #### DUEX01 ShellPrototype
 

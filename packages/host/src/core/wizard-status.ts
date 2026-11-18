@@ -38,7 +38,7 @@ export interface PageStatusInput {
   agents: AgentInfo[] | null
   /** Deploy staleness flag from isDeployWarning() — channel mismatch, stale version, etc. */
   hasDeployWarning?: boolean
-  /** Schema-migration sweep result. Critical → DuetPathsPage error; per-context → warning. */
+  /** Schema-migration sweep result. Critical → DuetPathsPage error; per-workspace → error. */
   migrationStatus?: MigrationResult
 }
 
@@ -46,8 +46,17 @@ export interface PageStatusInput {
 // WARNING REASON CODES (not blocking — don't escalate to error)
 // =============================================================================
 
-/** Scan reason codes that are warnings, not errors. */
-const SCAN_WARNING_CODES = new Set(['name_collision', 'repo_collision', 'missing_manifest'])
+/**
+ * Scan reason codes that are warnings, not errors: the workspace stays registered
+ * and only one name, repo or ticket code is set aside. Every other code — including
+ * one this build does not know — means a folder was not registered.
+ */
+export const SCAN_WARNING_CODES: ReadonlySet<string> = new Set([
+  'name_collision',
+  'repo_collision',
+  'ticket_code_collision',
+  'invalid_ticket_code'
+])
 
 /**
  * Map a backend scan result into a PageStatus.
@@ -77,12 +86,12 @@ export function computePageStatuses(input: PageStatusInput): PageStatuses {
 
   // Page 1: Duet paths — all three set; downgrade if schema-migration produced errors.
   // Critical migration error (settings/machine future-version, invalid JSON) → 'error'.
-  // Per-context migration errors (broken/future manifest, unresolved alias) → 'error'
-  // (data corruption — context unreachable until user fixes).
+  // Per-workspace migration errors (broken/future manifest, unresolved alias) → 'error'
+  // (data corruption — workspace unreachable until user fixes).
   if (input.migrationStatus?.critical) {
     s['duet-paths'] = 'error'
   } else if (appState.duetDataPath && appState.duetConfigPath && appState.machine) {
-    s['duet-paths'] = (input.migrationStatus?.contextErrors?.length ?? 0) > 0 ? 'error' : 'ok'
+    s['duet-paths'] = (input.migrationStatus?.workspaceErrors?.length ?? 0) > 0 ? 'error' : 'ok'
   } else {
     s['duet-paths'] = null
   }

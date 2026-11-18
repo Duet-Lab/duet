@@ -4,7 +4,7 @@ import {
     TicketInfo,
     TicketReader,
     parseTicketFrontmatter,
-    readBusinessManifest,
+    readWorkspaceManifest,
     resolveTicketNow
 } from '../../core/intents/tickets';
 import { binOrderPath, pruneArchived, readBinOrder, writeBinOrder } from '../../core/intents/binOrder';
@@ -21,11 +21,11 @@ import { createMemFs } from './helpers/memFs';
 
 const B = '/drive/DuetLab';
 
-function index(workType: string | null, parent: string | null): string {
+function index(ticketType: string | null, parent: string | null): string {
     return [
         '---',
         'folder-type: work',
-        ...(workType ? [`work-type: ${workType}`] : []),
+        ...(ticketType ? [`ticket-type: ${ticketType}`] : []),
         `parent: ${parent ?? 'null'}`,
         '---',
         '',
@@ -34,12 +34,12 @@ function index(workType: string | null, parent: string | null): string {
 }
 
 describe('parseTicketFrontmatter', () => {
-    it('reads parent and work-type', () => {
-        expect(parseTicketFrontmatter(index('project', 'DUEX02'))).toEqual({ parent: 'DUEX02', workType: 'project', routineType: null, icon: '', branch: null });
+    it('reads parent and ticket-type', () => {
+        expect(parseTicketFrontmatter(index('project', 'DUEX02'))).toEqual({ parent: 'DUEX02', ticketType: 'project', routineType: null, icon: '', branch: null, defaultWorkspace: null });
     });
 
     it('an empty value and null both mean no parent', () => {
-        expect(parseTicketFrontmatter('---\nparent:\nwork-type: program\n---\n').parent).toBeNull();
+        expect(parseTicketFrontmatter('---\nparent:\nticket-type: program\n---\n').parent).toBeNull();
         expect(parseTicketFrontmatter('---\nparent: null\n---\n').parent).toBeNull();
         expect(parseTicketFrontmatter('---\nparent: ~\n---\n').parent).toBeNull();
     });
@@ -55,7 +55,7 @@ describe('parseTicketFrontmatter', () => {
     });
 
     it('reads the emoji of the ticket from icon', () => {
-        expect(parseTicketFrontmatter('---\nicon: 🧰\nwork-type: program\n---\n').icon).toBe('🧰');
+        expect(parseTicketFrontmatter('---\nicon: 🧰\nticket-type: program\n---\n').icon).toBe('🧰');
         expect(parseTicketFrontmatter('---\nicon: "🐚"\n---\n').icon).toBe('🐚');
         expect(parseTicketFrontmatter('---\nicon: 📜  # the doctrine\n---\n').icon).toBe('📜');
     });
@@ -66,22 +66,22 @@ describe('parseTicketFrontmatter', () => {
         expect(parseTicketFrontmatter('---\nicon: #️⃣\n---\n').icon).toBe('#️⃣');
     });
 
-    it('lower-cases the work type', () => {
-        expect(parseTicketFrontmatter('---\nwork-type: Program\n---\n').workType).toBe('program');
+    it('lower-cases the ticket type', () => {
+        expect(parseTicketFrontmatter('---\nticket-type: Program\n---\n').ticketType).toBe('program');
     });
 
     it('a file without frontmatter gives nothing', () => {
-        expect(parseTicketFrontmatter('# Title\nparent: DUEX02\n')).toEqual({ parent: null, workType: null, routineType: null, icon: '', branch: null });
-        expect(parseTicketFrontmatter('')).toEqual({ parent: null, workType: null, routineType: null, icon: '', branch: null });
+        expect(parseTicketFrontmatter('# Title\nparent: DUEX02\n')).toEqual({ parent: null, ticketType: null, routineType: null, icon: '', branch: null, defaultWorkspace: null });
+        expect(parseTicketFrontmatter('')).toEqual({ parent: null, ticketType: null, routineType: null, icon: '', branch: null, defaultWorkspace: null });
     });
 
     it('does not read past the closing line', () => {
-        expect(parseTicketFrontmatter('---\nwork-type: project\n---\nparent: DUEX02\n').parent).toBeNull();
+        expect(parseTicketFrontmatter('---\nticket-type: project\n---\nparent: DUEX02\n').parent).toBeNull();
     });
 
     it('reads Windows line breaks', () => {
-        expect(parseTicketFrontmatter('---\r\nparent: DUEX02\r\nwork-type: project\r\n---\r\n'))
-            .toEqual({ parent: 'DUEX02', workType: 'project', routineType: null, icon: '', branch: null });
+        expect(parseTicketFrontmatter('---\r\nparent: DUEX02\r\nticket-type: project\r\n---\r\n'))
+            .toEqual({ parent: 'DUEX02', ticketType: 'project', routineType: null, icon: '', branch: null, defaultWorkspace: null });
     });
 });
 
@@ -112,7 +112,7 @@ describe('TicketReader', () => {
             name: 'Intent Switcher',
             path: `${B}/work/DUE017_IntentSwitcher`,
             shelf: 'work',
-            workType: 'project', routineType: null,
+            ticketType: 'project', routineType: null,
             parent: 'DUEX03',
             icon: ''
         });
@@ -122,13 +122,13 @@ describe('TicketReader', () => {
     it('a ticket without a readable INDEX.md has no parent, no type and no icon', async () => {
         const mem = createMemFs(files);
         const tickets = await new TicketReader(mem.fs).readShelves(B);
-        expect(tickets.find(t => t.number === 'DUE099')).toMatchObject({ workType: null, routineType: null, parent: null, icon: '' });
+        expect(tickets.find(t => t.number === 'DUE099')).toMatchObject({ ticketType: null, routineType: null, parent: null, icon: '' });
     });
 
     it('reads the icon of every ticket, and of one ticket by its folder', async () => {
         const mem = createMemFs({
             ...files,
-            [`${B}/work/DUEX03_WorkSupport/INDEX.md`]: '---\nwork-type: program\nicon: 🧰\nparent: null\n---\n'
+            [`${B}/work/DUEX03_WorkSupport/INDEX.md`]: '---\nticket-type: program\nicon: 🧰\nparent: null\n---\n'
         });
         const reader = new TicketReader(mem.fs);
         expect((await reader.readShelves(B)).find(t => t.number === 'DUEX03')?.icon).toBe('🧰');
@@ -136,7 +136,7 @@ describe('TicketReader', () => {
         expect(await reader.ticketIcon(`${B}/work/DUE099_NoIndex`)).toBe('');
     });
 
-    it('a business without work/ or backlog/ has no tickets', async () => {
+    it('a workspace without work/ or backlog/ has no tickets', async () => {
         const mem = createMemFs({ [`${B}/context.json`]: '{}' });
         expect(await new TicketReader(mem.fs).readShelves(B)).toEqual([]);
     });
@@ -173,15 +173,15 @@ describe('TicketReader', () => {
             : readHead(p, bytes);
 
         const tickets = await new TicketReader(mem.fs, 20).readShelves(B);
-        expect(tickets.find(t => t.number === 'DUE017')).toMatchObject({ workType: null, routineType: null, parent: null });
-        expect(tickets.find(t => t.number === 'DUEX03')?.workType).toBe('program');
+        expect(tickets.find(t => t.number === 'DUE017')).toMatchObject({ ticketType: null, routineType: null, parent: null });
+        expect(tickets.find(t => t.number === 'DUEX03')?.ticketType).toBe('program');
     });
 
     describe('inheritedIcon — the icon a ticket shows in «Активная Работа»', () => {
         const tree = (overrides: Record<string, string> = {}) => createMemFs({
-            [`${B}/work/DUEX03_WorkSupport/INDEX.md`]: '---\nwork-type: program\nicon: 🧰\nparent: null\n---\n',
-            [`${B}/work/DUE017_IntentSwitcher/INDEX.md`]: '---\nwork-type: project\nparent: DUEX03\n---\n',
-            [`${B}/work/DUE020_SubProject/INDEX.md`]: '---\nwork-type: project\nparent: DUE017\n---\n',
+            [`${B}/work/DUEX03_WorkSupport/INDEX.md`]: '---\nticket-type: program\nicon: 🧰\nparent: null\n---\n',
+            [`${B}/work/DUE017_IntentSwitcher/INDEX.md`]: '---\nticket-type: project\nparent: DUEX03\n---\n',
+            [`${B}/work/DUE020_SubProject/INDEX.md`]: '---\nticket-type: project\nparent: DUE017\n---\n',
             ...overrides
         });
         const icon = (mem: ReturnType<typeof createMemFs>, folder: string, shelf = 'work') =>
@@ -215,8 +215,8 @@ describe('TicketReader', () => {
             expect(await icon(archived, 'DUE017_IntentSwitcher')).toBe('🧰');
         });
 
-        it('3. empty when no ticket of the chain has an icon — the business is then the last resort', async () => {
-            const mem = tree({ [`${B}/work/DUEX03_WorkSupport/INDEX.md`]: '---\nwork-type: program\nparent: null\n---\n' });
+        it('3. empty when no ticket of the chain has an icon — the workspace is then the last resort', async () => {
+            const mem = tree({ [`${B}/work/DUEX03_WorkSupport/INDEX.md`]: '---\nticket-type: program\nparent: null\n---\n' });
             expect(await icon(mem, 'DUE017_IntentSwitcher')).toBe('');
         });
 
@@ -251,42 +251,51 @@ describe('TicketReader', () => {
     });
 });
 
-describe('readBusinessManifest', () => {
-    const readFile = (text: string) => createMockFs({ readFile: async () => text });
+describe('readWorkspaceManifest', () => {
+    const manifest = (front: string, context = '{"version": 4}') =>
+        readWorkspaceManifest(B, createMemFs({ [`${B}/context.json`]: context, [`${B}/INDEX.md`]: `---\n${front}\n---\n# X\n` }).fs);
 
-    it('reads the name and the emoji from context.json on disk', async () => {
-        expect(await readBusinessManifest(B, readFile('{"version": 4, "name": "DuetLab", "icon": "🚀"}')))
+    it('reads the name and the emoji from the frontmatter of INDEX.md', async () => {
+        expect(await manifest('folder-type: workspace\nname: DuetLab\nicon: 🚀'))
             .toEqual({ name: 'DuetLab', icon: '🚀', ticketCode: null });
     });
 
-    it('no icon in the manifest means no emoji — no default is made up', async () => {
-        expect(await readBusinessManifest(B, readFile('{"version": 4, "name": "DuetLab"}')))
-            .toEqual({ name: 'DuetLab', icon: '', ticketCode: null });
+    it('no icon means no emoji — no default is made up', async () => {
+        expect(await manifest('name: DuetLab')).toEqual({ name: 'DuetLab', icon: '', ticketCode: null });
     });
 
-    it("a context.json without a version is another tool's file, not a business", async () => {
-        expect((await readBusinessManifest(B, readFile('{"name": "something"}'))).name).toBeNull();
+    it("a context.json without a version is another tool's file, not a workspace", async () => {
+        expect((await manifest('name: something', '{"name": "something"}')).name).toBeNull();
     });
 
-    it('reads the ticket code — three capital letters and nothing else', async () => {
-        const code = async (value: string) =>
-            (await readBusinessManifest(B, readFile(`{"version": 4, "name": "DuetLab", "ticket_code": ${value}}`))).ticketCode;
+    it('DUE063: name, icon and ticket_code in context.json are not read any more', async () => {
+        const mem = createMemFs({ [`${B}/context.json`]: '{"version": 4, "name": "DuetLab", "icon": "🚀", "ticket_code": "DUE"}' });
+        expect(await readWorkspaceManifest(B, mem.fs)).toEqual({ name: null, icon: '', ticketCode: null });
+    });
+
+    it('reads ticket-code — three capital letters, or inherit, and nothing else', async () => {
+        const code = async (value: string) => (await manifest(`name: DuetLab\nticket-code: ${value}`)).ticketCode;
+        expect(await code('DUE')).toBe('DUE');
         expect(await code('"DUE"')).toBe('DUE');
-        expect(await code('"due"')).toBeNull();
-        expect(await code('"DUET"')).toBeNull();
+        expect(await code('inherit')).toBe('inherit');
+        expect(await code('due')).toBeNull();
+        expect(await code('DUET')).toBeNull();
         expect(await code('7')).toBeNull();
     });
 
+    it('an indented line belongs to a value above it, not to the frontmatter', async () => {
+        expect((await manifest('description: |\n  name: Not this\nname: DuetLab')).name).toBe('DuetLab');
+    });
+
     it('a missing or broken manifest gives nothing', async () => {
-        expect(await readBusinessManifest(B, readFile('{ broken'))).toEqual({ name: null, icon: '', ticketCode: null });
-        const missing = createMockFs({ readFile: async () => { throw new Error('ENOENT'); } });
-        expect(await readBusinessManifest(B, missing)).toEqual({ name: null, icon: '', ticketCode: null });
+        expect(await manifest('name: DuetLab', '{ broken')).toEqual({ name: null, icon: '', ticketCode: null });
+        expect(await readWorkspaceManifest(B, createMemFs({}).fs)).toEqual({ name: null, icon: '', ticketCode: null });
     });
 });
 
 // ---------------------------------------------------------------------------
 
-function ticket(folder: string, shelf: 'work' | 'backlog', workType: string | null, parent: string | null): TicketInfo {
+function ticket(folder: string, shelf: 'work' | 'backlog', ticketType: string | null, parent: string | null): TicketInfo {
     const number = folder.split('_')[0];
     return {
         number,
@@ -294,7 +303,7 @@ function ticket(folder: string, shelf: 'work' | 'backlog', workType: string | nu
         name: folder.slice(number.length + 1),
         path: `${B}/${shelf}/${folder}`,
         shelf,
-        workType,
+        ticketType,
         routineType: null,
         parent,
         icon: ''
@@ -690,7 +699,7 @@ describe('resolveTicketNow', () => {
 });
 
 describe('bin order file', () => {
-    it('lies in the business folder, in .vscode', () => {
+    it('lies in the workspace folder, in .vscode', () => {
         expect(binOrderPath(B)).toBe(`${B}/.vscode/duet-intents.json`);
     });
 

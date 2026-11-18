@@ -26,7 +26,7 @@ const input = (appState: AppState = readyState()): RecomputeInput => ({
   appState,
   deployStatus: { state: 'up_to_date', version: '0.1.28' },
   hasDeployWarning: false,
-  migrationStatus: { critical: null, contextErrors: [], migratedCount: 0 }
+  migrationStatus: { critical: null, workspaceErrors: [], migratedCount: 0 }
 })
 
 const scan = (errors: ScanResult['errors'] = []): ScanResult => ({
@@ -106,7 +106,7 @@ describe('host sync', () => {
   it('delivers a new scan.json while AppState stays the same, and stays silent on a repeat', () => {
     const sync = createHostSync(deps)
     sync.recompute(input())
-    const changed = scan([{ reason_code: 'missing_manifest' }] as ScanResult['errors'])
+    const changed = scan([{ reason_code: 'ticket_code_collision' }] as ScanResult['errors'])
     scans['/data'] = changed
 
     sync.recompute(input())

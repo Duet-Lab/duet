@@ -1,56 +1,61 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { ContextEntity } from '../../core/api-client';
+import { WorkspaceEntity } from '../../core/api-client';
 import { FileSystem, nodeFs } from '../../core/fs';
 import { Paths } from '../../core/paths';
 import { intentIcon, intentIdentity, intentTabLabel } from '../../core/intents/naming';
 import { TicketService } from '../../core/intents/ticketService';
-import { BUSINESS_CURATION, TicketInfo, readBusinessManifest, resolveTicketNow } from '../../core/intents/tickets';
+import { WORKSPACE_CURATION, TicketInfo, readWorkspaceManifest, resolveTicketNow } from '../../core/intents/tickets';
+import { ticketWorkspace, ticketsWorkspaceOf, workspaceByPath } from '../../core/workspaces';
 import { IntentWorkspacePlan, planIntentWorkspace } from '../../core/intents/workspaceFile';
 import { TicketWorktree } from '../../core/intents/worktrees';
 import { metaExtraFolders } from '../../core/workspace';
 import { IntentsRuntime } from '../intents/IntentsRuntime';
 import { messageOf, say } from '../notify';
-import { getVentureFolders } from '../ventures';
-import { isSafeRepoName, prepareBusinessRepos } from './businessRepos';
+import { getRootFolders, getWorkspaces } from '../registry';
+import { isSafeRepoName, prepareWorkspaceRepos } from './workspaceRepos';
 
-export type TicketBusiness = Pick<ContextEntity, 'name' | 'absolute_path' | 'git_repos' | 'reference_repos' | 'meta'>;
+/** The workspace that owns a ticket — on whose shelves it lies — as a row of the bin or a node of the tree knows it. */
+export type TicketOwner = Pick<WorkspaceEntity, 'name' | 'absolute_path' | 'git_repos' | 'reference_repos' | 'meta'>;
 
-/** One opening path for bin rows, newly created tickets, and a business's curator. */
+/** One opening path for bin rows, newly created tickets, and a workspace's curator. */
 export class TicketOpener {
     constructor(
         private readonly paths: Paths,
         private readonly runtime: IntentsRuntime,
         private readonly tickets: TicketService,
         private readonly changed: () => Promise<void> = async () => undefined,
-        private readonly fs: FileSystem = nodeFs
+        private readonly fs: FileSystem = nodeFs,
+        private readonly registry: () => readonly WorkspaceEntity[] = getWorkspaces
     ) {}
 
     /**
-     * Open the intent of a ticket: move it out of the backlog, bring the
-     * business's repos to disk, build the workspace file anew, hold the intent
-     * and its colour, open the file. A ticket with a branch gets its worktrees
-     * beside the main clones (`ticketWorktrees`).
+     * Open the intent of a ticket: move it out of the backlog, find the
+     * workspace it is worked in (`default-workspace`, else its owner), bring
+     * that workspace's repos to disk, build the workspace file anew under the
+     * owner, hold the intent and its colour, open the file. A ticket with a
+     * branch gets its worktrees beside the main clones (`ticketWorktrees`).
      *
+     * @param owner - the workspace on whose shelves the ticket lies
      * @returns whether a window was opened or brought forward
      */
     async open(
         ticket: Pick<TicketInfo, 'number' | 'folder' | 'shelf'>,
-        business: TicketBusiness,
+        owner: TicketOwner,
         forceNewWindow: boolean,
         requireCurator = false
     ): Promise<boolean> {
-        const businessPath = business?.absolute_path;
-        if (!business || !businessPath) {
+        const ownerPath = owner?.absolute_path;
+        if (!owner || !ownerPath) {
             return false;
         }
         const ticketNumber = ticket.number;
 
         await this.runtime.refresh();
         if (requireCurator) {
-            const resolved = await resolveTicketNow(this.runtime.tickets, businessPath, ticket);
-            if (!('place' in resolved) || !await this.runtime.tickets.isRoutineAt(resolved.place.path, BUSINESS_CURATION)) {
-                throw new Error(`Куратор ${ticketNumber} изменился или перемещён — повторите открытие бизнеса.`);
+            const resolved = await resolveTicketNow(this.runtime.tickets, ownerPath, ticket);
+            if (!('place' in resolved) || !await this.runtime.tickets.isRoutineAt(resolved.place.path, WORKSPACE_CURATION)) {
+                throw new Error(`Куратор ${ticketNumber} изменился или перемещён — повторите открытие воркспейса.`);
             }
         }
         const active = this.runtime.getActive().find(row => row.ticket === ticketNumber);
@@ -62,7 +67,7 @@ export class TicketOpener {
             return true;
         }
 
-        const now = await resolveTicketNow(this.runtime.tickets, businessPath, ticket);
+        const now = await resolveTicketNow(this.runtime.tickets, ownerPath, ticket);
         if (now.state === 'gone' || now.state === 'ambiguous') {
             say(now.state === 'gone'
                 ? `Тикета ${ticketNumber} нет ни в work/, ни в backlog/ — корзина обновлена.`
@@ -84,12 +89,25 @@ export class TicketOpener {
             }
         }
 
-        const gitRepos = business.git_repos ?? {};
-        const ready = isSafeRepoName(business.name)
-            && await prepareBusinessRepos(business.name, gitRepos, business.reference_repos ?? undefined, this.paths);
+        // The workspace the ticket is worked in — the owner or one of its desks — is the first folder of its window
+        const registry = this.registry();
+        const ownerEntity = workspaceByPath(registry, ownerPath) ?? asEntity(owner);
+        const { workspace, refused } = ticketWorkspace(registry, ownerEntity, await this.runtime.tickets.defaultWorkspace(place.path));
+        if (refused) {
+            say(refused.why === 'unknown'
+                ? `Воркспейс «${refused.name}» из default-workspace тикета ${ticketNumber} не зарегистрирован — окно открыто в ${owner.name}, владельце тикета.`
+                : `Воркспейс «${refused.name}» из default-workspace тикета ${ticketNumber} не ведёт тикеты ${owner.name}: тикет открывается только у владельца или его бизнес-деска — окно открыто в ${owner.name}.`);
+        }
+        const workspacePath = workspace.absolute_path as string;
+        const tickets = ticketsWorkspaceOf(workspace, registry);
+        const ticketsWorkspacePath = tickets.kind === 'inherited' ? tickets.workspace.absolute_path : null;
+
+        const gitRepos = workspace.git_repos ?? {};
+        const ready = isSafeRepoName(owner.name)
+            && await prepareWorkspaceRepos(workspace.name, gitRepos, workspace.reference_repos ?? undefined, this.paths);
         if (!ready) {
-            if (!isSafeRepoName(business.name)) {
-                say(`Имя бизнеса «${business.name}» не годится для имени папки — интент не открыт.`);
+            if (!isSafeRepoName(owner.name)) {
+                say(`Имя воркспейса «${owner.name}» не годится для имени папки — интент не открыт.`);
             }
             if (moved) {
                 await this.changed();
@@ -97,32 +115,35 @@ export class TicketOpener {
             return false;
         }
 
-        const workspacePath = this.paths.intentWorkspacePath(business.name, place.folder);
-        const manifest = await readBusinessManifest(businessPath, this.fs);
+        // The file stays under the owner: a change of `default-workspace` keeps its path, its colour and its tabs
+        const workspaceFile = this.paths.intentWorkspacePath(owner.name, place.folder);
+        const manifest = await readWorkspaceManifest(ownerPath, this.fs);
         const identity = intentIdentity(place.folder);
         if (!identity) {
             return false;
         }
         // One emoji for the row of the window and for the tab of its notepad
-        const ticketIcon = await this.runtime.tickets.inheritedIcon(businessPath, place.path);
+        const ticketIcon = await this.runtime.tickets.inheritedIcon(ownerPath, place.path);
         const worktrees = await this.ticketWorktrees(ticketNumber, place.path);
-        const plan = await this.planWorkspaceFile(workspacePath, {
-            businessPath,
+        const plan = await this.planWorkspaceFile(workspaceFile, {
+            workspacePath,
+            ticketPath: place.path,
+            ticketsWorkspacePath,
             aliases: Object.keys(gitRepos),
             worktrees,
-            extraFolders: metaExtraFolders(business.meta, businessPath, getVentureFolders(), this.paths.root),
+            extraFolders: metaExtraFolders(workspace.meta, workspacePath, getRootFolders(), this.paths.root),
             ticketFolder: place.folder,
             tabLabel: intentTabLabel(intentIcon(ticketIcon, manifest.icon), identity)
         }, ticketNumber);
 
         // Repository preparation can wait on a clone: do not launch an obsolete criterion afterwards.
-        if (requireCurator && !await this.runtime.tickets.isRoutineAt(place.path, BUSINESS_CURATION)) {
-            throw new Error(`Куратор ${ticketNumber} изменился — повторите открытие бизнеса.`);
+        if (requireCurator && !await this.runtime.tickets.isRoutineAt(place.path, WORKSPACE_CURATION)) {
+            throw new Error(`Куратор ${ticketNumber} изменился — повторите открытие воркспейса.`);
         }
 
         if (plan.action === 'write') {
-            await this.fs.mkdir(path.dirname(workspacePath), { recursive: true });
-            await this.fs.atomicWriteFile(workspacePath, plan.text, 'utf8');
+            await this.fs.mkdir(path.dirname(workspaceFile), { recursive: true });
+            await this.fs.atomicWriteFile(workspaceFile, plan.text, 'utf8');
         } else if (plan.action === 'as-is') {
             say(plan.reason === 'newer'
                 ? `Файл окна ${ticketNumber} собран более новой версией Duet — открыт как есть.`
@@ -133,18 +154,18 @@ export class TicketOpener {
             subject: 'intent',
             ticket: ticketNumber,
             ticketFolder: place.folder,
-            business: business.name,
-            businessPath,
+            workspace: owner.name,
+            workspacePath: ownerPath,
             icon: manifest.icon,
             ticketIcon,
-            workspaceFile: workspacePath,
+            workspaceFile,
             location: 'work',
             color: plan.color
         });
         if (moved) {
             await this.changed();
         }
-        await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspacePath), { forceNewWindow });
+        await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(workspaceFile), { forceNewWindow });
         return true;
     }
 
@@ -213,4 +234,14 @@ export class TicketOpener {
         return planIntentWorkspace(existing, spec, this.runtime.occupiedColors(ticketNumber));
     }
 
+}
+
+/** A workspace known only from a row or a node: enough of an entity to be its own ticket workspace. */
+function asEntity(owner: TicketOwner): WorkspaceEntity {
+    return {
+        id: '', type: 'workspace', name: owner.name, icon: null, path: '', absolute_path: owner.absolute_path,
+        parent_id: null, meta: owner.meta, git_repos: owner.git_repos, reference_repos: owner.reference_repos,
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        ticket_code: null
+    };
 }

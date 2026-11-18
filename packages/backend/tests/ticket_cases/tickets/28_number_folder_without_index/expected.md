@@ -1,6 +1,6 @@
 ### DUE101 MovingPlan
 
-Project, in work. Business: DuetLab (DUE).
+Project, in work. Owner workspace: DuetLab (DUE).
 
 **Folder:** `{root}/DuetLab/work/DUE101_MovingPlan`
 

@@ -45,7 +45,7 @@ describe('preload ↔ IPC channels', () => {
   it('reads the stored agent status, not a fresh detection', () => {
     expect(channelOf('getAgents')).toBe('agents:get')
     expect(channelOf('refreshAgents')).toBe('agents:refresh')
-    expect(channelOf('getCachedScan')).toBe('root-contexts:get-cached-scan')
+    expect(channelOf('getCachedScan')).toBe('root-workspaces:get-cached-scan')
   })
 
   it('every invoking API method targets a channel main registers', () => {

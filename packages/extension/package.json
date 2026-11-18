@@ -2,7 +2,7 @@
     "name": "duet",
     "displayName": "Duet",
     "description": "Life OS for VS Code",
-    "version": "0.0.74",
+    "version": "0.0.79",
     "publisher": "duet-org",
     "engines": {
         "vscode": "^1.104.0"
@@ -47,7 +47,7 @@
             },
             {
                 "command": "duet.contextSettings",
-                "title": "Настройки контекста",
+                "title": "Настройки воркспейса",
                 "icon": "$(gear)",
                 "category": "Duet",
                 "shortTitle": "Настройки"
@@ -1302,7 +1302,7 @@
             "activitybar": [
                 {
                     "id": "duet-explorer",
-                    "title": "Duet 0.0.74",
+                    "title": "Duet 0.0.79",
                     "icon": "resources/duet-icon.svg"
                 }
             ]
@@ -1334,14 +1334,14 @@
                 },
                 {
                     "id": "duet.context",
-                    "name": "КОНТЕКСТ",
+                    "name": "ВОРКСПЕЙС",
                     "when": "duet.hasPointer && duet.ready",
                     "visibility": "hidden",
                     "initialSize": 1
                 },
                 {
                     "id": "duet.contexts",
-                    "name": "Все Бизнесы",
+                    "name": "Все воркспейсы",
                     "when": "duet.hasPointer && duet.ready",
                     "initialSize": 4
                 }

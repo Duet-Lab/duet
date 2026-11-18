@@ -11,7 +11,7 @@
  * STARTUP-flow по schema-migrations:
  * 1. setupIpcHandlers — регистрируем заранее, чтобы renderer не упал на early invoke.
  * 2. createTray.
- * 3. runMigrationsNow() — Host-owned auto-upgrade settings/machine/contexts. См. core/schema-migrations.
+ * 3. runMigrationsNow() — Host-owned auto-upgrade settings/machine/workspace manifests. См. core/schema-migrations.
  * 4. updateAppState() + window if needed.
  * 5. Backend auto-start — gated на migrationStatus.critical === null.
  */
@@ -34,11 +34,11 @@ import {
 } from '../core/deploy'
 import {
   readCachedScan,
-  getRootContextFolders,
-  getResolvedRootContextFolders,
+  getRootWorkspaceFolders,
+  getResolvedRootWorkspaceFolders,
   triggerScan,
   enforceMetaInvariant
-} from '../core/root-contexts'
+} from '../core/root-workspaces'
 import {
   EMPTY_MIGRATION_RESULT,
   loadOrUpgradeManifests,
@@ -103,7 +103,7 @@ const hostSync = createHostSync({
  * Вызывается:
  * - При старте Host'а до spawn'а Backend'а.
  * - При сохранении pointer'а через wizard, если duetConfigPath/machine изменились.
- * - При добавлении root-context'а через wizard.
+ * - При добавлении root workspace через wizard.
  */
 async function runMigrationsNow(): Promise<MigrationResult> {
   // 0. Pointer validation. Different from settings/machine: pointer is owned by Host,
@@ -122,7 +122,7 @@ async function runMigrationsNow(): Promise<MigrationResult> {
             ? `Pointer-файл (~/.org.ve68.duet) повреждён: ${pointer.error}. Восстановите из backup или удалите файл вручную, чтобы пройти настройку заново.`
             : `Не удалось прочитать pointer-файл: ${pointer.error}.`
       },
-      contextErrors: [],
+      workspaceErrors: [],
       migratedCount: 0
     }
     broadcastMigrationStatus(currentMigrationStatus)
@@ -140,10 +140,10 @@ async function runMigrationsNow(): Promise<MigrationResult> {
 
   let migratedCount = 0
 
-  // 1. settings.json — must run first; we read root_context_folders from it after this.
+  // 1. settings.json — must run first; we read root_workspace_folders from it after this.
   const settings = loadOrUpgradeSettings(config.duetConfigPath)
   if (settings.critical) {
-    currentMigrationStatus = { critical: settings.critical, contextErrors: [], migratedCount: 0 }
+    currentMigrationStatus = { critical: settings.critical, workspaceErrors: [], migratedCount: 0 }
     broadcastMigrationStatus(currentMigrationStatus)
     return currentMigrationStatus
   }
@@ -153,34 +153,34 @@ async function runMigrationsNow(): Promise<MigrationResult> {
   if (config.machine && isValidMachineName(config.machine)) {
     const machine = loadOrUpgradeMachineConfig(config.duetConfigPath, config.machine)
     if (machine.critical) {
-      currentMigrationStatus = { critical: machine.critical, contextErrors: [], migratedCount }
+      currentMigrationStatus = { critical: machine.critical, workspaceErrors: [], migratedCount }
       broadcastMigrationStatus(currentMigrationStatus)
       return currentMigrationStatus
     }
     if (machine.migrated) migratedCount += 1
   }
 
-  // 3. Manifests under each root context folder. By now settings.json reads as v2 → resolved
+  // 3. Manifests under each root workspace folder. By now settings.json reads as v3 → resolved
   // alias map below uses the new key. Unresolved aliases (review issue 4) bubble up as
-  // per-context warnings here — without this surface they'd silently disappear.
-  const resolvedEntries = getResolvedRootContextFolders()
+  // per-workspace errors here — without this surface they'd silently disappear.
+  const resolvedEntries = getResolvedRootWorkspaceFolders()
   const unresolvedAliasErrors = resolvedEntries
     .filter((e) => e.unresolved)
     .map((e) => ({
       path: e.raw,
-      root_context_path: e.raw,
+      root_workspace_path: e.raw,
       reason_code: 'unresolved_alias' as const,
-      description: `Алиас ${e.raw} не зарегистрирован в machine config — папку не удаётся найти. Зарегистрируйте алиас или удалите запись из root_context_folders.`
+      description: `Алиас ${e.raw} не зарегистрирован в machine config — папку не удаётся найти. Зарегистрируйте алиас или удалите запись из root_workspace_folders.`
     }))
   const reachableFolders = resolvedEntries.filter((e) => !e.unresolved).map((e) => e.resolved)
   const manifests = loadOrUpgradeManifests(reachableFolders)
 
-  // Enforce meta-required invariant: when root_context_folders is non-empty, position 0
-  // is the meta-context. Restores the invariant if user manually edited settings.json or
-  // manifests on disk. Idempotent on already-correct state. Run only when no per-context
+  // Enforce meta-required invariant: when root_workspace_folders is non-empty, position 0
+  // is the meta workspace. Restores the invariant if user manually edited settings.json or
+  // manifests on disk. Idempotent on already-correct state. Run only when no per-workspace
   // errors hit the resolved roots — enforcing on top of broken manifests would skip them
   // anyway and the user's first task is to fix those errors.
-  if (manifests.contextErrors.length === 0) {
+  if (manifests.workspaceErrors.length === 0) {
     try {
       enforceMetaInvariant(resolvedEntries.filter((e) => !e.unresolved))
     } catch (e) {
@@ -190,7 +190,7 @@ async function runMigrationsNow(): Promise<MigrationResult> {
 
   currentMigrationStatus = {
     critical: null,
-    contextErrors: [...unresolvedAliasErrors, ...manifests.contextErrors],
+    workspaceErrors: [...unresolvedAliasErrors, ...manifests.workspaceErrors],
     migratedCount: migratedCount + manifests.migratedCount
   }
   broadcastMigrationStatus(currentMigrationStatus)
@@ -344,7 +344,7 @@ function stopPointerWatcher(): void {
  * Tray показывает warning/error если:
  * - VERSION mismatch (нужен деплой)
  * - Любой шаг визарда в состоянии 'error' (scan/instruction/agent проблемы)
- * - Schema-migration critical/per-context errors
+ * - Schema-migration critical/per-workspace errors
  */
 const updateAppState = (): void => {
   appState = checkAppState()
@@ -508,7 +508,7 @@ if (gotTheLock) {
         .then(() =>
           runPostStartSetup(duetDataPath, {
             readPort,
-            hasRootContexts: () => getRootContextFolders().length > 0,
+            hasRootWorkspaces: () => getRootWorkspaceFolders().length > 0,
             readCachedScan,
             triggerScan,
             readCachedErrors,

@@ -3,7 +3,7 @@
 Each behavior of `tickets`, `new_ticket`, `move_ticket`, and `edit_ticket` is
 a folder you can review without reading any code:
 
-    ticket_cases/trees/<tree>/     a business folder that cases start from
+    ticket_cases/trees/<tree>/     a workspace folder that cases start from
     ticket_cases/<tool>/<case>/
         tree.txt      name of the shared tree to start from
         before/       a case-specific starting folder, used instead of
@@ -23,7 +23,11 @@ A case with neither `after/` nor `removed.txt` must leave the disk untouched.
 the shared trees. To change behavior, update the case first, then the code.
 Nothing here writes to `ticket_cases/`.
 
-In `expected.md`, `{root}` stands for the directory containing the business.
+In `expected.md`, `{root}` stands for the directory containing the workspace.
+
+Every case also has the desk `DuetDev` registered: a workspace beside the
+case's tree, with `ticket-code: inherit`, whose parent in the registry is the
+case's workspace. It lives outside the compared tree.
 """
 
 import ast
@@ -48,7 +52,7 @@ import services.tickets.model as tickets_model
 import services.tickets.writes as tickets_writes
 from mcp.types import CallToolResult
 from mcp_handler import mcp
-from services.resolve_paths import ContextRef
+from services.resolve_paths import WorkspaceRef
 from services.tickets import ACTIONS, Result, run
 from services.tickets.frontmatter import Frontmatter
 from services.tickets.naming import count_words, humanize_name, next_number, to_pascal_case
@@ -56,6 +60,7 @@ from services.tickets.naming import count_words, humanize_name, next_number, to_
 
 CASES_DIR = Path(__file__).parent / "ticket_cases"
 DEFAULT_TODAY = date(2026, 10, 8)
+DESK = "DuetDev"
 TREES_DIR = CASES_DIR / "trees"
 CASE_DIRS = sorted(p for p in CASES_DIR.glob("*/*") if p.is_dir() and p.parent != TREES_DIR)
 
@@ -105,13 +110,31 @@ def tree_of(folder: Path) -> dict[str, bytes]:
     }
 
 
+def workspace_name(folder: Path) -> str:
+    """The `name` in the frontmatter of a workspace's `INDEX.md`."""
+    text = (folder / "INDEX.md").read_text(encoding="utf-8")
+    return yaml.safe_load(text.split("---")[1])["name"]
+
+
+def make_desk(root: Path, parent: str) -> WorkspaceRef:
+    """The desk every case has registered: `ticket-code: inherit`, child of `parent`."""
+    desk = root / DESK
+    desk.mkdir()
+    (desk / "context.json").write_text('{\n  "version": 4\n}\n', encoding="utf-8")
+    (desk / "INDEX.md").write_text(
+        f"---\nfolder-type: workspace\nname: {DESK}\nticket-code: inherit\n---\n",
+        encoding="utf-8")
+    return WorkspaceRef(DESK, desk, parent=parent)
+
+
 @pytest.mark.parametrize("case", CASE_DIRS, ids=lambda p: f"{p.parent.name}/{p.name}")
 def test_case(case: Path, tmp_path: Path) -> None:
     root = tmp_path.resolve()
     start = start_of(case)
-    name = json.loads((start / "context.json").read_text(encoding="utf-8"))["name"]
-    business = root / name
-    shutil.copytree(start, business)
+    name = workspace_name(start)
+    workspace = root / name
+    shutil.copytree(start, workspace)
+    workspaces = [WorkspaceRef(name, workspace), make_desk(root, name)]
 
     action, arguments = parse_call((case / "call.txt").read_text(encoding="utf-8"))
     assert action == case.parent.name, "a case must live in the folder named after its tool"
@@ -119,14 +142,14 @@ def test_case(case: Path, tmp_path: Path) -> None:
     today = (date.fromisoformat(today_file.read_text(encoding="utf-8").strip())
              if today_file.exists() else DEFAULT_TODAY)
 
-    result = run(action, [ContextRef(name, business)], today, **arguments)
+    result = run(action, workspaces, today, **arguments)
 
     expected = (case / "expected.md").read_text(encoding="utf-8").rstrip("\n")
     assert result.text.replace(str(root), "{root}") == expected
     assert result.is_error == ("_error_" in case.name)
-    assert tree_of(business) == expected_tree(case, tree_of(start))
+    assert tree_of(workspace) == expected_tree(case, tree_of(start))
     if result.is_error:
-        assert tree_of(business) == tree_of(start), "a failed call must not change the disk"
+        assert tree_of(workspace) == tree_of(start), "a failed call must not change the disk"
 
 
 def test_cases_md_lists_every_case() -> None:
@@ -189,7 +212,7 @@ class TestFrontmatter:
 
     SOURCE = (
         "---\n"
-        "folder-type: work\n"
+        "folder-type: ticket\n"
         "opened: 2026-10-01   # set by hand\n"
         "custom-field: [a, b]\n"
         "parent: DUEX02\n"
@@ -215,7 +238,7 @@ class TestFrontmatter:
         fm.set_map("git-parked-branches", {"Duet": "DUE054_parked-saved-work",
                                            "duet-work": "DUE054_parked-skill"})
         assert fm.render().startswith(
-            "---\nfolder-type: work\nopened: 2026-10-01   # set by hand\n"
+            "---\nfolder-type: ticket\nopened: 2026-10-01   # set by hand\n"
             "custom-field: [a, b]\nparent: DUEX02\ngit-parked-branches:\n"
             "  Duet: DUE054_parked-saved-work\n  duet-work: DUE054_parked-skill\n---\n")
         assert fm.get_map("git-parked-branches") == {
@@ -288,7 +311,7 @@ class TestWordRule:
     """Words are what stands between spaces; a one-character word isn't counted."""
 
     def test_words_stand_between_spaces(self) -> None:
-        assert count_words("Single entry point for businesses") == 5
+        assert count_words("Single entry point for workspaces") == 5
         assert count_words("Release 0.1.26") == 2
         assert count_words("ui-research-notes") == 1
         assert count_words("  two   words\n") == 2
@@ -318,7 +341,7 @@ class TestNumbers:
     def test_first(self) -> None:
         assert next_number("DUE", "project", []) == "DUE001"
 
-    def test_each_work_type_has_its_own_sequence(self) -> None:
+    def test_each_ticket_type_has_its_own_sequence(self) -> None:
         taken = ["DUE007", "DUEX03", "DUEA01", "MET512"]
         assert next_number("DUE", "project", taken) == "DUE008"
         assert next_number("DUE", "program", taken) == "DUEX04"
@@ -332,96 +355,206 @@ class TestNumbers:
 @pytest.fixture
 def lab(tmp_path: Path) -> Path:
     """A scratch copy of the shared `lab` tree."""
-    business = tmp_path.resolve() / "DuetLab"
-    shutil.copytree(TREES_DIR / "lab", business)
-    return business
+    workspace = tmp_path.resolve() / "DuetLab"
+    shutil.copytree(TREES_DIR / "lab", workspace)
+    return workspace
 
 
 def call(lab: Path, action: str, **arguments):
-    return run(action, [ContextRef("DuetLab", lab)], DEFAULT_TODAY, **arguments)
+    return run(action, [WorkspaceRef("DuetLab", lab)], DEFAULT_TODAY, **arguments)
 
 
-class TestAreaSelection:
-    """Area filters use live ticket metadata without requiring their own manifest."""
+def write_workspace(folder: Path, name: str, ticket_code: str | None = None) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "context.json").write_text('{"version": 4}', encoding="utf-8")
+    code = f"ticket-code: {ticket_code}\n" if ticket_code else ""
+    (folder / "INDEX.md").write_text(
+        f"---\nfolder-type: workspace\nname: {name}\n{code}---\n", encoding="utf-8")
+    return folder
 
-    def test_owner_name_still_returns_all_areas(self, lab: Path) -> None:
-        by_name = call(lab, "tickets", business="DuetLab")
-        by_code = call(lab, "tickets", code="DUE")
-        assert by_name == by_code
 
-    def test_batch_lookup_checks_each_ticket(self, lab: Path) -> None:
-        result = call(lab, "tickets", business="DuetShell", number=["DUE007", "DUE008"])
+class TestWorkspaces:
+    """The three rules: tickets workspace, owner, and the workspace of a ticket."""
+
+    @pytest.fixture
+    def tree(self, lab: Path, tmp_path: Path) -> dict:
+        """DuetLab (DUE) with the desk DuetDev inside it, and Genesis elsewhere."""
+        root = tmp_path.resolve()
+        desk = write_workspace(lab / "DuetDev", "DuetDev", "inherit")
+        genesis = write_workspace(root / "Genesis", "Genesis")
+        workspaces = [WorkspaceRef("DuetLab", lab),
+                      WorkspaceRef("DuetDev", desk, parent="DuetLab"),
+                      WorkspaceRef("Genesis", genesis)]
+        return {"lab": lab, "desk": desk, "genesis": genesis, "workspaces": workspaces}
+
+    @staticmethod
+    def run(tree: dict, action: str, **arguments):
+        return run(action, tree["workspaces"], DEFAULT_TODAY, **arguments)
+
+    def test_owner_by_name_or_code_is_the_same_listing(self, tree: dict) -> None:
+        assert self.run(tree, "tickets", workspace="DuetLab") == \
+            self.run(tree, "tickets", code="DUE")
+
+    def test_desk_lists_inherited_tickets(self, tree: dict) -> None:
+        result = self.run(tree, "tickets", workspace="DuetDev")
         assert not result.is_error
-        assert "Resolved 1 of 2 tickets. Failed: DUE008." in result.text
-        assert [t["number"] for t in result.tickets] == ["DUE007"]
+        assert result.text.startswith("### Tickets of DuetLab (DUE), inherited by DuetDev\n")
+        assert "`DUE008` CoreProtocols" in result.text
 
-    def test_archive_and_unsorted_stay_in_area(self, lab: Path) -> None:
-        result = call(lab, "tickets", business="DuetOrig", shelf="archive")
+    def test_desk_filters_say_the_tickets_are_inherited(self, tree: dict) -> None:
+        for arguments in ({"shelf": "backlog"}, {"parent": "DUEX01"}, {"parent": "unsorted"}):
+            result = self.run(tree, "tickets", workspace="DuetDev", **arguments)
+            assert not result.is_error, arguments
+            assert result.text.startswith(
+                "Tickets of DuetLab (DUE), inherited by DuetDev.\n\n"), arguments
+
+    def test_desk_looks_up_inherited_numbers(self, tree: dict) -> None:
+        result = self.run(tree, "tickets", workspace="DuetDev", number="DUE008")
         assert not result.is_error
-        assert "DUE017" in result.text and "DUE036" in result.text
-        assert "DUE013" not in result.text and "DUE002" not in result.text
-        unsorted = call(lab, "tickets", business="DuetShell", parent="unsorted")
-        assert not unsorted.is_error and "Tickets: none" in unsorted.text
-        assert "DUE026" not in unsorted.text
+        assert "Owner workspace: DuetLab (DUE)." in result.text
 
-    def test_external_parent_is_context_not_a_matching_ticket(self, lab: Path) -> None:
-        parent = lab / "work/DUEX01_ShellPrototype/INDEX.md"
-        parent.write_text(parent.read_text().replace("DuetShell", "DuetWork"))
-        result = call(lab, "tickets", business="DuetShell", parent="DUEX01")
-        assert not result.is_error
-        assert "New Duet shell prototype" in result.text
-        assert "Tickets: 2 in work, 1 in backlog" in result.text
-        lookup = call(lab, "tickets", business="DuetShell", number="DUEX01")
-        assert lookup.is_error and "not in business area" in lookup.text
+    def test_number_of_another_owner_is_refused(self, tree: dict) -> None:
+        write_workspace(tree["genesis"], "Genesis", "GEN")
+        result = self.run(tree, "tickets", workspace="Genesis", number="DUE008")
+        assert result.is_error and "belongs to DuetLab, not to the tickets of Genesis" \
+            in result.text
 
-    def test_area_changes_are_read_live(self, lab: Path) -> None:
-        ticket = lab / "work/DUE007_UIResearch/INDEX.md"
-        ticket.write_text(ticket.read_text().replace("DuetShell", "DuetWork"))
-        result = call(lab, "tickets", business="DuetShell")
-        assert not result.is_error and "DUE007" not in result.text
-
-    def test_unreadable_metadata_does_not_silently_disappear(self, lab: Path) -> None:
-        (lab / "work/DUE007_UIResearch/INDEX.md").write_bytes(b"\xff")
-        result = call(lab, "tickets", business="DuetShell")
+    def test_code_against_desk_is_refused(self, tree: dict) -> None:
+        result = self.run(tree, "tickets", workspace="DuetDev", code="GEN")
         assert result.is_error
-        assert "unreadable tickets (DUE007)" in result.text
+        assert "DuetDev's tickets are those of DuetLab (DUE)" in result.text
 
-    def test_ambiguous_area_needs_owner_code(self, lab: Path, tmp_path: Path) -> None:
-        other = tmp_path / "OtherLab"
-        other.mkdir()
-        (other / "context.json").write_text(json.dumps(
-            {"version": 4, "name": "OtherLab", "ticket_code": "OTH"}))
-        ticket = other / "work/OTH001_Example"
-        ticket.mkdir(parents=True)
-        (ticket / "INDEX.md").write_text("---\nbusiness-area: DuetShell\n---\n")
-        contexts = [ContextRef("DuetLab", lab), ContextRef("OtherLab", other)]
-        result = run("tickets", contexts, DEFAULT_TODAY, business="DuetShell")
-        assert result.is_error and "multiple businesses" in result.text
-        scoped = run("tickets", contexts, DEFAULT_TODAY, business="DuetShell", code="DUE")
-        assert not scoped.is_error and "DUE007" in scoped.text
-        assert "OTH001" not in scoped.text
-
-    def test_registered_owner_takes_precedence_over_area_label(
-        self, lab: Path, tmp_path: Path
-    ) -> None:
-        owner = tmp_path / "DuetShell"
-        owner.mkdir()
-        (owner / "context.json").write_text(json.dumps(
-            {"version": 4, "name": "DuetShell", "ticket_code": "SHL"}))
-        result = run("tickets", [ContextRef("DuetLab", lab), ContextRef("DuetShell", owner)],
-                     DEFAULT_TODAY, business="DuetShell")
-        assert not result.is_error and "DuetShell (SHL)" in result.text
-        assert "DUE007" not in result.text
-
-    def test_unknown_area_is_not_an_empty_success(self, lab: Path) -> None:
-        result = call(lab, "tickets", business="DuetShel")
-        assert result.is_error and "not found" in result.text
-
-    def test_write_business_resolution_is_unchanged(self, lab: Path) -> None:
-        before = tree_of(lab)
-        result = call(lab, "new_ticket", business="DuetShell", name="New Work")
+    def test_workspace_without_code_has_no_tickets(self, tree: dict) -> None:
+        result = self.run(tree, "tickets", workspace="Genesis")
         assert result.is_error
-        assert tree_of(lab) == before
+        assert "Genesis has no tickets" in result.text and "ticket-code: inherit" in result.text
+
+    def test_inherit_without_coded_ancestor_is_an_error(self, tree: dict) -> None:
+        write_workspace(tree["genesis"], "Genesis", "inherit")
+        result = self.run(tree, "tickets", workspace="Genesis")
+        assert result.is_error
+        assert "Genesis has `ticket-code: inherit`, but no workspace above it" in result.text
+
+    def test_inherit_skips_ancestors_that_inherit_too(self, tree: dict) -> None:
+        inner = write_workspace(tree["desk"] / "Inner", "Inner", "inherit")
+        tree["workspaces"].append(WorkspaceRef("Inner", inner, parent="DuetDev"))
+        result = self.run(tree, "tickets", workspace="Inner")
+        assert result.text.startswith("### Tickets of DuetLab (DUE), inherited by Inner\n")
+
+    def test_new_ticket_from_desk_opens_in_the_desk(self, tree: dict) -> None:
+        result = self.run(tree, "new_ticket", name="Desk Window", workspace="DuetDev")
+        assert not result.is_error, result.text
+        index = tree["lab"] / "work" / "DUE037_DeskWindow" / "INDEX.md"
+        assert 'default-workspace: "@DuetDev"\nparent: null\n' in index.read_text()
+        assert result.tickets[0]["default_workspace"] == "DuetDev"
+        assert result.tickets[0]["owner"] == str(tree["lab"])
+
+    def test_new_ticket_from_desk_under_a_parent(self, tree: dict) -> None:
+        result = self.run(tree, "new_ticket", name="Thesaurus", parent="DUEX02",
+                          workspace="DuetDev")
+        assert not result.is_error, result.text
+        index = tree["lab"] / "work" / "DUE037_Thesaurus" / "INDEX.md"
+        assert 'default-workspace: "@DuetDev"\nparent: DUEX02\n' in index.read_text()
+
+    def test_new_ticket_with_parent_of_another_owner_is_refused(self, tree: dict) -> None:
+        write_workspace(tree["genesis"], "Genesis", "GEN")
+        result = self.run(tree, "new_ticket", name="Probe", parent="DUEX02",
+                          workspace="Genesis")
+        assert result.is_error and "belongs to DuetLab" in result.text
+
+    def test_new_ticket_in_owner_gets_no_default_workspace(self, tree: dict) -> None:
+        result = self.run(tree, "new_ticket", name="Probe", workspace="DuetLab")
+        index = tree["lab"] / "work" / "DUE037_Probe" / "INDEX.md"
+        assert "default-workspace" not in index.read_text()
+        assert result.tickets[0]["default_workspace"] is None
+
+    @pytest.mark.parametrize("code", [None, "GEN"])
+    def test_foreign_default_workspace_creates_nothing(self, tree: dict, code) -> None:
+        """No satellite work: Genesis, with or without a code, is no desk of DuetLab."""
+        write_workspace(tree["genesis"], "Genesis", code)
+        before = tree_of(tree["lab"])
+        result = self.run(tree, "new_ticket", name="Agent Notes", code="DUE",
+                          default_workspace="@Genesis")
+        assert result.is_error
+        assert ("Genesis, which is neither the owner nor a desk inheriting its tickets. A "
+                "ticket of DuetLab is worked on only in DuetLab or a desk inheriting its "
+                "tickets: DuetLab, DuetDev.") in result.text
+        assert tree_of(tree["lab"]) == before
+
+    def test_default_workspace_may_be_a_desk_or_the_owner(self, tree: dict) -> None:
+        for name, number in (("DuetDev", "DUE037"), ("@DuetLab", "DUE038")):
+            result = self.run(tree, "new_ticket", name="", code="DUE", default_workspace=name)
+            assert not result.is_error, result.text
+            index = tree["lab"] / "work" / number / "INDEX.md"
+            assert f'default-workspace: "@{name.lstrip("@")}"' in index.read_text()
+
+    def test_tickets_workspace_skips_a_desk_in_between(self, tree: dict) -> None:
+        """A desk inside a desk works on the tickets of the nearest coded ancestor."""
+        inner = write_workspace(tree["desk"] / "Inner", "Inner", "inherit")
+        tree["workspaces"].append(WorkspaceRef("Inner", inner, parent="DuetDev"))
+        refs = {w.name: w for w in tree["workspaces"]}
+        assert tickets_model.tickets_workspace(tree["workspaces"], refs["Inner"])[0].name == \
+            "DuetLab"
+        assert [w.name for w in tickets_model.allowed_workspaces(
+            tree["workspaces"], tree["lab"])] == ["DuetLab", "DuetDev", "Inner"]
+
+    def test_explicit_empty_default_workspace_writes_none(self, tree: dict) -> None:
+        self.run(tree, "new_ticket", name="Probe", workspace="DuetDev", default_workspace="")
+        index = tree["lab"] / "work" / "DUE037_Probe" / "INDEX.md"
+        assert "default-workspace" not in index.read_text()
+
+    def test_unknown_default_workspace_creates_nothing(self, tree: dict) -> None:
+        before = tree_of(tree["lab"])
+        result = self.run(tree, "new_ticket", name="Probe", code="DUE",
+                          default_workspace="Nowhere")
+        assert result.is_error and "Nowhere, which is not a registered workspace" in result.text
+        assert tree_of(tree["lab"]) == before
+
+    def test_edit_sets_and_clears_default_workspace(self, tree: dict) -> None:
+        index = tree["lab"] / "work" / "DUE008_CoreProtocols" / "INDEX.md"
+        result = self.run(tree, "edit_ticket", ticket="DUE008", default_workspace="DuetDev")
+        assert not result.is_error, result.text
+        assert "* Default workspace set to @DuetDev" in result.text
+        assert 'default-workspace: "@DuetDev"\nparent: DUEX02' in index.read_text()
+        assert result.tickets[0]["default_workspace"] == "DuetDev"
+        cleared = self.run(tree, "edit_ticket", ticket="DUE008", default_workspace="")
+        assert "* Default workspace cleared (was @DuetDev)" in cleared.text
+        assert "default-workspace" not in index.read_text()
+
+    def test_edit_refuses_foreign_default_workspace(self, tree: dict) -> None:
+        before = tree_of(tree["lab"])
+        result = self.run(tree, "edit_ticket", ticket="DUE008", default_workspace="Genesis")
+        assert result.is_error and "neither the owner nor a desk" in result.text
+        assert tree_of(tree["lab"]) == before
+
+    def test_lookup_explains_a_default_workspace_it_cannot_open_in(self, tree: dict) -> None:
+        index = tree["lab"] / "work" / "DUE008_CoreProtocols" / "INDEX.md"
+        index.write_text(index.read_text().replace(
+            "parent: DUEX02", 'default-workspace: "@Genesis"\nparent: DUEX02'))
+        result = self.run(tree, "tickets", number="DUE008")
+        assert ("Note: `default-workspace` names `@Genesis`, which is neither the owner nor a "
+                "desk inheriting its tickets, so the ticket opens in its owner workspace "
+                "`@DuetLab`.") in result.text
+        assert result.tickets[0]["default_workspace"] == "Genesis"
+
+    def test_edit_refuses_unknown_default_workspace(self, tree: dict) -> None:
+        before = tree_of(tree["lab"])
+        result = self.run(tree, "edit_ticket", ticket="DUE008", default_workspace="Nowhere")
+        assert result.is_error and tree_of(tree["lab"]) == before
+
+    def test_records_carry_owner_and_default_workspace(self, tree: dict) -> None:
+        result = self.run(tree, "tickets", number=["DUE004", "DUE008"])
+        by_number = {t["number"]: t for t in result.tickets}
+        assert by_number["DUE004"]["default_workspace"] == "DuetDev"
+        assert by_number["DUE008"]["default_workspace"] is None
+        assert {t["owner"] for t in result.tickets} == {str(tree["lab"])}
+
+    def test_old_argument_names_are_unknown(self, tree: dict) -> None:
+        for action, args in [("tickets", {"business": "DuetLab"}),
+                             ("new_ticket", {"name": "Probe", "code": "DUE", "work_type": "program"}),
+                             ("edit_ticket", {"ticket": "DUE008", "area": "DuetShell"})]:
+            result = self.run(tree, action, **args)
+            assert result.is_error and "now" not in result.text
 
 
 def fail_writes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -613,7 +746,7 @@ class TestMcpBoundary:
             def ticket_action(self, action: str, **arguments):
                 return call(lab, action, **arguments)
 
-        monkeypatch.setattr(mcp_handler, "_workspace_service", Service())
+        monkeypatch.setattr(mcp_handler, "_orientation_service", Service())
         return lambda name, arguments: asyncio.run(mcp.call_tool(name, arguments))
 
     def test_schema_is_strict_and_annotated(self) -> None:
@@ -670,7 +803,7 @@ class TestMcpBoundary:
             def ticket_action(self, action: str, **arguments):
                 time.sleep(0.5)
 
-        monkeypatch.setattr(mcp_handler, "_workspace_service", StalledService())
+        monkeypatch.setattr(mcp_handler, "_orientation_service", StalledService())
         monkeypatch.setattr(mcp_handler, "_READ_TIMEOUT_SECONDS", 0.05)
         result = tools("tickets", {"code": "DUE"})
         assert isinstance(result, CallToolResult) and result.isError
@@ -684,7 +817,7 @@ class TestMcpBoundary:
                 seen.append(threading.current_thread() is threading.main_thread())
                 return Result("ok")
 
-        monkeypatch.setattr(mcp_handler, "_workspace_service", Service())
+        monkeypatch.setattr(mcp_handler, "_orientation_service", Service())
         tools("move_ticket", {"ticket": "DUE008", "to": "backlog"})
         assert seen == [False]
 
@@ -702,24 +835,42 @@ class TestTools:
         for name in ACTIONS:
             assert tools[name].outputSchema is None
 
-    def test_through_workspace_service(self, tmp_path: Path, db, monkeypatch) -> None:
+    def test_through_orientation_service(self, tmp_path: Path, db, monkeypatch) -> None:
         from scanner import Scanner
-        from services.workspace import WorkspaceService
+        from services.orientation import OrientationService
         from tests.fixtures import DuetDataBuilder
 
         builder = DuetDataBuilder(tmp_path)
-        builder.add_root_context("Root", folder_name="!Root")
+        builder.add_root_workspace("Root", folder_name="!Root")
         builder.build(monkeypatch)
-        lab = builder.get_root_context_path(0) / "DuetLab"
+        lab = builder.get_root_workspace_path(0) / "DuetLab"
         shutil.copytree(TREES_DIR / "lab", lab)
         Scanner(db, repos_path=builder.get_repos_path()).scan()
 
-        service = WorkspaceService(db)
+        service = OrientationService(db)
         created = service.ticket_action("new_ticket", name="Thesaurus", parent="DUEX02")
         assert not created.is_error
         assert created.text.startswith("### Created DUE037 Thesaurus")
         assert (lab / "work" / "DUE037_Thesaurus" / "INDEX.md").is_file()
         assert "`DUE037` Thesaurus" in service.ticket_action("tickets", code="DUE").text
-        scoped = service.ticket_action("tickets", business="DuetShell")
-        assert not scoped.is_error and "DUE007" in scoped.text
-        assert "DUE037" not in scoped.text
+
+    def test_desk_through_orientation_service(self, tmp_path: Path, db, monkeypatch) -> None:
+        """The registry gives the desk its parent, so `inherit` resolves through the service."""
+        from scanner import Scanner
+        from services.orientation import OrientationService
+        from tests.fixtures import DuetDataBuilder, ManifestBuilder
+
+        builder = DuetDataBuilder(tmp_path)
+        builder.add_root_workspace("Root", folder_name="!Root")
+        builder.build(monkeypatch)
+        lab = builder.get_root_workspace_path(0) / "DuetLab"
+        shutil.copytree(TREES_DIR / "lab", lab)
+        ManifestBuilder.workspace(lab / "DuetDev", "DuetDev", ticket_code="inherit")
+        Scanner(db, repos_path=builder.get_repos_path()).scan()
+
+        service = OrientationService(db)
+        listing = service.ticket_action("tickets", workspace="DuetDev")
+        assert listing.text.startswith("### Tickets of DuetLab (DUE), inherited by DuetDev")
+        created = service.ticket_action("new_ticket", name="Desk Probe", workspace="DuetDev")
+        assert not created.is_error, created.text
+        assert created.tickets[0]["default_workspace"] == "DuetDev"

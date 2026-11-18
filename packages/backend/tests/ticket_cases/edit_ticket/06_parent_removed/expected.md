@@ -4,17 +4,16 @@
 
 **Index:** `@DUE008/INDEX.md`
 
-* Parent cleared (was DUEX02 WorkDoctrine; business area unchanged)
+* Parent cleared (was DUEX02 WorkDoctrine)
 
 Updated frontmatter:
 
 ```yaml
 ---
-folder-type: work
-work-type: project
+folder-type: ticket
+ticket-type: project
 description: Agenda and reply conventions
 opened: 2026-10-01
-business-area: DuetWork
 parent: null
 ---
 ```

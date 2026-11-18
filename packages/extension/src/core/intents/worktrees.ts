@@ -1,5 +1,6 @@
 import * as path from 'path';
-import { normalizePath } from '../pathUtils';
+import { normalizePath, parseTicketFolderName } from '../pathUtils';
+import { ownerOfTicketPath } from '../workspaces';
 
 /**
  * The worktrees of a ticket in its window. A ticket with a branch has, in
@@ -39,8 +40,8 @@ export function worktreeFolder(worktree: TicketWorktree): WindowFolder {
 
 /**
  * The repo folders of a new window: each main clone, followed by the
- * worktree of the same repo; then worktrees of repos the business itself
- * does not declare (a repo of a business inside it), in the server's order.
+ * worktree of the same repo; then worktrees of repos the workspace itself
+ * does not declare (a repo of a workspace inside it), in the server's order.
  */
 export function repoFolders(aliases: string[], worktrees: TicketWorktree[]): WindowFolder[] {
     const folders: WindowFolder[] = [];
@@ -63,8 +64,22 @@ export function samePath(a: string, b: string): boolean {
 }
 
 /**
+ * Whether a folder of a window is a folder of this ticket by its path alone:
+ * its name carries the number and it lies on a shelf of a workspace
+ * (`core/workspaces.ts:ownerOfTicketPath`). The disk is not asked: the folder
+ * of a ticket that moved is still the ticket's.
+ */
+export function isTicketFolderOf(folderPath: string, ticketNumber: string): boolean {
+    return parseTicketFolderName(path.basename(folderPath))?.number === ticketNumber && ownerOfTicketPath(folderPath) !== null;
+}
+
+/**
  * The folders an open window should have, built from the folders it has now.
  *
+ * - The second folder, the ticket's own, follows the ticket: when it is a
+ *   folder of this ticket and `ticketPath` — where the ticket lies now — is
+ *   elsewhere, it is replaced. Null `ticketPath` (the ticket is gone, or two
+ *   folders carry its number) leaves it alone.
  * - A worktree of this ticket whose folder no longer exists is removed; an
  *   existing folder is never removed.
  * - A worktree the server named is added when it is not there yet: right
@@ -72,7 +87,7 @@ export function samePath(a: string, b: string): boolean {
  *   for a repo without its main clone in the window, after the last folder
  *   in `repos`. `worktrees` holds only those whose folders exist; null means
  *   the server did not answer, and then nothing is added.
- * - The first folder, the business, stays: changing it restarts the window's extensions.
+ * - The first folder, the workspace, stays: changing it restarts the window's extensions.
  * - Folders the person added by hand are kept where they are.
  */
 export function reconcileFolders(
@@ -80,10 +95,14 @@ export function reconcileFolders(
     reposDir: string,
     ticketNumber: string,
     worktrees: TicketWorktree[] | null,
-    exists: (folderPath: string) => boolean
+    exists: (folderPath: string) => boolean,
+    ticketPath: string | null = null
 ): WindowFolder[] {
-    const next = current.filter((folder, index) =>
-        index === 0 || !isOwnWorktree(folder.path, reposDir, ticketNumber) || exists(folder.path));
+    const next = current
+        .map((folder, index) => index === 1 && ticketPath && isTicketFolderOf(folder.path, ticketNumber)
+            && !samePath(folder.path, ticketPath) ? { path: ticketPath } : folder)
+        .filter((folder, index) =>
+            index === 0 || !isOwnWorktree(folder.path, reposDir, ticketNumber) || exists(folder.path));
     for (const worktree of worktrees ?? []) {
         if (next.some(folder => samePath(folder.path, worktree.path))) {
             continue;

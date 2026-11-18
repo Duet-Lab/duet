@@ -23,9 +23,13 @@ export interface DuetDataPathResponse {
     path: string;
 }
 
-export interface ContextEntity {
+/**
+ * One workspace of the registry (`GET /workspaces`): a folder with a manifest.
+ * `name`, `icon` and `ticket_code` come from the frontmatter of its `INDEX.md`.
+ */
+export interface WorkspaceEntity {
     id: string;
-    type: 'context';
+    type: 'workspace';
     name: string;
     icon: string | null;
     path: string;
@@ -35,10 +39,17 @@ export interface ContextEntity {
     description?: string | null;
     git_repos: Record<string, string> | null;
     reference_repos?: Record<string, string> | null;
+    /**
+     * `ticket-code` of its `INDEX.md` as written: its own code (`"DUE"`),
+     * `"inherit"` — the tickets of the nearest ancestor with a code of its own
+     * (`core/workspaces.ts:ticketsWorkspaceOf`) — or null: no tickets.
+     */
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    ticket_code: string | null;
 }
 
-export interface ContextsResponse {
-    contexts: ContextEntity[];
+export interface WorkspacesResponse {
+    workspaces: WorkspaceEntity[];
 }
 
 export interface DeployInstructionsResponse {
@@ -46,7 +57,7 @@ export interface DeployInstructionsResponse {
     reason?: string;
     deployed?: Record<string, string[]>;
     warnings?: string[];
-    /** Symlinks in the business folder that the deploy refused to follow. */
+    /** Symlinks in the workspace folder that the deploy refused to follow. */
     errors?: string[];
 }
 
@@ -110,8 +121,8 @@ export class DuetApiClient {
         return this.get('/duet-data-path');
     }
 
-    async contexts(): Promise<ContextsResponse> {
-        return this.get('/contexts');
+    async workspaces(): Promise<WorkspacesResponse> {
+        return this.get('/workspaces');
     }
 
     async scan(): Promise<ScanResponse> {
@@ -119,8 +130,9 @@ export class DuetApiClient {
     }
 
     /**
-     * Deploy the owning context's instruction components (skills / system_prompt)
-     * into its Drive folder. Idempotent — safe to call on every workspace open.
+     * Deploy the instruction components (skills / system_prompt) of the workspace
+     * of the first path into its Drive folder; the other paths take no part.
+     * Idempotent — safe to call on every open of a window.
      */
     async deployInstructions(workspacePaths: string[]): Promise<DeployInstructionsResponse> {
         return this.postJson('/deploy-instructions', { workspace_paths: workspacePaths });

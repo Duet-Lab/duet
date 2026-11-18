@@ -11,14 +11,15 @@ import { CodexRpc, RpcClient, codexConversationPath, codexEnvironment, firstTurn
 import { discardPreparation, prepareCodex } from '../../core/chats/preparation';
 import { ChatChooserController, ChooserPorts } from '../../core/chats/controller';
 import { chooserHtml, ChooserState, creationBlockedReason, chatCreationLabel } from '../../core/chats/view';
-import { createMemFs } from './helpers/memFs';
+import { createMemFs, workspaceFiles } from './helpers/memFs';
+import { WorkspaceEntity } from '../../core/api-client';
 
-const scope: ChatScope = { directories: ['/business', '/repo'], ticket: 'DUE051', business: 'Business', ticketCodes: ['DUE', 'MCL'], codesComplete: true };
+const scope: ChatScope = { directories: ['/workspace', '/repo'], ticket: 'DUE051', workspace: 'Workspace', ticketCodes: ['DUE', 'MCL'], codesComplete: true };
 const request = (text: string, provenance = 'user') => ({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }], internal_chat_message_metadata_passthrough: { content_item_metadata: [{ provenance: { type: provenance } }] } } });
-const transcript = (id: string, prompt = 'DUE051', cwd = '/business') => [
+const transcript = (id: string, prompt = 'DUE051', cwd = '/workspace') => [
     { type: 'session_meta', payload: { id, cwd, source: 'vscode' } }, request('<environment_context>DUE050</environment_context>', 'harness'), request(prompt)
 ].map(row => JSON.stringify(row)).join('\n') + '\n';
-const session = (provider: 'codex' | 'claude' = 'codex', id = 'old'): ChatSession => ({ provider, id, cwd: '/business', firstPrompt: 'DUE051', title: 'Existing chat', updatedAt: 1, createdAt: 1 });
+const session = (provider: 'codex' | 'claude' = 'codex', id = 'old'): ChatSession => ({ provider, id, cwd: '/workspace', firstPrompt: 'DUE051', title: 'Existing chat', updatedAt: 1, createdAt: 1 });
 const signal = () => new AbortController().signal;
 const leaseClock = { pid: 101, bootTime: 0, now: () => 1000, alive: (pid: number) => pid === 101 };
 const makeStore = () => { const memory = createMemFs(); return { ...memory, store: new ChatStore('/storage', memory.fs, leaseClock) }; };
@@ -36,7 +37,7 @@ class FakeRpc implements RpcClient {
     async call(method: string, params: Record<string, unknown>): Promise<unknown> {
         this.calls.push({ method, params });
         if (method === this.failMethod) { throw new Error('Injected failure'); }
-        if (method === 'thread/start') { return { thread: { id: this.id, cwd: '/business', source: 'vscode', environments: [{ runtimeWorkspaceRoots: this.roots }] }, runtimeWorkspaceRoots: this.roots, sandbox: { type: 'dangerFullAccess' }, approvalPolicy: 'never' }; }
+        if (method === 'thread/start') { return { thread: { id: this.id, cwd: '/workspace', source: 'vscode', environments: [{ runtimeWorkspaceRoots: this.roots }] }, runtimeWorkspaceRoots: this.roots, sandbox: { type: 'dangerFullAccess' }, approvalPolicy: 'never' }; }
         if (method === 'turn/start') {
             this.emit('turn/started', { threadId: this.id, turn: { id: 'turn' } });
             this.onStart?.();
@@ -45,7 +46,7 @@ class FakeRpc implements RpcClient {
         }
         if (method === 'turn/interrupt') { this.emit('turn/completed', { threadId: params.threadId, turn: { id: params.turnId, status: 'interrupted' } }); }
         if (method === 'thread/name/set') { this.name = String(params.name); }
-        if (method === 'thread/read') { return { thread: { id: this.id, name: this.name, cwd: '/business' } }; }
+        if (method === 'thread/read') { return { thread: { id: this.id, name: this.name, cwd: '/workspace' } }; }
         if (method === 'thread/list') { return { data: [], nextCursor: null }; }
         return {};
     }
@@ -69,19 +70,19 @@ describe('chat scope and first human request', () => {
     });
     it('does not require a complete foreign code registry for an exact ticket', () => expect(classifyPrompt('DUE051', { ...scope, codesComplete: false })).toBe('match'));
     it('filters exact directories, not descendants', () => {
-        expect(matchesDirectory('/business/../repo', scope.directories)).toBe(true); expect(matchesDirectory('/business/child', scope.directories)).toBe(false);
+        expect(matchesDirectory('/workspace/../repo', scope.directories)).toBe(true); expect(matchesDirectory('/workspace/child', scope.directories)).toBe(false);
     });
     it('takes provenance over XML shape', () => {
         const parsed = parseSession('codex', transcript('id', '<custom>DUE051</custom>'), 'fallback', 1);
         expect(parsed.session?.firstPrompt).toBe('<custom>DUE051</custom>');
     });
     it('never treats an unknown legacy user payload as unticketed', () => {
-        const text = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/business' } }) + '\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: 'DUE051' } });
+        const text = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/workspace' } }) + '\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: 'DUE051' } });
         expect(parseSession('codex', text, 'id', 1).uncertain).toBe(true);
     });
     it('supports indexed retained content kinds without guessing unknown context', () => {
         const retained = (text: string, kind: string) => { const row = request(text); return { ...row, payload: { ...row.payload, internal_chat_message_metadata_passthrough: { content_item_kinds: [kind] } } }; };
-        const rows = [{ type: 'session_meta', payload: { id: 'id', cwd: '/business' } }, retained('DUE050', 'environments.environment_context'), retained('DUE051', 'user.text')];
+        const rows = [{ type: 'session_meta', payload: { id: 'id', cwd: '/workspace' } }, retained('DUE050', 'environments.environment_context'), retained('DUE051', 'user.text')];
         expect(parseSession('codex', rows.map(row => JSON.stringify(row)).join('\n'), 'id', 1).session?.firstPrompt).toBe('DUE051');
         rows[1] = retained('DUE050', 'unknown.context');
         expect(parseSession('codex', rows.map(row => JSON.stringify(row)).join('\n'), 'id', 1).uncertain).toBe(true);
@@ -89,24 +90,24 @@ describe('chat scope and first human request', () => {
     it('keeps mixed user and unknown provenance unclassified', () => {
         const row = request('DUE051');
         row.payload.internal_chat_message_metadata_passthrough.content_item_metadata.push({ provenance: { type: 'unknown' } });
-        const text = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/business' } }) + '\n' + JSON.stringify(row);
+        const text = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/workspace' } }) + '\n' + JSON.stringify(row);
         expect(parseSession('codex', text, 'id', 1).uncertain).toBe(true);
     });
     it('supports legacy explicit user-message events', () => {
-        const text = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/business' } }) + '\n' + JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'DUE051' } });
+        const text = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/workspace' } }) + '\n' + JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'DUE051' } });
         expect(parseSession('codex', text, 'id', 1).session?.firstPrompt).toBe('DUE051');
     });
     it('ignores a torn appended record after the verified first request', () => expect(parseSession('codex', transcript('id') + '{"partial":', 'id', 1).session?.id).toBe('id'));
     it('does not skip a malformed earlier record silently', () => expect(parseSession('codex', '{broken}\n' + transcript('id'), 'id', 1).uncertain).toBe(true));
     it('excludes subagents', () => expect(parseSession('codex', transcript('id').replace('"vscode"', '"subAgent"'), 'id', 1).ignored).toBe(true));
     it('reads Claude user input and custom titles, not tool results or meta context', () => {
-        const rows = [{ type: 'user', isMeta: true, cwd: '/business', message: { content: 'DUE050' } }, { type: 'user', sessionId: 'id', message: { content: [{ type: 'tool_result', content: 'DUE050' }] } }, { type: 'user', message: { content: '<xml>DUE051</xml>' } }, { type: 'custom-title', customTitle: 'DUE051 (3)' }];
+        const rows = [{ type: 'user', isMeta: true, cwd: '/workspace', message: { content: 'DUE050' } }, { type: 'user', sessionId: 'id', message: { content: [{ type: 'tool_result', content: 'DUE050' }] } }, { type: 'user', message: { content: '<xml>DUE051</xml>' } }, { type: 'custom-title', customTitle: 'DUE051 (3)' }];
         expect(parseSession('claude', rows.map(row => JSON.stringify(row)).join('\n'), 'id', 1).session).toMatchObject({ firstPrompt: '<xml>DUE051</xml>', title: 'DUE051 (3)' });
     });
     it('uses exact first prompts and independent count+1 names', () => {
         expect(initialChatPrompt('DUE051')).toBe('DUE051'); expect(initialChatPrompt(null)).toBe('Новый Чат');
         expect(nextChatName(scope, 'codex', [session(), session('claude'), session('claude')])).toBe('DUE051 (2)');
-        expect(nextChatName({ ...scope, ticket: null }, 'codex', [session()])).toBe('Business (2)');
+        expect(nextChatName({ ...scope, ticket: null }, 'codex', [session()])).toBe('Workspace (2)');
         expect(nativeCodexTitle('a'.repeat(31))).toBe('a'.repeat(30) + '…');
     });
     it('validates native routes and sanitizes only agent identity environment variables', () => {
@@ -115,21 +116,48 @@ describe('chat scope and first human request', () => {
     });
 });
 
-describe('business context adapter', () => {
-    const manifest = JSON.stringify({ version: 4, name: 'Business', ticket_code: 'DUE' });
-    it('uses manifest name and code and the existing window ticket', async () => {
-        const mem = createMemFs({ '/business/context.json': manifest });
+describe('workspace context adapter', () => {
+    const files = workspaceFiles('/workspace', { name: 'Workspace', ticketCode: 'DUE' });
+    const entity = (id: string, name: string, absolute_path: string, ticket_code: string | null, parent_id: string | null = null): WorkspaceEntity =>
+        ({ id, type: 'workspace', name, icon: null, path: name, absolute_path, parent_id, meta: false, git_repos: null, ticket_code });
+    it('uses the name and the code from INDEX.md and the existing window ticket', async () => {
+        const mem = createMemFs(files);
         const reader = new ChatScopeReader(mem.fs);
-        expect(await reader.read({ subject: 'intent', key: 'DUEX03', businessPath: '/business' }, ['/business'], [], false)).toMatchObject({ ticket: 'DUEX03', ticketCodes: ['DUE'] });
-        await expect(reader.read({ subject: 'intent', key: 'XYZ123', businessPath: '/business' }, ['/business'], [], true)).rejects.toThrow('ticket_code');
+        const own = (key: string) => ({ subject: 'intent' as const, key, workspacePath: '/workspace', ownerPath: '/workspace' });
+        expect(await reader.read(own('DUEX03'), ['/workspace'], [], false)).toMatchObject({ ticket: 'DUEX03', ticketCodes: ['DUE'], workspace: 'Workspace' });
+        await expect(reader.read(own('XYZ123'), ['/workspace'], [], true)).rejects.toThrow('ticket-code');
     });
     it('collects registered codes without a new backend route and caches manifests', async () => {
-        const mem = createMemFs({ '/business/context.json': manifest, '/other/context.json': JSON.stringify({ version: 4, name: 'Other', ticket_code: 'MCL' }) });
+        const mem = createMemFs({ ...files, ...workspaceFiles('/other', { name: 'Other', ticketCode: 'MCL' }) });
         const reader = new ChatScopeReader(mem.fs);
-        const own = { subject: 'business' as const, key: '@Business', businessPath: '/business' };
-        expect((await reader.read(own, ['/business'], ['/other'], true)).ticketCodes).toContain('MCL');
-        expect((await reader.read(own, ['/business'], ['/missing'], true)).codesComplete).toBe(false);
-        await expect(reader.read(null, ['/business'], [], true)).rejects.toThrow('Duet');
+        const own = { subject: 'workspace' as const, key: '@Workspace', workspacePath: '/workspace', ownerPath: '/workspace' };
+        expect((await reader.read(own, ['/workspace'], [entity('2', 'Other', '/other', 'MCL')], true)).ticketCodes).toContain('MCL');
+        expect((await reader.read(own, ['/workspace'], [entity('3', 'Missing', '/missing', null)], true)).codesComplete).toBe(false);
+        await expect(reader.read(null, ['/workspace'], [], true)).rejects.toThrow('Duet');
+    });
+    it('DUE063: in a ticket window of a desk the chat is made — the ticket is checked against the owner, not the first folder', async () => {
+        const mem = createMemFs({
+            ...workspaceFiles('/lab', { name: 'DuetLab', ticketCode: 'DUE' }),
+            ...workspaceFiles('/lab/DuetDev', { name: 'DuetDev', ticketCode: 'inherit' })
+        });
+        const registry = [entity('1', 'DuetLab', '/lab', 'DUE'), entity('2', 'DuetDev', '/lab/DuetDev', 'inherit', '1')];
+        const reader = new ChatScopeReader(mem.fs);
+        const own = (key: string) => ({ subject: 'intent' as const, key, workspacePath: '/lab/DuetDev', ownerPath: '/lab' });
+        const folders = ['/lab/DuetDev', '/lab/work/DUE070_X', '/lab'];
+        expect(await reader.read(own('DUE070'), folders, registry, true))
+            .toMatchObject({ workspace: 'DuetDev', ticket: 'DUE070', ticketCodes: ['DUE'] });
+        await expect(reader.read(own('GEN001'), folders, registry, true)).rejects.toThrow('ticket-code');
+    });
+    it('DUE063: the window of a desk counts the code it inherits among the known codes', async () => {
+        const mem = createMemFs({
+            ...workspaceFiles('/lab', { name: 'DuetLab', ticketCode: 'DUE' }),
+            ...workspaceFiles('/lab/DuetDev', { name: 'DuetDev', ticketCode: 'inherit' })
+        });
+        const registry = [entity('1', 'DuetLab', '/lab', 'DUE'), entity('2', 'DuetDev', '/lab/DuetDev', 'inherit', '1')];
+        const own = { subject: 'workspace' as const, key: '@DuetDev', workspacePath: '/lab/DuetDev', ownerPath: '/lab/DuetDev' };
+        const scope = await new ChatScopeReader(mem.fs).read(own, ['/lab/DuetDev', '/lab'], registry, true);
+        expect(scope).toMatchObject({ workspace: 'DuetDev', ticket: null });
+        expect(scope.ticketCodes).toEqual(['DUE']);
     });
 });
 
@@ -137,7 +165,7 @@ describe('bounded session catalog', () => {
     it('returns the full count outside the visible page and caches summaries', async () => {
         const initial = Object.fromEntries(Array.from({ length: 45 }, (_, i) => [`/home/.codex/sessions/2026/11/06/session${i}.jsonl`, transcript(`id${i}`)]));
         const mem = createMemFs(initial); const catalog = new SessionCatalog('/home', mem.fs);
-        const summaries = Array.from({ length: 45 }, (_, i) => ({ id: `id${i}`, cwd: '/business', name: `Saved ${i}` }));
+        const summaries = Array.from({ length: 45 }, (_, i) => ({ id: `id${i}`, cwd: '/workspace', name: `Saved ${i}` }));
         const first = await catalog.list(scope, 'codex', signal(), summaries);
         expect(first.sessions).toHaveLength(45); expect(first.complete).toBe(true); expect(first.sessions[0].title).toMatch(/^Saved/);
         const reads = mem.calls.readHead;
@@ -146,7 +174,7 @@ describe('bounded session catalog', () => {
     });
     it('excludes other cwd, other ticket and unfinished own preparations', async () => {
         const mem = createMemFs({ '/home/.codex/sessions/a.jsonl': transcript('a'), '/home/.codex/sessions/b.jsonl': transcript('b', 'DUE050'), '/home/.codex/sessions/c.jsonl': transcript('c', 'DUE051', '/elsewhere') });
-        const result = await new SessionCatalog('/home', mem.fs).list(scope, 'codex', signal(), ['a', 'b'].map(id => ({ id, cwd: '/business' })), new Set(['a']));
+        const result = await new SessionCatalog('/home', mem.fs).list(scope, 'codex', signal(), ['a', 'b'].map(id => ({ id, cwd: '/workspace' })), new Set(['a']));
         expect(result.sessions).toEqual([]); expect(result.complete).toBe(true);
     });
     it('exposes partial metadata instead of inventing a complete count', async () => {
@@ -205,7 +233,7 @@ describe('Codex app-server preparation', () => {
         expect(rpc.calls).toEqual([]);
     });
     it('stops before a model turn if experimental roots were ignored', async () => {
-        const { store } = makeStore(); const rpc = new FakeRpc(); rpc.roots = ['/business'];
+        const { store } = makeStore(); const rpc = new FakeRpc(); rpc.roots = ['/workspace'];
         await expect(prepareCodex(scope, store, { rpc: async () => rpc, list: async () => ({ sessions: [], complete: true }) }, signal())).rejects.toThrow('корневые папки');
         expect(rpc.calls.some(value => value.method === 'turn/start')).toBe(false);
     });
@@ -232,7 +260,7 @@ describe('Codex app-server preparation', () => {
     });
     it('paginates all sources with an exact cwd filter', async () => {
         const rpc = new FakeRpc(); let page = 0;
-        rpc.call = vi.fn(async () => ({ data: [{ id: `id${page++}`, cwd: '/business' }], nextCursor: page === 1 ? 'next' : null }));
+        rpc.call = vi.fn(async () => ({ data: [{ id: `id${page++}`, cwd: '/workspace' }], nextCursor: page === 1 ? 'next' : null }));
         expect(await listCodexThreads(rpc, scope.directories, signal())).toHaveLength(2);
         expect(rpc.call).toHaveBeenCalledWith('thread/list', expect.objectContaining({ cwd: scope.directories, sourceKinds: ['cli', 'vscode', 'exec', 'appServer', 'unknown'] }));
     });
@@ -254,7 +282,7 @@ function coordinator() {
 }
 
 describe('chooser lifecycle without VS Code mocks', () => {
-    it('shows zero providers without requiring a business or scanning history', async () => {
+    it('shows zero providers without requiring a workspace or scanning history', async () => {
         const { controller, ports, states } = coordinator(); ports.providers = () => []; ports.scope = vi.fn(async () => scope);
         await controller.refresh(); expect(states.at(-1)?.providers).toEqual([]); expect(ports.scope).not.toHaveBeenCalled();
     });
@@ -337,27 +365,27 @@ describe('failure and cancellation boundaries', () => {
 describe('catalog metadata completeness', () => {
     it('does not silently undercount a metadata row whose transcript is missing', async () => {
         const mem = createMemFs(); const catalog = new SessionCatalog('/home', mem.fs);
-        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'missing', cwd: '/business' }]);
+        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'missing', cwd: '/workspace' }]);
         expect(result.complete).toBe(false); expect(result.warnings.join(' ')).toContain('недоступны');
     });
     it('does not flag its own excluded preparation as a missing user transcript', async () => {
         const mem = createMemFs(); const catalog = new SessionCatalog('/home', mem.fs);
-        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'pending', cwd: '/business' }], new Set(['pending']));
+        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'pending', cwd: '/workspace' }], new Set(['pending']));
         expect(result.complete).toBe(true);
     });
 });
 
 describe('workspace primary directory invariant', () => {
-    it('never launches from a repository after the business root was reordered', async () => {
-        const mem = createMemFs({ '/business/context.json': JSON.stringify({ version: 4, name: 'Business', ticket_code: 'DUE' }) });
+    it('never launches from a repository after the workspace root was reordered', async () => {
+        const mem = createMemFs(workspaceFiles('/workspace', { name: 'Workspace', ticketCode: 'DUE' }));
         const reader = new ChatScopeReader(mem.fs);
-        await expect(reader.read({ subject: 'intent', key: 'DUE051', businessPath: '/business' }, ['/repo', '/business'], [], true)).rejects.toThrow('основная папка бизнеса');
+        await expect(reader.read({ subject: 'intent', key: 'DUE051', workspacePath: '/workspace', ownerPath: '/workspace' }, ['/repo', '/workspace'], [], true)).rejects.toThrow('первая папка окна');
     });
 });
 
 describe('human attachment-only requests', () => {
     it('keeps the first attachment-only human request instead of borrowing a later ticket', () => {
-        const rows = [{ type: 'user', cwd: '/business', sessionId: 'image-chat', message: { content: [{ type: 'image', source: { type: 'base64', data: 'fixture' } }] } }, { type: 'user', message: { content: 'DUE051' } }];
+        const rows = [{ type: 'user', cwd: '/workspace', sessionId: 'image-chat', message: { content: [{ type: 'image', source: { type: 'base64', data: 'fixture' } }] } }, { type: 'user', message: { content: 'DUE051' } }];
         const parsed = parseSession('claude', rows.map(row => JSON.stringify(row)).join('\n'), 'image-chat', 1);
         expect(parsed.session?.firstPrompt).toBe(''); expect(parsed.session?.title).toBe('Чат без названия');
         expect(classifyPrompt(parsed.session!.firstPrompt, scope)).toBe('other');
@@ -403,24 +431,24 @@ describe('provider failure isolation', () => {
 
 describe('current Codex event records and stale provider index rows', () => {
     it('uses the canonical completed UserMessage when response-item provenance is absent', () => {
-        const rows = [{ type: 'session_meta', payload: { id: 'id', cwd: '/business', source: 'vscode', cli_version: '0.165.0-alpha.1.2' } }, { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'DUE051' }] } } }, { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'DUE051' }] } }];
+        const rows = [{ type: 'session_meta', payload: { id: 'id', cwd: '/workspace', source: 'vscode', cli_version: '0.165.0-alpha.1.2' } }, { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'DUE051' }] } } }, { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'DUE051' }] } }];
         const result = parseSession('codex', rows.map(row => JSON.stringify(row)).join('\n'), 'id', 1);
         expect(result.uncertain).toBe(false); expect(result.session?.firstPrompt).toBe('DUE051');
     });
     it('extracts only indexed human parts from mixed harness/user content', () => {
         const row = request('unused'); row.payload.content = [{ type: 'input_text', text: '<environment_context>DUE050</environment_context>' }, { type: 'input_text', text: 'DUE051' }];
         row.payload.internal_chat_message_metadata_passthrough.content_item_metadata = [{ provenance: { type: 'harness' } }, { provenance: { type: 'user' } }];
-        const prefix = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/business' } }) + '\n';
+        const prefix = JSON.stringify({ type: 'session_meta', payload: { id: 'id', cwd: '/workspace' } }) + '\n';
         expect(parseSession('codex', prefix + JSON.stringify(row), 'id', 1).session?.firstPrompt).toBe('DUE051');
     });
     it('does not count confirmed deleted transcript tombstones as existing conversations', async () => {
         const mem = createMemFs(); const catalog = new SessionCatalog('/home', mem.fs);
-        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'deleted', cwd: '/business', path: '/home/.codex/sessions/deleted.jsonl' }]);
+        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'deleted', cwd: '/workspace', path: '/home/.codex/sessions/deleted.jsonl' }]);
         expect(result.complete).toBe(true); expect(result.sessions).toEqual([]);
     });
     it('does not follow provider metadata to inspect arbitrary external files', async () => {
         const mem = createMemFs(); const catalog = new SessionCatalog('/home', mem.fs); const stats = mem.calls.stat;
-        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'outside', cwd: '/business', path: '/outside/secret.jsonl' }]);
+        const result = await catalog.list(scope, 'codex', signal(), [{ id: 'outside', cwd: '/workspace', path: '/outside/secret.jsonl' }]);
         expect(result.complete).toBe(false); expect(mem.calls.stat).toBe(stats);
     });
 });
@@ -595,7 +623,7 @@ describe('review regressions: rendered Russian chooser DOM', () => {
     });
     it('renders full timestamps as tooltips and session titles as inert text', () => {
         const title = '<img src=x onerror=alert(1)>';
-        const { nodes } = renderChooserFixture({ ...state, providers: [{ ...codex, sessions: [{ id: 'id', cwd: '/business', title, updatedAt: 1, createdAt: 1 }] }] });
+        const { nodes } = renderChooserFixture({ ...state, providers: [{ ...codex, sessions: [{ id: 'id', cwd: '/workspace', title, updatedAt: 1, createdAt: 1 }] }] });
         expect(nodes.find(node => node.className === 'title')?.textContent).toBe(title);
         const time = nodes.find(node => node.tag === 'time')!;
         expect(time.title).not.toBe(''); expect(time.dateTime).toBe('1970-01-01T00:00:00.001Z');
@@ -606,7 +634,7 @@ describe('review regressions: rendered Russian chooser DOM', () => {
 describe('Andrei acceptance regressions: creation order, command titles and explicit full access', () => {
     it('formats the known Claude command envelope without changing its original membership request', () => {
         const prompt = '<command-message>duet-work</command-message>\n<command-name>/duet-work</command-name>\n<command-args>due051</command-args>';
-        const text = JSON.stringify({ type: 'user', cwd: '/business', sessionId: 'id', timestamp: '2026-11-07T00:00:00.000Z', message: { content: prompt } });
+        const text = JSON.stringify({ type: 'user', cwd: '/workspace', sessionId: 'id', timestamp: '2026-11-07T00:00:00.000Z', message: { content: prompt } });
         const parsed = parseSession('claude', text, 'id', 1);
         expect(parsed.session).toMatchObject({ title: '/duet-work due051', firstPrompt: prompt, createdAt: Date.parse('2026-11-07T00:00:00.000Z') });
         expect(classifyPrompt(parsed.session!.firstPrompt, scope)).toBe('match');
@@ -616,23 +644,23 @@ describe('Andrei acceptance regressions: creation order, command titles and expl
     it.each(['claude', 'codex'] as const)('orders %s by creation descending despite opposite file modification order', async provider => {
         const root = provider === 'codex' ? '/home/.codex/sessions' : '/home/.claude/projects/project';
         const content = (id: string, timestamp: string) => provider === 'codex'
-            ? JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/business', source: 'vscode', timestamp } }) + '\n' + JSON.stringify(request('DUE051'))
-            : JSON.stringify({ type: 'user', sessionId: id, cwd: '/business', timestamp, message: { content: 'DUE051' } });
+            ? JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/workspace', source: 'vscode', timestamp } }) + '\n' + JSON.stringify(request('DUE051'))
+            : JSON.stringify({ type: 'user', sessionId: id, cwd: '/workspace', timestamp, message: { content: 'DUE051' } });
         const mem = createMemFs({ [`${root}/new.jsonl`]: content('new', '2026-11-06T00:00:00Z'), [`${root}/old.jsonl`]: content('old', '2026-10-01T00:00:00Z') });
         const stat = mem.fs.stat; mem.fs.stat = async file => ({ ...await stat(file), mtimeMs: file.endsWith('old.jsonl') ? 999 : 1 });
-        const summaries = ['old', 'new'].map(id => ({ id, cwd: '/business' }));
+        const summaries = ['old', 'new'].map(id => ({ id, cwd: '/workspace' }));
         const result = await new SessionCatalog('/home', mem.fs).list(scope, provider, signal(), provider === 'codex' ? summaries : undefined);
         expect(result.sessions.map(session => session.id)).toEqual(['new', 'old']);
         expect(result.sessions[0].updatedAt).toBe(1); expect(result.sessions[1].updatedAt).toBe(999);
     });
     it('uses provider creation metadata for Codex and never invents creation from mtime', async () => {
         const mem = createMemFs({ '/home/.codex/sessions/no-date.jsonl': transcript('no-date'), '/home/.codex/sessions/dated.jsonl': transcript('dated') });
-        const result = await new SessionCatalog('/home', mem.fs).list(scope, 'codex', signal(), [{ id: 'no-date', cwd: '/business' }, { id: 'dated', cwd: '/business', createdAt: 1000 }]);
+        const result = await new SessionCatalog('/home', mem.fs).list(scope, 'codex', signal(), [{ id: 'no-date', cwd: '/workspace' }, { id: 'dated', cwd: '/workspace', createdAt: 1000 }]);
         expect(result.sessions.map(session => [session.id, session.createdAt])).toEqual([['dated', 1000], ['no-date', null]]);
         expect(chatCreationLabel(null)).toBe('Дата создания неизвестна');
     });
     it('converts app-server creation seconds to milliseconds', async () => {
-        const rpc = new FakeRpc(); rpc.call = vi.fn(async () => ({ data: [{ id: 'id', cwd: '/business', createdAt: 1793923200 }], nextCursor: null }));
+        const rpc = new FakeRpc(); rpc.call = vi.fn(async () => ({ data: [{ id: 'id', cwd: '/workspace', createdAt: 1793923200 }], nextCursor: null }));
         expect((await listCodexThreads(rpc, scope.directories, signal()))[0].createdAt).toBe(1793923200000);
     });
     it('refuses a silently downgraded permission policy before the first model turn', async () => {

@@ -12,7 +12,7 @@ describe('post-start setup', () => {
     calls = []
     deps = {
       readPort: () => 19680,
-      hasRootContexts: () => true,
+      hasRootWorkspaces: () => true,
       readCachedScan: () => ({ status: 'ok' }),
       triggerScan: vi.fn(async () => calls.push('scan')),
       readCachedErrors: () => null,
@@ -35,7 +35,7 @@ describe('post-start setup', () => {
     expect(calls).toEqual(['update'])
   })
 
-  it('scans first when root contexts were never scanned', async () => {
+  it('scans first when root workspaces were never scanned', async () => {
     deps.readCachedScan = () => null
     await runPostStartSetup('/data', deps)
     expect(deps.triggerScan).toHaveBeenCalledWith(19680)
