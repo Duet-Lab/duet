@@ -2,8 +2,9 @@
  * Role-specific behavior belongs to explicitly invoked skills, not custom agents.
  * This module has no Electron imports; tests use isolated home directories.
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { isDeepStrictEqual } from 'util'
 import { homedir } from 'os'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { readDeployedVersion } from './deploy'
@@ -444,7 +445,8 @@ export const configureKimi = (
  * Claude Desktop запускает из этого файла только stdio-процессы (`type: "http"` он не
  * читает), поэтому до HTTP MCP backend'а он доходит через мост. Python и мост ставит
  * деплой (venv + DuetData/backend), так что запись одинакова на macOS и Windows и не
- * зависит от Node/npx. URL со слэшем: `/mcp` отвечает 307, а мост редиректы не ходит.
+ * зависит от Node/npx.
+ * Keep the original bridge URL; the backend accepts either spelling without a redirect.
  *
  * Файл принадлежит Claude Desktop (в нём его preferences): меняется только ключ `duet`,
  * атомарно и только если запись отличается; битый JSON не перезаписывается. Desktop
@@ -546,6 +548,83 @@ export const configureClaudeDesktop = (duetDataPath: string, port: number): Agen
   return detectClaudeDesktop(duetDataPath, port)
 }
 
+/** Inspect or apply the same two-file contract; detection never writes. */
+function positAssistantStatus(
+  sessionPrompt: string | null,
+  port: number,
+  action: 'check' | 'configure'
+): AgentInfo {
+  const client = { id: 'posit-assistant', name: 'Posit Assistant (Positron)' }
+  const dir = join(homedir(), '.posit', 'assistant')
+  const settings = join(dir, 'settings.json')
+  const instructions = join(dir, 'AGENTS.md')
+  const checkedFiles = [
+    { path: settings, ok: false },
+    { path: instructions, ok: false }
+  ]
+  const problems: string[] = []
+  try {
+    if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+      return {
+        ...client,
+        status: 'not_found',
+        details: 'Posit Assistant configuration directory not found.'
+      }
+    }
+  } catch (error) {
+    return { ...client, status: 'needs_setup', checkedFiles, details: String(error) }
+  }
+
+  try {
+    const read = readJsonStrict(settings)
+    if (read.kind === 'invalid_json' || read.kind === 'read_failed') {
+      throw new Error('Cannot read settings.json as strict JSON; file left unchanged.')
+    }
+    const config = read.kind === 'ok' ? read.data : {}
+    if (
+      !isPlainObject(config) ||
+      (config.mcpServers !== undefined && !isPlainObject(config.mcpServers))
+    ) {
+      throw new Error('Expected JSON objects for settings and mcpServers; file left unchanged.')
+    }
+    const servers = config.mcpServers ?? {}
+    const expected = { type: 'remote', url: `http://127.0.0.1:${port}/mcp` }
+    if (isDeepStrictEqual(servers.duet, expected)) {
+      checkedFiles[0].ok = true
+    } else if (action === 'configure') {
+      atomicWriteJson(settings, { ...config, mcpServers: { ...servers, duet: expected } })
+      checkedFiles[0].ok = true
+    } else {
+      problems.push('Duet MCP settings are missing or outdated.')
+    }
+  } catch (error) {
+    problems.push(`settings.json: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  try {
+    if (sessionPrompt === null) {
+      problems.push('The Duet session prompt is unavailable.')
+    } else if (action === 'configure') {
+      writeFileSync(instructions, sessionPrompt, 'utf8')
+      checkedFiles[1].ok = true
+    } else if (existsSync(instructions) && readFileSync(instructions, 'utf8') === sessionPrompt) {
+      checkedFiles[1].ok = true
+    } else {
+      problems.push('AGENTS.md is missing or outdated.')
+    }
+  } catch (error) {
+    problems.push(`AGENTS.md: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  return {
+    ...client,
+    status: problems.length ? 'needs_setup' : 'configured',
+    details: problems.length
+      ? problems.join(' ')
+      : 'Duet MCP and platform instructions configured.',
+    checkedFiles
+  }
+}
+
 // =============================================================================
 // DETECT ALL
 // =============================================================================
@@ -561,7 +640,8 @@ export const detectAgents = (duetDataPath: string, port: number): AgentInfo[] =>
     detectCodex(sessionPrompt, duetDataPath, port),
     detectAntigravity(sessionPrompt, duetDataPath, port),
     detectKimi(sessionPrompt, duetDataPath, port),
-    detectClaudeDesktop(duetDataPath, port)
+    detectClaudeDesktop(duetDataPath, port),
+    positAssistantStatus(sessionPrompt, port, 'check')
   ]
 }
 
@@ -1009,7 +1089,8 @@ export const configureAllAgents = async (
     configureCodex(sessionPrompt, duetDataPath, port),
     configureAntigravity(sessionPrompt, duetDataPath, port),
     configureKimi(sessionPrompt, duetDataPath, port),
-    configureClaudeDesktop(duetDataPath, port)
+    configureClaudeDesktop(duetDataPath, port),
+    positAssistantStatus(sessionPrompt, port, 'configure')
   ]
   // Keep write/cleanup failures visible even when the new files pass detection.
   return detectAgents(duetDataPath, port).map((detected, index) => {

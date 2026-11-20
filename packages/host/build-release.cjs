@@ -11,7 +11,7 @@
  * IMPORTANT: When Host installs backend, it must write this version
  * to DuetData/backend/VERSION for version tracking.
  */
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { syncLockfileVersion } = require('../../scripts/sync-lockfile-version.cjs');
@@ -50,6 +50,13 @@ const artifacts = {
     win: `dist/Duet-${newVersion}-setup.exe`,
     linux: `dist/Duet-${newVersion}.AppImage`
 };
+
+if (platform === 'mac') {
+    execFileSync(process.execPath, [
+        path.join(__dirname, 'e2e', 'packaged-preload.cjs'),
+        path.join(__dirname, artifacts.mac)
+    ], { stdio: 'inherit' });
+}
 
 console.log(`\n✅ Release built: ${artifacts[platform]}`);
 console.log(`\n📝 Remember: Host must write version ${newVersion} to DuetData/backend/VERSION when installing backend.`);

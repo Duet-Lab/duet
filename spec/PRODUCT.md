@@ -12,6 +12,7 @@ Duet is an organizational technology for indie creators: in the age of AI their 
 ┌─────────────────────────────────────────────────────────────────┐
 │             AI Clients (external, MCP consumers)                │
 │  Claude Code · Codex · Antigravity · Kimi Code · Claude Desktop │
+│  Posit Assistant (Positron; experimental)                       │
 └──────▲────────────────────────────────────────────▲─────────────┘
        │ MCP (HTTP; stdio bridge for Desktop)       │ reads configs
        │                                            │ + merged
@@ -559,7 +560,9 @@ Products and components are described by **single canonical spec files** — no 
 | `DuetData/backend.log` | — | — | **writes** | — |
 | `DuetData/data/entities.db` | — | — | **writes** | — |
 | `DuetData/data/{scan,workspaces}.json` | reads (wizard, file watcher) | — | **writes** | — |
-| `DuetData/duet.md` (thin session prompt) | reads → output-style + Codex/Antigravity | — | **writes** | — |
+| `DuetData/duet.md` (thin session prompt) | reads → output-style + Codex/Antigravity/Kimi/Posit Assistant | — | **writes** | — |
+| `~/.posit/assistant/AGENTS.md` | **writes** the entire file from `duet.md` | — | — | reads (Posit Assistant) |
+| `~/.posit/assistant/settings.json` | **writes** only the `mcpServers.duet` entry | — | — | reads (Posit Assistant) |
 | `DuetData/workspaces/{Workspace}.code-workspace`, `<workspace>/.kimi-code/local.toml` | — | **writes** (on open of a workspace, by the rule of a workspace window — see [Windows](#windows)). The workspace file also carries a `settings` block with the color of the window | — | reads (`local.toml`: Kimi Code) |
 | `DuetData/workspaces/{Owner}/{Ticket folder}.code-workspace` | — | **writes** (whole file, by the rule of a ticket window, rebuilt on every open of the intent by button; never while a window has it open) | — | — |
 | `DuetData/intents/{program}/windows/*.json`, `DuetData/intents/{program}/active.json` | — | **writes** (each window its own marker; any window removes dead ones and writes the order) | — | — |

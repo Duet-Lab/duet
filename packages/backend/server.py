@@ -27,6 +27,8 @@ from pathlib import Path
 import anyio
 import uvicorn
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -406,6 +408,18 @@ async def lifespan(app: Starlette):
             logger.info("Duet backend stopped")
 
 
+class MCPPathMiddleware:
+    """Route slashless MCP requests to the mount without redirecting the client."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"] == "/mcp":
+            scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
+        await self.app(scope, receive, send)
+
+
 def create_app() -> Starlette:
     """Create Starlette application."""
     # Create MCP app first to initialize session_manager (used in lifespan)
@@ -427,6 +441,7 @@ def create_app() -> Starlette:
 
     return Starlette(
         routes=routes,
+        middleware=[Middleware(MCPPathMiddleware)],
         lifespan=lifespan,
     )
 

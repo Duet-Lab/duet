@@ -4,10 +4,54 @@ import time
 from pathlib import Path
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from services.entities import EntitiesService
 from tests.fixtures import EntityFactory
+
+
+@pytest.mark.asyncio
+async def test_mcp_session_accepts_both_url_spellings(monkeypatch: pytest.MonkeyPatch) -> None:
+    import server
+    from mcp.server.fastmcp import FastMCP
+
+    # A session manager can run only once. Use a real, isolated server rather
+    # than consuming the production singleton's lifespan for the pytest process.
+    isolated = FastMCP("route-test", json_response=True, streamable_http_path="/")
+    monkeypatch.setattr(server, "mcp", isolated)
+    transport = ASGITransport(app=server.create_app())
+
+    headers = {"Accept": "application/json, text/event-stream", "Host": "127.0.0.1:19680"}
+    initialize = {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "1.0"},
+        },
+    }
+    async with (
+        isolated.session_manager.run(),
+        AsyncClient(transport=transport, base_url="http://127.0.0.1:19680") as client,
+    ):
+        for path, other in [("/mcp", "/mcp/"), ("/mcp/", "/mcp")]:
+            response = await client.post(path, json=initialize, headers=headers, follow_redirects=False)
+            assert response.status_code == 200
+            result = response.json()["result"]
+            assert result["serverInfo"]["name"] == "route-test"
+            session = {
+                **headers, "Mcp-Session-Id": response.headers["Mcp-Session-Id"],
+                "MCP-Protocol-Version": result["protocolVersion"],
+            }
+            ready = await client.post(other, headers=session, json={
+                "jsonrpc": "2.0", "method": "notifications/initialized",
+            }, follow_redirects=False)
+            assert ready.status_code == 202
+            listed = await client.post(path, headers=session, json={
+                "jsonrpc": "2.0", "method": "tools/list", "id": 2,
+            }, follow_redirects=False)
+            assert listed.status_code == 200
+            assert listed.json()["result"]["tools"] == []
+            assert (await client.delete(other, headers=session, follow_redirects=False)).is_success
 
 
 @pytest.mark.asyncio

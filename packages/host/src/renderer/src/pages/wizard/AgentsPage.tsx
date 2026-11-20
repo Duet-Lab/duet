@@ -1,7 +1,5 @@
 /*
- * Шаг 7: AI Агенты — обнаружение и конфигурация AI клиентов.
- * Пять карточек (Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop) + кнопка "Настроить все".
- * Не установленный клиент = skipped (не ошибка).
+ * Step 5: configure all detected AI clients. Missing clients are informational.
  *
  * The page keeps no copy of the status and never detects on its own: main owns the status
  * (core/host-sync.ts) and App passes it down. The "Check" button is the only way to see
@@ -73,7 +71,8 @@ export function WizardAgentsPage({ agents }: WizardAgentsPageProps): React.React
           AI Агенты
         </h2>
         <p className="text-muted-foreground mt-1">
-          Обнаружение и конфигурация Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop
+          Обнаружение и конфигурация Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop,
+          Posit Assistant
         </p>
       </div>
 
@@ -161,6 +160,12 @@ export function WizardAgentsPage({ agents }: WizardAgentsPageProps): React.React
             <code className="text-[11px] bg-muted px-1 rounded">mcp_stdio_bridge.py</code>, который
             запускается Python из venv Duet. После настройки полностью перезапустите Claude Desktop.
           </li>
+          <li>
+            <strong>Posit Assistant (Positron):</strong> Duet replaces the entire user-level{' '}
+            <code>~/.posit/assistant/AGENTS.md</code>, including any saved notes. In{' '}
+            <code>~/.posit/assistant/settings.json</code> it manages only{' '}
+            <code>mcpServers.duet</code>.
+          </li>
         </ul>
       </div>
     </div>
@@ -191,6 +196,10 @@ const AGENT_INSTALL_INFO: Record<string, { desc: string; url: string }> = {
   'claude-desktop': {
     desc: 'Claude Desktop — приложение Claude от Anthropic для macOS и Windows.',
     url: 'https://claude.ai/download'
+  },
+  'posit-assistant': {
+    desc: 'Open Posit Assistant in Positron to initialize its configuration directory.',
+    url: 'https://positron.posit.co/download.html'
   }
 }
 
@@ -212,7 +221,7 @@ function AgentCard({
   }
 
   const statusLabel = {
-    not_found: 'Не установлен',
+    not_found: agent.id === 'posit-assistant' ? 'Не найден' : 'Не установлен',
     needs_setup: 'Требует настройки',
     configured: agent.version ? `v${agent.version}` : 'Настроен'
   }

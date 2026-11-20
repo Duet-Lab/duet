@@ -58,6 +58,8 @@ export default defineConfig({
   // Preload — особые требования к формату модулей
   preload: {
     build: {
+      // The installed preload cannot resolve packages hoisted into the build workspace.
+      externalizeDeps: false,
       rollupOptions: {
         output: {
           // CommonJS (require/module.exports) вместо ESM (import/export).

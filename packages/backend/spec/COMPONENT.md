@@ -105,6 +105,8 @@ mcp_stdio_bridge.py          separate process: stdio ⇄ /mcp for Claude Desktop
 
 ### MCP Tools
 
+The canonical Streamable HTTP endpoint is `/mcp`. Both `/mcp` and `/mcp/` reach the same session manager directly, without an HTTP redirect, including follow-up requests for an existing session.
+
 | Tool | Returns |
 |------|---------|
 | `timestamp` | string directly |

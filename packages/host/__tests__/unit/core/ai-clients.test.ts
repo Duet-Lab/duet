@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { stringify as stringifyToml } from 'smol-toml'
 import { createTestContext, type TestContext } from '../../helpers'
@@ -18,6 +18,7 @@ import { homedir } from 'os'
 const mockedHomedir = vi.mocked(homedir)
 
 import {
+  type AgentInfo,
   configureClaudeCode,
   configureCodex,
   configureAntigravity,
@@ -132,12 +133,13 @@ describe('core/ai-clients', () => {
     it('returns not_found when no agents installed', () => {
       const agents = detectAgents(ctx.duetDataDir, TEST_PORT)
 
-      expect(agents).toHaveLength(5)
+      expect(agents).toHaveLength(6)
       expect(agents[0]).toMatchObject({ id: 'claude-code', status: 'not_found' })
       expect(agents[1]).toMatchObject({ id: 'codex', status: 'not_found' })
       expect(agents[2]).toMatchObject({ id: 'antigravity', status: 'not_found' })
       expect(agents[3]).toMatchObject({ id: 'kimi', status: 'not_found' })
       expect(agents[4]).toMatchObject({ id: 'claude-desktop', status: 'not_found' })
+      expect(agents[5]).toMatchObject({ id: 'posit-assistant', status: 'not_found' })
     })
 
     it('returns needs_setup when ~/.claude exists but not configured', () => {
@@ -1233,6 +1235,106 @@ describe('core/ai-clients', () => {
   // configureAllAgents
   // ===========================================================================
 
+  describe('Posit Assistant', () => {
+    let dir: string
+    let settings: string
+    let instructions: string
+    const expected = { type: 'remote', url: MCP_URL }
+    const check = (): AgentInfo =>
+      detectAgents(ctx.duetDataDir, TEST_PORT).find((a) => a.id === 'posit-assistant')!
+    const configure = async (): Promise<AgentInfo> =>
+      (await configureAllAgents(ctx.duetDataDir, TEST_PORT)).find(
+        (a) => a.id === 'posit-assistant'
+      )!
+
+    beforeEach(() => {
+      dir = join(homeDir, '.posit', 'assistant')
+      mkdirSync(dir, { recursive: true })
+      settings = join(dir, 'settings.json')
+      instructions = join(dir, 'AGENTS.md')
+    })
+
+    it('creates both files, and detects stale instructions without writing', async () => {
+      writeSessionPrompt(ctx.duetDataDir)
+      expect(check().status).toBe('needs_setup')
+      expect(existsSync(settings)).toBe(false)
+      expect(existsSync(instructions)).toBe(false)
+      expect((await configure()).checkedFiles).toEqual([
+        { path: settings, ok: true },
+        { path: instructions, ok: true }
+      ])
+      expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ mcpServers: { duet: expected } })
+      expect(readFileSync(instructions, 'utf8')).toBe(SESSION_BODY)
+      writeFileSync(instructions, 'my old user notes')
+      expect(check().status).toBe('needs_setup')
+      expect(readFileSync(instructions, 'utf8')).toBe('my old user notes')
+    })
+
+    it('replaces the whole instruction file and only the Duet server entry', async () => {
+      const other = { type: 'local', command: ['example'] }
+      writeSessionPrompt(ctx.duetDataDir)
+      writeFileSync(instructions, '<!-- BEGIN duet-core -->old<!-- END duet-core --> notes')
+      writeFileSync(
+        settings,
+        JSON.stringify({
+          theme: 'blue',
+          mcpServers: {
+            other,
+            duet: { ...expected, enabled: false }
+          }
+        })
+      )
+      expect((await configure()).status).toBe('configured')
+      expect(readFileSync(instructions, 'utf8')).toBe(SESSION_BODY)
+      expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({
+        theme: 'blue',
+        mcpServers: { other, duet: expected }
+      })
+      utimesSync(settings, 1000, 1000)
+      const before = statSync(settings).mtimeMs
+      expect((await configure()).status).toBe('configured')
+      expect(statSync(settings).mtimeMs).toBe(before)
+    })
+
+    it.each(['{ // comment\n}', '[]', '{"mcpServers":[]}', '{"mcpServers":null}'])(
+      'leaves unsupported settings untouched: %s',
+      async (original) => {
+        writeSessionPrompt(ctx.duetDataDir)
+        writeFileSync(settings, original)
+        const clients = await configureAllAgents(ctx.duetDataDir, TEST_PORT)
+        expect(clients.filter((a) => a.status === 'needs_setup').map((a) => a.id)).toEqual([
+          'posit-assistant'
+        ])
+        expect(clients[5].details).toContain('settings.json')
+        expect(check().checkedFiles).toEqual([
+          { path: settings, ok: false },
+          { path: instructions, ok: true }
+        ])
+        expect(readFileSync(settings, 'utf8')).toBe(original)
+      }
+    )
+
+    it('sets up MCP without replacing instructions if the prompt is unavailable', async () => {
+      writeFileSync(instructions, 'original')
+      const result = await configure()
+      expect(result.status).toBe('needs_setup')
+      expect(result.checkedFiles).toEqual([
+        { path: settings, ok: true },
+        { path: instructions, ok: false }
+      ])
+      expect(readFileSync(instructions, 'utf8')).toBe('original')
+    })
+
+    it('reports a write failure on the right card even after rechecking', async () => {
+      writeSessionPrompt(ctx.duetDataDir)
+      mkdirSync(settings + '.tmp')
+      const clients = await configureAllAgents(ctx.duetDataDir, TEST_PORT)
+      expect(clients[5]).toMatchObject({ id: 'posit-assistant', status: 'needs_setup' })
+      expect(clients[5].details).toContain('settings.json.tmp')
+      expect(clients.slice(0, 5).every((a) => a.status === 'not_found')).toBe(true)
+    })
+  })
+
   describe('configureAllAgents', () => {
     it('keeps retirement failures visible after successful prompt detection', async () => {
       writeSessionPrompt(ctx.duetDataDir)
@@ -1247,6 +1349,8 @@ describe('core/ai-clients', () => {
     it('does not deploy a stale prompt when the backend build fails', async () => {
       writeSessionPrompt(ctx.duetDataDir, '# Stale prompt')
       mkdirSync(join(homeDir, '.claude'), { recursive: true })
+      const positDir = join(homeDir, '.posit', 'assistant')
+      mkdirSync(positDir, { recursive: true })
       vi.mocked(fetch).mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -1264,6 +1368,9 @@ describe('core/ai-clients', () => {
       const results = await configureAllAgents(ctx.duetDataDir, TEST_PORT)
       expect(results[0].status).toBe('needs_setup')
       expect(results[0].details).toContain('Missing source')
+      expect(results[5].status).toBe('needs_setup')
+      expect(existsSync(join(positDir, 'AGENTS.md'))).toBe(false)
+      expect(existsSync(join(positDir, 'settings.json'))).toBe(false)
       expect(existsSync(join(homeDir, '.claude', 'output-styles'))).toBe(false)
       expect(existsSync(join(homeDir, '.claude', 'settings.json'))).toBe(false)
     })
@@ -1271,12 +1378,14 @@ describe('core/ai-clients', () => {
     it('returns results for all agents', async () => {
       const results = await configureAllAgents(ctx.duetDataDir, TEST_PORT)
 
-      expect(results).toHaveLength(5)
+      expect(results).toHaveLength(6)
       expect(results[0].id).toBe('claude-code')
       expect(results[1].id).toBe('codex')
       expect(results[2].id).toBe('antigravity')
       expect(results[3].id).toBe('kimi')
       expect(results[4].id).toBe('claude-desktop')
+      expect(results[5]).toMatchObject({ id: 'posit-assistant', status: 'not_found' })
+      expect(existsSync(join(homeDir, '.posit'))).toBe(false)
     })
 
     it('configures all found agents using merged content from disk', async () => {
@@ -1287,6 +1396,7 @@ describe('core/ai-clients', () => {
       mkdirSync(join(homeDir, '.gemini'), { recursive: true })
       mkdirSync(join(homeDir, '.kimi-code'), { recursive: true })
       mkdirSync(claudeDesktopConfigDir(), { recursive: true })
+      mkdirSync(join(homeDir, '.posit', 'assistant'), { recursive: true })
       deployBridge(ctx.duetDataDir)
 
       const results = await configureAllAgents(ctx.duetDataDir, TEST_PORT)
@@ -1296,6 +1406,7 @@ describe('core/ai-clients', () => {
       expect(results[2].status).toBe('configured')
       expect(results[3].status).toBe('configured')
       expect(results[4].status).toBe('configured')
+      expect(results[5].status).toBe('configured')
     })
   })
 

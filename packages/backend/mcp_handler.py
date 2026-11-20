@@ -25,8 +25,7 @@ from services.tickets import TicketError, check_arguments
 from services.orientation import OrientationService
 
 
-# Create FastMCP server instance
-# streamable_http_path="/" so final URL is /mcp (not /mcp/mcp)
+# Serve the mount root. Both /mcp and /mcp/ reach it without a redirect.
 mcp = FastMCP("duet", json_response=True, streamable_http_path="/")
 
 

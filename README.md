@@ -10,7 +10,7 @@ Duet is built for one person's daily use and developed in the open. It is not a 
 
 There are no promises here. The file formats, the MCP tools, the HTTP API, and the folder layout change between commits without migration or notice. There is no release schedule, no support, and no backward compatibility. The specs describe the current state, not a contract.
 
-If you try it anyway, two things are worth knowing. Your own data stays in folders you choose, as Markdown and JSON, so removing Duet loses nothing of yours; Duet keeps its own state in a separate `DuetData` folder. And Duet Host writes into the configuration of AI clients it finds on the machine (Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop): it registers its MCP server and installs a system prompt. Read the Host spec before you let it do that on a machine you rely on.
+If you try it anyway, two things are worth knowing. Your own data stays in folders you choose, as Markdown and JSON, so removing Duet loses nothing of yours; Duet keeps its own state in a separate `DuetData` folder. And Duet Host writes into the configuration of AI clients it finds on the machine (Claude Code, Codex, Antigravity, Kimi Code, Claude Desktop, and experimental Posit Assistant support in Positron): it registers its MCP server and, where supported, installs platform instructions. For Posit Assistant, setup replaces the entire user-level `~/.posit/assistant/AGENTS.md`, including personal notes. Read the Host spec before you let it do that on a machine you rely on.
 
 ## What is in the repository
 
